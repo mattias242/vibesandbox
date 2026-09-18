@@ -68,7 +68,11 @@ const MAX_CODE_ATTEMPTS = 5;
 const DEFAULT_SESSION_LIFETIME_MS = 12 * HOUR;
 /** Inget av formulären är i närheten av så här stort. */
 const MAX_FORM_BYTES = 4096;
-const CLEANUP_INTERVAL_MS = 10 * MINUTE;
+/**
+ * Städningen är en bisak: utgångna koder och sessioner nekas ändå av sina egna kontroller, oavsett
+ * om raden finns kvar. Den håller bara tabellerna små.
+ */
+const CLEANUP_INTERVAL_MS = HOUR;
 const EVENT_RETENTION_MS = 90 * 24 * HOUR;
 
 /** 32 slumpbyte i base64url, utan utfyllnad: exakt 43 tecken. Allt annat är inte vårt. */
