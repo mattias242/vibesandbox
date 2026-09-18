@@ -633,7 +633,7 @@ describe('inloggningsrutter under /_auth/', () => {
   });
 
   describe('status ur en allowlist', () => {
-    it.each([200, 400, 401, 404, 405, 429])('godtar %i', async (status) => {
+    it.each([200, 400, 401, 403, 404, 405, 413, 429])('godtar %i', async (status) => {
       const { port, host } = await starta(() => ({ status, headers: {} }));
 
       expect((await anropa({ port, host, path: '/_auth/biljett' })).status).toBe(status);
@@ -649,7 +649,7 @@ describe('inloggningsrutter under /_auth/', () => {
       [304],
       [307],
       [308],
-      [403],
+      [402],
       [500],
       [502],
       [0],
