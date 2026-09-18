@@ -1,0 +1,14 @@
+{
+  "name": "@vibesandbox/llm",
+  "version": "0.0.0",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "description": "Språkmodellsleverantörer (OpenAI-kompatibel och inspelad) och maskning av personuppgifter, fail-closed. Inga körtidsberoenden.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@vibesandbox/contracts": "*"
+  }
+}
