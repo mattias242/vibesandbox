@@ -1,0 +1,15 @@
+{
+  "name": "vibesandbox-spike-s1-sessioner",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tidsboxad SPIK: origin-isolering, kakor och webbläsarexfiltrering i Chromium/Firefox/WebKit. INGÅR EJ i rotens workspaces.",
+  "type": "commonjs",
+  "scripts": {
+    "cert": "./gen-cert.sh",
+    "serve": "node server.js",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}

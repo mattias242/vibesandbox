@@ -1,0 +1,58 @@
+# FÖRSLAG — inte aktiverad CI.
+# Detta är ett förslag på ett GitHub Actions-jobb som kör spik S1 i ALLA TRE motorer
+# (Chromium, Firefox, WebKit) på Linux, där Firefox faktiskt startar (till skillnad från
+# testmaskinens macOS 27.0 där Playwrights Firefox inte kunde köras — se RESULTAT.md).
+#
+# Medvetet placerad i spikes/s1-sessioner/ och INTE i .github/workflows/, så att den inte
+# aktiveras av misstag. Flytta hit och byt namn till .github/workflows/spike-s1.yml för att
+# ta den i bruk.
+#
+# Linux-runnern har redan de publika wildcard-DNS-namnen tillgängliga (lvh.me, localtest.me,
+# nip.io löser mot 127.0.0.1 via publik DNS) — ingen /etc/hosts-redigering behövs.
+
+name: spike-s1-sessioner
+
+on:
+  workflow_dispatch: {}          # kör manuellt
+  # pull_request:
+  #   paths: ['spikes/s1-sessioner/**']
+
+jobs:
+  matris:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spikes/s1-sessioner
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Installera beroenden (egen node_modules)
+        run: npm install
+
+      - name: Installera webbläsare + systemberoenden
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Generera självsignerat cert
+        run: ./gen-cert.sh
+
+      - name: Kör matrisen (alla tre motorer)
+        run: npx playwright test
+
+      - name: Skriv ut matrisen
+        if: always()
+        run: node compile-matrix.js
+
+      - name: Spara rapport & resultat som artefakt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spike-s1-resultat
+          path: |
+            spikes/s1-sessioner/results/
+            spikes/s1-sessioner/playwright-report/
+          retention-days: 14
+        # OBS: ladda ALDRIG upp certs/ — där ligger privata nycklar.

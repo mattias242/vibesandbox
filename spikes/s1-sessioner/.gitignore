@@ -1,0 +1,20 @@
+# Spik-artefakter – INGET av detta får in i det publika repot
+node_modules/
+package-lock.json
+
+# Självsignerade certifikat och privata nycklar – ALDRIG i git
+certs/
+*.pem
+*.key
+*.crt
+*.csr
+*.srl
+
+# Testartefakter
+results/
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+hits.log
+*.log
