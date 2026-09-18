@@ -414,9 +414,26 @@ export interface LlmProvider {
 /** Appens egna källfiler: sökväg (`src/…`) → innehåll. Mallens filer ingår INTE och vinner alltid. */
 export type SourceFiles = Readonly<Record<string, string>>;
 
+/**
+ * Sökvägar som appens kod får ha. EN regel, använd av både agentens tolk och byggkedjans policy.
+ * Bara ASCII (å/ä/ö i filnamn ger normaliseringsfel mellan macOS och Linux), bara .ts/.tsx/.css,
+ * inga punktfiler — och därmed ingen `tsconfig.json`, `package.json` eller `*.config.*` i `src/`,
+ * som annars kunde påverka bygget.
+ */
+export const SOURCE_PATH_PATTERN = /^src\/(?:[A-Za-z0-9_-]+\/){0,4}[A-Za-z0-9_-]+\.(?:tsx|ts|css)$/;
+
+/** Filer som mallen äger. Appens kod får inte skriva dem; mallens version vinner alltid. */
+export const TEMPLATE_OWNED_SOURCE_PATHS: readonly string[] = ['src/main.tsx'];
+
+export function isAllowedSourcePath(path: string): boolean {
+  return SOURCE_PATH_PATTERN.test(path) && !TEMPLATE_OWNED_SOURCE_PATHS.includes(path);
+}
+
 export interface Diagnostic {
   /** `policy` = otillåtet innehåll eller filnamn; `typecheck` = TypeScript; `build` = Vite. */
   readonly source: 'policy' | 'typecheck' | 'build';
+  /** Policyregelns id (t.ex. `external-url`), så att agenten kan förklara brottet i klarspråk. */
+  readonly rule?: string;
   readonly file?: string;
   readonly line?: number;
   /** Kort och konkret — matas tillbaka till modellen. Inga absoluta sökvägar från värden. */
