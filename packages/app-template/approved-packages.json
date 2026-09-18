@@ -1,0 +1,86 @@
+{
+  "$comment": "Paketkatalog enligt docs/adr/0001-godkanda-paket.md. En post per DIREKT tredjepartsberoende i package.json; test/approved-packages.test.ts stoppar om de inte stämmer överens. 'reviewedBy': '—' betyder att ingen människa har granskat paketet ännu — posterna nedan är underlag framtaget vid mallens första version, inte ett godkännande.",
+  "platformPackages": ["@vibesandbox/sdk"],
+  "packages": [
+    {
+      "name": "react",
+      "version": "19.2.8",
+      "kind": "dependency",
+      "purpose": "Komponentbibliotek för appens gränssnitt.",
+      "license": "MIT",
+      "reviewedBy": "—",
+      "reviewedAt": "2026-09-18",
+      "rationale": "Det gränssnittsbibliotek kodmodeller behärskar bäst, vilket ger färre fel i genererad kod. Inga beroenden, inga installationsskript, inga nätanrop. 19.2.8 publicerades 2026-07-21; nyare 19.3.0 (2026-09-09) är yngre än karenstiden på 14 dagar."
+    },
+    {
+      "name": "react-dom",
+      "version": "19.2.8",
+      "kind": "dependency",
+      "purpose": "Ritar Reacts komponenter i webbläsaren.",
+      "license": "MIT",
+      "reviewedBy": "—",
+      "reviewedAt": "2026-09-18",
+      "rationale": "Krävs av react. Ett transitivt beroende (scheduler, MIT). Inga installationsskript, inga nätanrop. De adresser som finns i bunten är XML-namnrymder och text i felmeddelanden; de listas uttryckligen i test/build.test.ts."
+    },
+    {
+      "name": "vite",
+      "version": "8.2.2",
+      "kind": "devDependency",
+      "purpose": "Byggverktyg och lokal utvecklingsserver. Körs bara vid bygge, följer inte med i appen.",
+      "license": "MIT",
+      "reviewedBy": "—",
+      "reviewedAt": "2026-09-18",
+      "rationale": "Snabbt bygge med låsbar konfiguration (se vite.config.ts). Inga installationsskript; de plattformsspecifika binärerna (rolldown, lightningcss) är valfria beroenden med integritetshash i låsfilen. 8.2.2 publicerades 2026-08-20; nyare 8.3.0 (2026-09-10) är yngre än karenstiden. OBS: drar in postcss och lightningcss transitivt — mallens konfiguration stänger av sökningen efter PostCSS-konfiguration."
+    },
+    {
+      "name": "@vitejs/plugin-react",
+      "version": "6.1.1",
+      "kind": "devDependency",
+      "purpose": "JSX och snabb omladdning i utvecklingsläge för Vite. Körs bara vid bygge.",
+      "license": "MIT",
+      "reviewedBy": "—",
+      "reviewedAt": "2026-09-18",
+      "rationale": "Vite-projektets egen React-plugin. Ett transitivt beroende (@rolldown/pluginutils, MIT). Inga installationsskript. Publicerad 2026-08-28."
+    },
+    {
+      "name": "typescript",
+      "version": "7.0.2",
+      "kind": "devDependency",
+      "purpose": "Typkontroll av appens kod före bygge. Körs bara vid bygge.",
+      "license": "Apache-2.0",
+      "reviewedBy": "—",
+      "reviewedAt": "2026-09-18",
+      "rationale": "Typkontrollen fångar en stor del av felen i genererad kod innan appen når en användare. Samma version som resten av plattformen. Inga installationsskript. Publicerad 2026-07-08."
+    },
+    {
+      "name": "@types/react",
+      "version": "19.2.18",
+      "kind": "devDependency",
+      "purpose": "Typdefinitioner för react. Bara typer, ingen körbar kod i appen.",
+      "license": "MIT",
+      "reviewedBy": "—",
+      "reviewedAt": "2026-09-18",
+      "rationale": "Krävs för typkontroll av React-kod. Ett transitivt beroende (csstype, MIT, bara typer). Publicerad 2026-07-30."
+    },
+    {
+      "name": "@types/react-dom",
+      "version": "19.2.5",
+      "kind": "devDependency",
+      "purpose": "Typdefinitioner för react-dom. Bara typer, ingen körbar kod i appen.",
+      "license": "MIT",
+      "reviewedBy": "—",
+      "reviewedAt": "2026-09-18",
+      "rationale": "Krävs för typkontroll av main.tsx. Inga beroenden. Publicerad 2026-08-23."
+    },
+    {
+      "name": "@types/node",
+      "version": "24.13.3",
+      "kind": "devDependency",
+      "purpose": "Typdefinitioner för Node, för typkontroll av vite.config.ts och byggtestet. Bara typer.",
+      "license": "MIT",
+      "reviewedBy": "—",
+      "reviewedAt": "2026-09-18",
+      "rationale": "Behövs bara av mallens egna filer, aldrig av appens kod (src/ typkontrolleras med DOM-typer, utan Node). Ett transitivt beroende (undici-types, MIT, bara typer). Publicerad 2026-07-08."
+    }
+  ]
+}
