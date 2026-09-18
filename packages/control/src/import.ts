@@ -23,6 +23,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import { join, sep } from 'node:path';
+import { API_PREFIX, AUTH_PREFIX } from '@vibesandbox/contracts';
 import { ControlError } from './fel.ts';
 import { contentTypeForFileName } from './innehallstyper.ts';
 
@@ -46,6 +47,14 @@ const MAX_NAME_LENGTH = 255;
 
 /** Utan den här filen har appen ingen startsida, och gatewayn skulle svara 404 på `/`. */
 const REQUIRED_PATH = '/index.html';
+
+/**
+ * Toppnivånamn som plattformen själv äger på varje apps värd: data-API:t och inloggningsrutterna.
+ * Härleds ur kontraktets prefix så att de inte kan glida isär. Gatewayn serverar aldrig appfiler
+ * därifrån, men ett bygge som innehåller dem avvisas ändå — hellre ett tydligt fel vid import än
+ * en fil som tyst aldrig går att nå, eller en falsk inloggningssida som väntar på ett misstag.
+ */
+const RESERVED_TOP_LEVEL_NAMES: ReadonlySet<string> = new Set([API_PREFIX, AUTH_PREFIX].map((prefix) => prefix.slice(1)));
 
 export interface ScannedFile {
   /** Manifestnyckeln: `/` + namnen exakt som de står på disk, åtskilda av `/`. Aldrig normaliserad. */
@@ -142,6 +151,9 @@ export async function scanBuildDirectory(directory: string, limits: ImportLimits
 
       if (entry.isSymbolicLink()) throw rejected(`Symlänkar får inte ingå i en app: ${shownPath}`);
       assertName(entry.name, shownPath);
+      if (segments.length === 0 && RESERVED_TOP_LEVEL_NAMES.has(entry.name)) {
+        throw rejected(`Namnet är reserverat för plattformen och får inte ingå i en app: ${shownPath}`);
+      }
 
       // Hängslen och livrem: utan symlänkar kan vi inte hamna utanför roten, men kontrollen är
       // billig och gäller även den dag någon ändrar genomsökningen.

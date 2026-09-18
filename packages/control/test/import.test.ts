@@ -175,4 +175,31 @@ describe('Import av en byggd version: hellre avvisa än gissa', () => {
     const lagrat = await allaFiler(data.katalog);
     expect(lagrat.filter((fil) => fil.startsWith('versions/'))).toEqual([]);
   });
+
+  it('avvisar filer under plattformens reserverade sökvägar — de kan aldrig serveras och får inte ge sken av det', async () => {
+    // `/_api` är data-API:t och `/_auth` inloggningsrutterna på appens egen värd. Gatewayn serverar
+    // aldrig appfiler därifrån; ett bygge som ändå innehåller sådana är antingen ett misstag eller ett
+    // försök att lägga en falsk inloggningssida där användaren väntar sig plattformens.
+    for (const reserverad of ['_api', '_auth']) {
+      const katalog = await skapaTempKatalog('vibesandbox-reserverad-');
+      try {
+        await skrivTrad(katalog.katalog, { ...MINSTA_APP, [`${reserverad}/login.html`]: '<h1>Logga in</h1>' });
+        const fel = await forvantaAvvisad(katalog.katalog);
+        expect(fel.message).toContain(reserverad);
+      } finally {
+        await katalog.stada();
+      }
+    }
+  });
+
+  it('godtar namn som bara LIKNAR de reserverade, och reserverade namn längre ned i trädet', async () => {
+    // Reservationen gäller exakt toppnivånamnen. Den ska inte växa till en gissningslek om
+    // vad som "ser farligt ut" — `/_apix/` och `/sidor/_api/` når aldrig plattformens rutter.
+    await skrivTrad(bygge.katalog, {
+      '_apix/a.txt': 'x',
+      'sidor/_api/b.txt': 'y',
+      'sidor/_auth/c.txt': 'z',
+    });
+    await expect(control.importVersion(appId, bygge.katalog)).resolves.toBeDefined();
+  });
 });
