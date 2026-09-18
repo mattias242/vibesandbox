@@ -4,8 +4,8 @@
  *   npm run dev -w @vibesandbox/platform
  *
  * Bygger appmallen, ser till att det finns en app i den lokala datakatalogen, publicerar bygget
- * och startar plattformen. Skriver sedan ut appens adress och ett färdigt `Authorization`-värde
- * för testinloggningen, så att det går att prova med curl direkt.
+ * och startar plattformen. Skriver sedan ut appens adress, en klickbar inloggningsadress för
+ * webbläsaren och ett färdigt `Authorization`-värde, så att det går att prova med curl direkt.
  *
  * Allt går genom samma `loadConfig` som i drift — även här vägrar plattformen alltså starta med
  * testinloggningen om NODE_ENV=production. Hemligheten slumpas fram vid varje start om ingen är
@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { createControl } from '@vibesandbox/control';
-import { signTestIdentity } from '@vibesandbox/gateway';
+import { signTestIdentity, testLoginPath } from '@vibesandbox/gateway';
 import { loadConfig } from './config.ts';
 import { exitWithStartupError, startPlatform } from './start.ts';
 
@@ -61,10 +61,13 @@ try {
 
   const { listening } = await startPlatform(config);
 
-  const address = `http://${appId}.${config.appDomain}:${listening.port}/`;
-  const authorization = signTestIdentity(DEV_IDENTITY, config.identity.testSecret, {
-    expiresInSeconds: DEV_LOGIN_LIFETIME_SECONDS,
-  });
+  const origin = `http://${appId}.${config.appDomain}:${listening.port}`;
+  const address = `${origin}/`;
+  const lifetime = { expiresInSeconds: DEV_LOGIN_LIFETIME_SECONDS };
+  const authorization = signTestIdentity(DEV_IDENTITY, config.identity.testSecret, lifetime);
+  // Adressen ÄR inloggningen. Den skrivs bara till den lokala terminalen (standard fel), aldrig
+  // till driftloggen, och hemligheten bakom den slumpas om vid nästa start.
+  const loginAddress = `${origin}${testLoginPath(DEV_IDENTITY, config.identity.testSecret, lifetime)}`;
   console.error(
     [
       '',
@@ -72,11 +75,13 @@ try {
       `  Adress:         ${address}`,
       `  Authorization:  ${authorization}`,
       '',
-      'Prova:',
+      'Öppna i webbläsaren — adressen loggar in webbläsaren som utvecklingsanvändaren:',
+      `  ${loginAddress}`,
+      '',
+      'Prova med curl:',
       `  curl -H 'Authorization: ${authorization}' ${address}`,
       '',
-      'Testinloggningen gäller i tolv timmar och bara för den här körningen. En webbläsare kan inte',
-      'skicka huvudet av sig själv; det blir möjligt att öppna appen där när e-postinloggningen finns.',
+      'Testinloggningen gäller i tolv timmar och bara för den här körningen.',
       '',
     ].join('\n'),
   );

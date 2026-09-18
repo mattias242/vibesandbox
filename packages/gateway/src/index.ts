@@ -8,6 +8,7 @@
  *   1. förfrågans form         — metod ur en allowlist, inga dubbletter av beslutsgrundande huvuden
  *   2. värdnamn                — ren funktion, ingen I/O; ogiltigt ⇒ 400 (vardnamn.ts)
  *   3. service worker-spärr    — 403
+ *   3½. inloggningsrutter      — `/_auth/…` lämnas till identitetsleverantören och SLUTAR här
  *   4. autentisering           — ingen eller osäker identitet ⇒ 401
  *   5. register                — okänd app eller version ⇒ 404; här skapas TenantContext (hyresgast.ts)
  *   6. CSRF för skrivande      — 403
@@ -22,8 +23,13 @@
  * gatewayn svarar aldrig med `Access-Control-Allow-*` — en förfrågan från en annan origin som
  * kräver preflight blir därmed alltid stoppad av webbläsaren.
  *
- * Kakor: gatewayn läser inga kakor och sätter aldrig någon (ADR 0002). Huvudena lämnas i sin
- * helhet till identitetsleverantören, som äger den frågan.
+ * Inloggningsrutterna (3½) är det enda som körs utan inloggning, och de gör det utan register,
+ * filer och lagring: svaret beror aldrig på om appen finns. De ligger EFTER steg 1–3, så att
+ * värdnamnet är lika strikt validerat där som överallt annars. Se inloggningsrutt.ts.
+ *
+ * Kakor: gatewayn läser inga kakor och hittar aldrig på någon (ADR 0002). Huvudena lämnas i sin
+ * helhet till identitetsleverantören, som äger den frågan. En kaka kan SÄTTAS på ett enda ställe
+ * — i svaret från en inloggningsrutt — och där vägrar gatewayn `Domain=` och kräver `HttpOnly`.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { API_PREFIX, CSRF_HEADER } from '@vibesandbox/contracts';
@@ -32,6 +38,7 @@ import { handleApi } from './api.ts';
 import { forbidden, invalidHost, invalidRequest, methodNotAllowed, toFailure, unauthenticated } from './fel.ts';
 import { applySecurityHeaders, hasDuplicateOfSingleValueHeader, toAuthHeaders } from './huvuden.ts';
 import { resolveTenant } from './hyresgast.ts';
+import { AUTH_SEGMENT, handleAuthRoute } from './inloggningsrutt.ts';
 import { appIdPrefix, describeError, safeLogger, silentLogger } from './logg.ts';
 import type { GatewayLogEntry, GatewayLogger } from './logg.ts';
 import { normalizeTarget } from './sokvag.ts';
@@ -39,7 +46,7 @@ import { handleStatic } from './statiskt.ts';
 import { sendFailure } from './svar.ts';
 import { createHostParser } from './vardnamn.ts';
 
-export { createTestIdentityProvider, signTestIdentity } from './testidentitet.ts';
+export { createTestIdentityProvider, signTestIdentity, testLoginPath } from './testidentitet.ts';
 export type { SignTestIdentityOptions, TestIdentityProviderOptions } from './testidentitet.ts';
 export type { GatewayLogEntry, GatewayLogger } from './logg.ts';
 export { RECOMMENDED_SERVER_OPTIONS, handleClientError } from './server.ts';
@@ -143,7 +150,28 @@ async function handle(
     throw forbidden('Bakgrundsskript är inte tillåtna på plattformen.');
   }
 
-  // 4. Autentisering. Gäller ALLT, även statiska filer: länken ensam räcker inte.
+  // 3½. Inloggningsrutter — det enda som körs FÖRE autentiseringen, och som aldrig går vidare:
+  //     varken till registret (rutten får inte röja om appen finns), filerna eller SPA-fallbacken.
+  //     Sökvägen tolkas av samma rena funktion som i steg 7, så `/%5Fauth/` och `/_auth/` är samma
+  //     rutt och det finns fortfarande bara EN tolkning. En OGILTIG sökväg är ingen inloggningsrutt;
+  //     den nekas i steg 7 som förut — efter autentiseringen, så att ordningen där är orörd.
+  const target = normalizeTarget(request.url);
+  if (target !== 'ogiltig' && target.segments[0] === AUTH_SEGMENT) {
+    trace.route = 'auth';
+    await handleAuthRoute({
+      response,
+      provider: options.identityProvider,
+      log,
+      method,
+      hostname,
+      segments: target.segments,
+      rawQuery: target.query,
+      headers: toAuthHeaders(request.headers),
+    });
+    return;
+  }
+
+  // 4. Autentisering. Gäller ALLT ANNAT, även statiska filer: länken ensam räcker inte.
   const identity = await authenticate(options.identityProvider, request, hostname, log);
   trace.userId = identity.userId;
 
@@ -153,8 +181,7 @@ async function handle(
   // 6. CSRF-skydd för skrivande metoder — före routningen, så att inget skrivande når en rutt utan det.
   if (WRITING_METHODS.has(method)) assertCsrfProtection(request, hostname);
 
-  // 7. Routning på den normaliserade sökvägen.
-  const target = normalizeTarget(request.url);
+  // 7. Routning på den normaliserade sökvägen (tolkad i steg 3½).
   if (target === 'ogiltig') throw invalidRequest('Adressen är ogiltig.');
 
   if (target.segments[0] === API_SEGMENT) {

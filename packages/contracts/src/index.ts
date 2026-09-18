@@ -76,7 +76,19 @@ export interface IdentityProvider {
    * finns inte (404). Leverantören får aldrig se eller påverka vilken app förfrågan hör till.
    *
    * Krav på implementationen: omdirigera bara till relativa sökvägar på samma värd (ingen
-   * öppen omdirigering), sätt aldrig `Domain=` på en kaka, och läck inget ur förfrågan i svaret.
+   * öppen omdirigering), sätt aldrig `Domain=` på en kaka och alltid `HttpOnly`, och läck inget
+   * ur förfrågan i svaret. Gatewayn verkställer detta och svarar 500 om en leverantör bryter mot det.
+   *
+   * Det gatewayn INTE kan verkställa, och som därför är leverantörens ansvar:
+   * - Rutterna körs före gatewayns CSRF-kontroll. En POST-rutt måste själv kräva att `origin`
+   *   är exakt den förväntade värden — `SameSite` skyddar inte mellan subdomäner.
+   * - En inloggningsbiljett i adressen ska vara ENGÅNGS, kortlivad och BUNDEN TILL DEN WEBBLÄSARE
+   *   som begärde den (t.ex. via en tillståndskaka). Annars kan en syskonapp navigera offret till
+   *   appens inloggningsrutt med ANGRIPARENS biljett, så att offret skriver sina uppgifter i
+   *   angriparens personliga data (inloggnings-CSRF / sessionsfixering).
+   * - Utloggning ska inte kunna utlösas av en ren länk.
+   * - Riktiga leverantörer använder kakor med `__Host-`-prefix och `Secure`; de kan inte planteras
+   *   av en syskonvärd.
    */
   handleAuthRoute?(request: AuthRouteRequest): Promise<AuthRouteResponse | null>;
 }
@@ -94,8 +106,12 @@ export interface AuthRouteRequest extends AuthRequest {
 
 export interface AuthRouteResponse {
   readonly status: number;
-  /** Gatewayns skyddshuvuden ligger alltid kvar; dessa läggs till men kan inte ersätta dem. */
-  readonly headers: Readonly<Record<string, string>>;
+  /**
+   * Gatewayns skyddshuvuden ligger alltid kvar; dessa läggs till men kan inte ersätta dem.
+   * Bara en liten allowlist släpps igenom (`Location`, `Set-Cookie`, `Content-Type`, `Allow`).
+   * `Set-Cookie` får vara en lista — kakor kan inte slås ihop med komma.
+   */
+  readonly headers: Readonly<Record<string, string | readonly string[]>>;
   readonly body?: string;
 }
 
