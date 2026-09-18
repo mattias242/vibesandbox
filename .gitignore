@@ -26,3 +26,7 @@ test-results/
 *.swo
 .idea/
 .vscode/
+
+# Agenternas arbetskataloger och uppdrag
+.claude/worktrees/
+.claude/uppdrag/
