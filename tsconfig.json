@@ -17,6 +17,6 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["apps/*/src", "packages/*/src", "packages/*/test", "features/steg"],
+  "include": ["apps/*/src", "apps/*/test", "packages/*/src", "packages/*/test", "features/steg"],
   "exclude": ["**/node_modules", "**/dist", "packages/app-template", "spikes"]
 }
