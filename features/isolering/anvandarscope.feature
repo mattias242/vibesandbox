@@ -1,5 +1,4 @@
 # language: sv
-@pågår
 Egenskap: En app kan hålla isär olika användares data
   Många verktyg — enkäter, egna anteckningar, tidrapporter — ska inte visa kollegors
   svar för varandra. Det går inte att lita på att genererad kod i webbläsaren sköter

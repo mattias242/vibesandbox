@@ -1,5 +1,4 @@
 # language: sv
-@pågår
 Egenskap: En app kan inte ta mer än sin del av servern
   Alla appar delar på en liten server. En app som växer okontrollerat — av misstag eller
   med flit — ska bara drabba sig själv.

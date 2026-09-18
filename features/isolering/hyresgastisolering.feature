@@ -1,5 +1,4 @@
 # language: sv
-@pågår
 Egenskap: Varje app har sin egen isolerade datamiljö
   En app ska kunna lagra data, men aldrig se eller röra en annan apps data.
   Vilken app ett anrop hör till avgörs av adressen i webbläsaren — aldrig av

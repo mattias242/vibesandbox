@@ -1,5 +1,4 @@
 # language: sv
-@pågår
 Egenskap: Ingen kommer åt en app utan att vara inloggad
   Den hemliga länken räcker inte ensam. Den som öppnar en app måste också vara
   inloggad. Är plattformen osäker på vem någon är, nekar den.

@@ -69,6 +69,34 @@ export interface AuthRequest {
 export interface IdentityProvider {
   readonly name: string;
   authenticate(request: AuthRequest): Promise<Identity | null>;
+
+  /**
+   * Rutter under `AUTH_PREFIX` på en apps EGEN värd, som körs FÖRE inloggningskontrollen —
+   * det är här en värd byter en engångsbiljett mot sin egen host-only-kaka. `null` ⇒ rutten
+   * finns inte (404). Leverantören får aldrig se eller påverka vilken app förfrågan hör till.
+   *
+   * Krav på implementationen: omdirigera bara till relativa sökvägar på samma värd (ingen
+   * öppen omdirigering), sätt aldrig `Domain=` på en kaka, och läck inget ur förfrågan i svaret.
+   */
+  handleAuthRoute?(request: AuthRouteRequest): Promise<AuthRouteResponse | null>;
+}
+
+/** Sökvägsprefix för inloggningsrutter på en apps egen värd. Appkod kan inte ha filer här. */
+export const AUTH_PREFIX = '/_auth';
+
+export interface AuthRouteRequest extends AuthRequest {
+  readonly method: string;
+  /** Normaliserad sökväg, börjar med `AUTH_PREFIX`. */
+  readonly path: string;
+  /** Frågeparametrar. En parameter som förekommer flera gånger ger 400 innan leverantören anropas. */
+  readonly query: Readonly<Record<string, string>>;
+}
+
+export interface AuthRouteResponse {
+  readonly status: number;
+  /** Gatewayns skyddshuvuden ligger alltid kvar; dessa läggs till men kan inte ersätta dem. */
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body?: string;
 }
 
 // ── Data-API: dokument ──────────────────────────────────────────────────────────

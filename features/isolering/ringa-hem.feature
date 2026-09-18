@@ -1,5 +1,4 @@
 # language: sv
-@pågår
 Egenskap: En app kan inte skicka information vidare ut på internet
   Plattformen — inte appen — bestämmer vad webbläsaren får göra. Reglerna följer med
   varje svar från en apps adress och går inte att ändra av appens kod.
