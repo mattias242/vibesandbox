@@ -23,7 +23,15 @@ function allaSvar(varld: Varld): readonly Svar[] {
 
 /** Plattformens skyddsregler: exakt kontraktets värde, exakt en gång, och ingen "bara rapportera"-variant. */
 function kravPaSkyddsregler(svar: Svar): void {
-  assert.equal(huvud(svar, 'Content-Security-Policy'), APP_CONTENT_SECURITY_POLICY);
+  // Varje direktiv ur kontraktet, plus exakt ett `frame-ancestors` som gatewayn lägger till per
+  // värdsort: `'none'`, eller byggverktygets origin för en förhandsvisning — och inget annat.
+  const regler = (huvud(svar, 'Content-Security-Policy') ?? '').split(';').map((del) => del.trim()).filter(Boolean);
+  const kontraktet = APP_CONTENT_SECURITY_POLICY.split(';').map((del) => del.trim());
+  for (const krav of kontraktet) assert.ok(regler.includes(krav), `Skyddsreglerna saknar "${krav}".`);
+  const inramning = regler.filter((del) => del.split(/\s+/)[0] === 'frame-ancestors');
+  assert.equal(inramning.length, 1, 'Skyddsreglerna ska ange frame-ancestors exakt en gång.');
+  assert.match(inramning[0] ?? '', /^frame-ancestors (?:'none'|https?:\/\/bygg\.[a-z0-9.-]+(?::[0-9]{1,5})?)$/);
+  assert.equal(regler.length, kontraktet.length + 1, 'Skyddsreglerna innehåller något utöver kontraktet.');
   assert.equal(huvud(svar, 'Content-Security-Policy-Report-Only'), undefined);
   assert.equal(huvud(svar, 'X-Content-Type-Options'), 'nosniff');
 }

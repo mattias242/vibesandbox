@@ -45,6 +45,12 @@ export const notFound = () => new GatewayError('not_found', 'Sidan eller resurse
 export const unauthenticated = () => new GatewayError('unauthenticated', 'Du behöver logga in.');
 export const forbidden = (message: string) => new GatewayError('forbidden', message);
 
+/**
+ * Ett fel vi redan har loggat och vill besvara med exakt samma fasta text som ett oväntat. Används
+ * där originalfelet kommer från kod som inte får formulera gatewayns felsvar (byggverktygets handler).
+ */
+export const internalError = () => new GatewayError('internal', INTERNAL_MESSAGE);
+
 export const tooLarge = () =>
   new GatewayError('too_large', 'Förfrågan är för stor.', { closeConnection: true });
 

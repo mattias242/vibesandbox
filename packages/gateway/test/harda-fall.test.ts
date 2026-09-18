@@ -9,7 +9,8 @@ import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { connect } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { APP_CONTENT_SECURITY_POLICY, CSRF_HEADER } from '@vibesandbox/contracts';
+import { CSRF_HEADER } from '@vibesandbox/contracts';
+import { forvantaAppensCsp, INGEN_INRAMNING } from './csp.ts';
 import type { ApiErrorBody, Identity } from '@vibesandbox/contracts';
 import {
   RECOMMENDED_SERVER_OPTIONS,
@@ -157,7 +158,7 @@ describe('hårda fall', () => {
       expect(head.kropp).toBe('');
       expect(enHuvud(head, 'Content-Type')).toBe(enHuvud(get, 'Content-Type'));
       expect(enHuvud(head, 'Content-Length')).toBe(String(Buffer.byteLength(get.kropp, 'utf8')));
-      expect(enHuvud(head, 'Content-Security-Policy')).toBe(APP_CONTENT_SECURITY_POLICY);
+      forvantaAppensCsp(head, INGEN_INRAMNING);
     });
 
     it('HEAD i API:t ⇒ 405, och store anropas aldrig', async () => {
@@ -457,7 +458,7 @@ describe('serverinställningar och clientError-hanteraren', () => {
   }
 
   function forvantaSkyddsregler(svar: AnropSvar) {
-    expect(enHuvud(svar, 'Content-Security-Policy')).toBe(APP_CONTENT_SECURITY_POLICY);
+    forvantaAppensCsp(svar, INGEN_INRAMNING);
     expect(enHuvud(svar, 'X-Content-Type-Options')).toBe('nosniff');
     expect(enHuvud(svar, 'Referrer-Policy')).toBe('no-referrer');
     expect(enHuvud(svar, 'Cache-Control')).toBe('no-store');
@@ -499,7 +500,7 @@ describe('serverinställningar och clientError-hanteraren', () => {
 
     expect(svar.status).toBe(400);
     expect(json<ApiErrorBody>(svar).error.code).toBe('invalid_request');
-    expect(enHuvud(svar, 'Content-Security-Policy')).toBe(APP_CONTENT_SECURITY_POLICY);
+    forvantaAppensCsp(svar, INGEN_INRAMNING);
     expect(enHuvud(svar, 'X-Content-Type-Options')).toBe('nosniff');
     expect(enHuvud(svar, 'Referrer-Policy')).toBe('no-referrer');
     expect(uppsattning.identityProvider.anrop).toHaveLength(0);

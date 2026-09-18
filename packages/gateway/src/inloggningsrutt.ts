@@ -219,8 +219,11 @@ function checkResponse(candidate: unknown): CheckedResponse {
   return { status, headers: checked, body: payload };
 }
 
-/** Samma regel som i API:t: en parameter som anges flera gånger nekas, vi väljer aldrig en av dem. */
-function parseQuery(rawQuery: string): Readonly<Record<string, string>> {
+/**
+ * Samma regel som i API:t: en parameter som anges flera gånger nekas, vi väljer aldrig en av dem.
+ * Används även för byggverktygets värd (byggverktyg.ts).
+ */
+export function parseQuery(rawQuery: string): Readonly<Record<string, string>> {
   // Utan prototyp, så att en parameter som heter `__proto__` eller `constructor` bara är ett värde.
   const query: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const [name, value] of new URLSearchParams(rawQuery)) {
