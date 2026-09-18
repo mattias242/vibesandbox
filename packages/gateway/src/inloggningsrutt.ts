@@ -18,10 +18,11 @@
  *   - ett TILLÅTET huvud med otillåtet innehåll fäller HELA svaret: 500 och en felrad i loggen.
  *     Då sätts ingen kaka alls — hellre en misslyckad inloggning än en halv.
  */
-import type { ServerResponse } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AuthRouteRequest, IdentityProvider } from '@vibesandbox/contracts';
-import { AUTH_PREFIX } from '@vibesandbox/contracts';
+import { AUTH_PREFIX, AUTH_ROUTE_STATUSES, MAX_AUTH_BODY_BYTES } from '@vibesandbox/contracts';
 import { invalidRequest, methodNotAllowed, notFound, unauthenticated } from './fel.ts';
+import { readBody } from './kropp.ts';
 import { describeError } from './logg.ts';
 import type { GatewayLogger } from './logg.ts';
 
@@ -34,11 +35,13 @@ export const AUTH_SEGMENT = AUTH_PREFIX.slice(1);
 const AUTH_METHODS: readonly string[] = ['GET', 'POST'];
 
 /**
- * 200 (sida), 303 (vidare efter lyckat byte — 303 och inte 302/307, så att en POST aldrig görs om
- * mot målet), och de nekanden en inloggning kan behöva. Inga andra omdirigeringar, inget 5xx:
- * går något sönder hos leverantören ska den kasta, inte formulera ett eget felsvar.
+ * Kontraktets lista (`AUTH_ROUTE_STATUSES`): 200 (sida), 303 (vidare efter lyckat byte — 303 och
+ * inte 302/307, så att en POST aldrig görs om mot målet), och de nekanden en inloggning kan behöva
+ * — bland dem 403, som leverantören själv svarar när en POST saknar exakt rätt `Origin` (rutterna
+ * körs före gatewayns CSRF-steg). Inga andra omdirigeringar, inget 5xx: går något sönder hos
+ * leverantören ska den kasta, inte formulera ett eget felsvar.
  */
-const ALLOWED_STATUSES: ReadonlySet<number> = new Set([200, 303, 400, 401, 404, 405, 429]);
+const ALLOWED_STATUSES: ReadonlySet<number> = new Set(AUTH_ROUTE_STATUSES);
 
 /**
  * ALLA svarshuvuden en leverantör kan få ut, med gemener. Listan får ALDRIG innehålla ett
@@ -235,6 +238,8 @@ export function parseQuery(rawQuery: string): Readonly<Record<string, string>> {
 }
 
 export interface AuthRouteContext {
+  /** Bara för kroppen vid POST. Allt annat ur förfrågan kommer via fälten nedan. */
+  readonly request: IncomingMessage;
   readonly response: ServerResponse;
   readonly provider: IdentityProvider;
   readonly log: GatewayLogger;
@@ -245,6 +250,8 @@ export interface AuthRouteContext {
   readonly segments: readonly string[];
   readonly rawQuery: string;
   readonly headers: Readonly<Record<string, string | undefined>>;
+  /** TCP-anslutningens adress (se `clientAddressOf` i index.ts) — aldrig ur ett huvud. */
+  readonly clientAddress: string | undefined;
 }
 
 export async function handleAuthRoute(context: AuthRouteContext): Promise<void> {
@@ -253,18 +260,26 @@ export async function handleAuthRoute(context: AuthRouteContext): Promise<void> 
   if (!AUTH_METHODS.includes(context.method)) throw methodNotAllowed(AUTH_METHODS);
   const query = parseQuery(context.rawQuery);
 
-  // Leverantören får värdnamn, sökväg och huvuden — men inget `TenantContext` och ingen väg till
-  // register, filer eller lagring. Den kan alltså varken se eller påverka vilken app det gäller.
+  // Ingen krok ⇒ inga inloggningsrutter. 404, och framför allt: ALDRIG vidare till appens filer.
+  // Före kroppen: en rutt som inte finns ska inte kosta en inläsning.
+  if (typeof provider.handleAuthRoute !== 'function') throw notFound();
+
+  // Kroppen bara vid POST, rå, med ett litet eget tak: ett formulär med adress eller kod. Över
+  // taket ⇒ 413 (readBody slutar spara vid gränsen och litar inte på Content-Length), och
+  // leverantören tillfrågas inte. GET får ingen kropp, även om klienten skickar en.
+  const body = context.method === 'POST' ? new Uint8Array(await readBody(context.request, MAX_AUTH_BODY_BYTES)) : undefined;
+
+  // Leverantören får värdnamn, sökväg, huvuden och kropp — men inget `TenantContext` och ingen väg
+  // till register, filer eller lagring. Den kan alltså varken se eller påverka vilken app det gäller.
   const request: AuthRouteRequest = {
     host: context.hostname,
     headers: context.headers,
     method: context.method,
     path: `/${context.segments.join('/')}`,
     query,
+    ...(context.clientAddress === undefined ? {} : { clientAddress: context.clientAddress }),
+    ...(body === undefined ? {} : { body }),
   };
-
-  // Ingen krok ⇒ inga inloggningsrutter. 404, och framför allt: ALDRIG vidare till appens filer.
-  if (typeof provider.handleAuthRoute !== 'function') throw notFound();
 
   let candidate: unknown;
   try {

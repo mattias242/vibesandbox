@@ -95,6 +95,17 @@ const API_SEGMENT = API_PREFIX.slice(1);
 /** Fält som fylls i allteftersom stegen passeras, så att loggposten säger hur långt förfrågan kom. */
 type RequestTrace = { -readonly [K in Exclude<keyof GatewayLogEntry, 'level' | 'event'>]?: GatewayLogEntry[K] };
 
+/**
+ * Klientens adress för leverantörens hastighetsbegränsning: TCP-anslutningens motpart. ALDRIG
+ * `X-Forwarded-For`, `Forwarded` eller liknande — de skriver klienten själv. Bakom en omvänd proxy
+ * blir det proxyns adress; att lita på ett huvud därifrån kräver att proxyn är känd, och det
+ * beslutet hör inte hemma i en förfrågningshanterare.
+ */
+function clientAddressOf(request: IncomingMessage): string | undefined {
+  const address = request.socket.remoteAddress;
+  return typeof address === 'string' && address.length > 0 ? address : undefined;
+}
+
 function isIdentity(value: unknown): value is Identity {
   if (typeof value !== 'object' || value === null) return false;
   const { userId, email, roles } = value as Record<string, unknown>;
@@ -110,7 +121,12 @@ async function authenticate(
 ): Promise<Identity | null> {
   let identity: Identity | null;
   try {
-    identity = await provider.authenticate({ host: hostname, headers: toAuthHeaders(request.headers) });
+    const clientAddress = clientAddressOf(request);
+    identity = await provider.authenticate({
+      host: hostname,
+      headers: toAuthHeaders(request.headers),
+      ...(clientAddress === undefined ? {} : { clientAddress }),
+    });
   } catch (error) {
     // 401 och inte 500: för den som anropar är läget "din inloggning kunde inte bekräftas", och
     // rätt åtgärd är att logga in igen. 500 skulle dessutom berätta för en angripare exakt vilka
@@ -203,6 +219,7 @@ async function handle(
   if (target !== 'ogiltig' && target.segments[0] === AUTH_SEGMENT) {
     trace.route = 'auth';
     await handleAuthRoute({
+      request,
       response,
       provider: options.identityProvider,
       log,
@@ -211,6 +228,7 @@ async function handle(
       segments: target.segments,
       rawQuery: target.query,
       headers: toAuthHeaders(request.headers),
+      clientAddress: clientAddressOf(request),
     });
     return;
   }
