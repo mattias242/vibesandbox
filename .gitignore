@@ -1,0 +1,26 @@
+# Internt referensmaterial och anteckningar — får ALDRIG publiceras
+referens/
+vault/
+
+# Hemligheter och lokal konfiguration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Plattformens data (appars databaser och filer)
+data/
+
+# Beroenden och byggresultat
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+
+# OS och editor
+.DS_Store
+.idea/
+.vscode/
