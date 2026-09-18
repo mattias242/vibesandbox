@@ -4,8 +4,9 @@
  *   npm run dev -w @vibesandbox/platform
  *
  * Bygger appmallen, ser till att det finns en app i den lokala datakatalogen, publicerar bygget
- * och startar plattformen. Skriver sedan ut appens adress, en klickbar inloggningsadress för
- * webbläsaren och ett färdigt `Authorization`-värde, så att det går att prova med curl direkt.
+ * och startar plattformen. Skriver sedan ut appens adress, klickbara inloggningsadresser för
+ * webbläsaren (appen och byggverktyget) och ett färdigt `Authorization`-värde, så att det går att
+ * prova med curl direkt.
  *
  * Allt går genom samma `loadConfig` som i drift — även här vägrar plattformen alltså starta med
  * testinloggningen om NODE_ENV=production. Hemligheten slumpas fram vid varje start om ingen är
@@ -14,6 +15,7 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { join, resolve } from 'node:path';
+import { BUILDER_HOST_LABEL } from '@vibesandbox/contracts';
 import { createControl } from '@vibesandbox/control';
 import { signTestIdentity, testLoginPath } from '@vibesandbox/gateway';
 import { loadConfig } from './config.ts';
@@ -68,6 +70,9 @@ try {
   // Adressen ÄR inloggningen. Den skrivs bara till den lokala terminalen (standard fel), aldrig
   // till driftloggen, och hemligheten bakom den slumpas om vid nästa start.
   const loginAddress = `${origin}${testLoginPath(DEV_IDENTITY, config.identity.testSecret, lifetime)}`;
+  // Inloggning sker per värd (host-only-kakor), så byggverktyget har en egen inloggningsadress.
+  const builderOrigin = `http://${BUILDER_HOST_LABEL}.${config.baseDomain}:${listening.port}`;
+  const builderLoginAddress = `${builderOrigin}${testLoginPath(DEV_IDENTITY, config.identity.testSecret, lifetime)}`;
   console.error(
     [
       '',
@@ -77,6 +82,9 @@ try {
       '',
       'Öppna i webbläsaren — adressen loggar in webbläsaren som utvecklingsanvändaren:',
       `  ${loginAddress}`,
+      '',
+      'Byggverktyget — adressen loggar in webbläsaren där:',
+      `  ${builderLoginAddress}`,
       '',
       'Prova med curl:',
       `  curl -H 'Authorization: ${authorization}' ${address}`,
