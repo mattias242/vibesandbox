@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Stubb för kommandon som inte går att köra i en engångscontainer (systemd, apt, tailscale,
+# docker, sysctl, swap, mount …). Symlänkas under varje kommandonamn och läggs först i PATH.
+#
+# Varje anrop loggas i $STUBBKATALOG/anrop.log så att testerna kan kontrollera VAD skripten
+# gjorde och i vilken ordning. Ett litet tillstånd (maskad/aktiverad/aktiv, installerade paket,
+# tailscale uppe …) hålls i filer, så att ett andra varv ser resultatet av det första — det är
+# det som gör idempotenstestet meningsfullt.
+
+set -uo pipefail
+
+NAMN="$(basename "$0")"
+STUBBKATALOG="${STUBBKATALOG:-/var/lib/stubb}"
+T="${STUBBKATALOG}/tillstand"
+mkdir -p "$T"/{maskad,aktiverad,aktiv,paket}
+
+# Hemligheter får inte hamna i loggen — och testet kontrollerar just det.
+printf '%s %s\n' "$NAMN" "$*" >>"${STUBBKATALOG}/anrop.log"
+
+# Argument som inte är flaggor.
+ord=()
+for a in "$@"; do [[ "$a" == -* ]] || ord+=("$a"); done
+
+case "$NAMN" in
+  systemctl)
+    verb="${ord[0]:-}"
+    enheter=("${ord[@]:1}")
+    case "$verb" in
+      is-enabled)
+        e="${enheter[0]}"
+        if [[ -e "$T/maskad/$e" ]]; then echo masked; exit 1; fi
+        if [[ -e "$T/aktiverad/$e" ]]; then echo enabled; exit 0; fi
+        echo disabled; exit 1 ;;
+      is-active)
+        [[ -e "$T/aktiv/${enheter[0]}" ]] && exit 0
+        exit 3 ;;
+      unmask) for e in "${enheter[@]}"; do rm -f "$T/maskad/$e"; done ;;
+      mask) for e in "${enheter[@]}"; do touch "$T/maskad/$e"; done ;;
+      enable)
+        for e in "${enheter[@]}"; do
+          [[ -e "$T/maskad/$e" ]] && { echo "Failed to enable unit: Unit $e is masked" >&2; exit 1; }
+          touch "$T/aktiverad/$e" "$T/aktiverad/${e%.service}" "$T/aktiverad/${e%.service}.service"
+          if [[ " $* " == *" --now "* ]]; then touch "$T/aktiv/$e" "$T/aktiv/${e%.service}" "$T/aktiv/${e%.service}.service"; fi
+        done ;;
+      restart | start) for e in "${enheter[@]}"; do touch "$T/aktiv/$e"; done ;;
+      list-timers)
+        for e in "${enheter[@]}"; do
+          [[ -e "$T/aktiv/$e" ]] && echo "Sat 2026-09-19 06:12:00 CEST 12h - - $e ${e%.timer}.service"
+        done ;;
+      list-unit-files)
+        for f in "$T"/maskad/*; do [[ -e "$f" ]] && echo "$(basename "$f") masked enabled"; done ;;
+      show) echo 0 ;;
+      cat) cat "/etc/systemd/system/${enheter[0]}.d/"*.conf 2>/dev/null ;;
+      *) : ;;   # reload, daemon-reload, try-reload-or-restart: bara loggning
+    esac ;;
+
+  apt-get)
+    if [[ "${ord[0]:-}" == "install" ]]; then
+      for p in "${ord[@]:1}"; do
+        touch "$T/paket/$p"
+        # Spåra ordningen: fanns daemon.json när Docker installerades?
+        if [[ "$p" == "docker-ce" ]]; then
+          if [[ -s /etc/docker/daemon.json ]]; then echo "daemon.json-fanns-fore-installation" >>"${STUBBKATALOG}/anrop.log"; fi
+          if nft list table inet vibesandbox >/dev/null 2>&1; then echo "brandvagg-fanns-fore-installation" >>"${STUBBKATALOG}/anrop.log"; fi
+        fi
+      done
+    fi ;;
+
+  dpkg-query)
+    # 'dpkg-query -W -f=… <paket>': stubbinstallerade paket räknas som installerade.
+    p="${ord[-1]:-}"
+    if [[ -e "$T/paket/$p" ]]; then printf 'installed'; exit 0; fi
+    exec /usr/bin/dpkg-query "$@" ;;
+
+  tailscale)
+    case "${ord[0]:-}" in
+      ip) [[ -e "$T/tailscale-uppe" ]] && { echo 100.64.0.5; exit 0; }; exit 1 ;;
+      up)
+        for a in "$@"; do
+          if [[ "$a" == --auth-key=file:* ]]; then
+            fil="${a#--auth-key=file:}"
+            [[ -s "$fil" ]] || { echo "nyckelfilen saknas" >&2; exit 1; }
+            stat -c '%a' "$fil" >"$T/tailscale-nyckelfil-lage"
+          fi
+        done
+        touch "$T/tailscale-uppe" ;;
+      *) : ;;
+    esac ;;
+
+  docker)
+    case "$*" in
+      *SecurityOptions*) echo '["name=apparmor","name=seccomp,profile=builtin","name=cgroupns","name=userns","name=no-new-privileges"]' ;;
+      *CgroupDriver*) echo systemd ;;
+      *CgroupVersion*) echo 2 ;;
+      *LiveRestoreEnabled*) echo true ;;
+      *DefaultRuntime*) echo runc ;;
+      *LoggingDriver*) echo json-file ;;
+      *DockerRootDir*) echo /var/lib/docker/100000.100000 ;;
+      *enable_icc*) echo false ;;
+      *Runtimes*) if grep -q runsc /etc/docker/daemon.json 2>/dev/null; then echo "runc runsc "; else echo "runc "; fi ;;
+      *.Driver*) echo overlay2 ;;
+      *) : ;;
+    esac ;;
+
+  dockerd) : ;;
+
+  sysctl)
+    if [[ "${1:-}" == "-n" ]]; then
+      # Låtsas att våra värden är inlästa: slå upp nyckeln i vår sysctl-fil.
+      v="$(sed -n "s/^-\{0,1\}${2//./\\.} *= *//p" /etc/sysctl.d/zz-vibesandbox.conf 2>/dev/null | tail -n1)"
+      [[ -n "$v" ]] && { echo "$v"; exit 0; }
+      exit 1
+    fi ;;
+
+  swapon)
+    if [[ "$*" == *--show* ]]; then
+      [[ -e "$T/swap-aktiv" ]] || exit 0
+      if [[ "$*" == *PRIO* ]]; then printf '/dev/zram0 100\n/swapfile 10\n'; else echo /swapfile; fi
+    else
+      touch "$T/swap-aktiv"
+    fi ;;
+
+  fallocate)
+    # Riktig förallokering skulle skriva gigabyte i containern; en gles fil räcker för testet.
+    truncate -s "$2" "$3" ;;
+
+  mkswap) : ;;
+
+  mount) touch "$T/docker-monterad" ;;
+
+  findmnt)
+    [[ -e "$T/docker-monterad" ]] || exit 1
+    if [[ "$*" == *FSTYPE* ]]; then echo xfs; else echo "rw,relatime,prjquota"; fi ;;
+
+  timedatectl) echo yes ;;
+
+  qemu-ga)
+    case "$*" in
+      *--help*) echo "  -b, --block-rpcs  comma-separated list of RPCs to disable" ;;
+      *-D*) echo "[general]"; grep -E '^(block-rpcs|blacklist)=' /etc/qemu/qemu-ga.conf 2>/dev/null ;;
+    esac ;;
+
+  ss)
+    # Bara i de tester som uttryckligen länkar in den: utdata styrs av en fil.
+    if [[ "$*" == *established* ]]; then
+      cat "${STUBBKATALOG}/ss-etablerade" 2>/dev/null
+    else
+      cat "${STUBBKATALOG}/ss-lyssnare" 2>/dev/null
+    fi ;;
+
+  *) echo "stubb: okänt kommando $NAMN" >&2; exit 127 ;;
+esac
+exit 0
