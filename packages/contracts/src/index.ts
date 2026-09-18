@@ -156,6 +156,7 @@ export type ApiErrorCode =
   | 'unauthenticated'
   | 'forbidden'
   | 'not_found'
+  | 'method_not_allowed'
   | 'invalid_request'
   | 'scope_mismatch'
   | 'quota_exceeded'
@@ -175,6 +176,7 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = {
   unauthenticated: 401,
   forbidden: 403,
   not_found: 404,
+  method_not_allowed: 405,
   invalid_request: 400,
   scope_mismatch: 409,
   quota_exceeded: 507,
@@ -305,6 +307,11 @@ export interface AppFile {
 /**
  * Appens byggda, statiska filer. `path` är redan normaliserad av gatewayn, börjar med `/`
  * och innehåller inga `..`-segment. `null` ⇒ filen finns inte.
+ *
+ * KRAV på implementationen: slå upp `path` som en EXAKT nyckel i ett manifest över de filer
+ * bygget producerade — bygg aldrig en disksökväg av den. Gatewayn tillåter Unicode-bokstäver i
+ * segment, och en kompatibilitetsnormalisering (NFKC) gör t.ex. `．．` till `..`. Normalisera
+ * därför aldrig `path`; en sökväg som inte finns ordagrant i manifestet ger `null`.
  */
 export interface AppFiles {
   read(tenant: TenantContext, path: string): Promise<AppFile | null>;
