@@ -182,6 +182,16 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = {
  * Lagringsgränssnittet som @vibesandbox/data-api implementerar och gatewayn anropar.
  * Varje metod kräver ett TenantContext; det finns inget sätt att nå data utan ett.
  * Fel signaleras med `DataApiError`.
+ *
+ * Regler för scope:
+ * - En kollektion skapas — och dess scope låses — vid första `createDocument`. ENDAST då.
+ * - En läsning skapar eller låser aldrig något: `listDocuments` mot en kollektion som inte
+ *   finns ger en tom sida oavsett angivet scope. (Annars kunde en användare låsa en kollektion
+ *   som gemensam innan appen hunnit skapa den som personlig.)
+ * - `listDocuments`/`createDocument` med annat scope än det låsta ⇒ `scope_mismatch`.
+ * - `getDocument`/`replaceDocument`/`deleteDocument` tar inget scope; det härleds ur
+ *   kollektionens låsta scope. I en `user`-kollektion ger någon annans dokument `not_found`
+ *   (aldrig `forbidden` — existensen ska inte röjas).
  */
 export interface TenantStore {
   listDocuments(
