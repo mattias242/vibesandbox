@@ -261,3 +261,31 @@ export const APP_CONTENT_SECURITY_POLICY = [
   "form-action 'self'",
   "manifest-src 'none'",
 ].join('; ');
+
+// ── Appregister och appfiler (det gatewayn behöver veta om en app) ──────────────
+
+export interface RegisteredApp {
+  readonly appId: AppId;
+  /** Finns en granskad, publicerad version att servera? */
+  readonly published: boolean;
+  /** Finns ett utkast att förhandsvisa? */
+  readonly draft: boolean;
+}
+
+/** Implementeras av control-modulen. Okänt app-id ⇒ `null` ⇒ gatewayn svarar 404. */
+export interface AppRegistry {
+  find(appId: AppId): Promise<RegisteredApp | null>;
+}
+
+export interface AppFile {
+  readonly body: Uint8Array;
+  readonly contentType: string;
+}
+
+/**
+ * Appens byggda, statiska filer. `path` är redan normaliserad av gatewayn, börjar med `/`
+ * och innehåller inga `..`-segment. `null` ⇒ filen finns inte.
+ */
+export interface AppFiles {
+  read(tenant: TenantContext, path: string): Promise<AppFile | null>;
+}
