@@ -1,0 +1,17 @@
+{
+  "name": "@vibesandbox/agent",
+  "version": "0.0.0",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "description": "Agentloopen: ett önskemål blir källfiler som byggs och rättas i några tillståndslösa varv.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@vibesandbox/contracts": "*"
+  },
+  "devDependencies": {
+    "@vibesandbox/llm": "*"
+  }
+}
