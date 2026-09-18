@@ -123,7 +123,9 @@ describe('Plattformen som en riktig server', () => {
     expect(svar.status).toBe(200);
     expect(svar.body).toContain('Publicerad app');
     expect(svar.headers['content-type']).toBe('text/html; charset=utf-8');
-    expect(svar.headers['content-security-policy']).toBe(APP_CONTENT_SECURITY_POLICY);
+    // Varje direktiv ur kontraktet, plus gatewayns `frame-ancestors 'none'` för en publicerad app.
+    const regler = String(svar.headers['content-security-policy']).split(';').map((del) => del.trim());
+    expect([...regler].sort()).toEqual([...APP_CONTENT_SECURITY_POLICY.split('; '), "frame-ancestors 'none'"].sort());
     expect(svar.headers['x-content-type-options']).toBe('nosniff');
   });
 

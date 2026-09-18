@@ -1,12 +1,12 @@
 /**
  * Säkerhetshuvuden ska sitta på VARJE svar gatewayn ger — lyckat eller inte, API eller
- * statisk fil — och appens egen kod kan aldrig ersätta dem. `X-Frame-Options`/
- * frame-ancestors testas inte här (skalet är inte byggt än, se uppdraget). Se contracts
- * APP_CONTENT_SECURITY_POLICY och features/isolering/ringa-hem.feature.
+ * statisk fil — och appens egen kod kan aldrig ersätta dem. `frame-ancestors` per värdsort
+ * prövas i inramning.test.ts; här är alla värdar publicerade appar eller ogiltiga, som inte får
+ * ramas in alls. Se contracts APP_CONTENT_SECURITY_POLICY och features/isolering/ringa-hem.feature.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { APP_CONTENT_SECURITY_POLICY } from '@vibesandbox/contracts';
 import { createGateway } from '../src/index.ts';
+import { forvantaAppensCsp, INGEN_INRAMNING } from './csp.ts';
 import { anropa, enHuvud, startaTestserver } from './hjalp.ts';
 import type { AnropSvar, Testserver } from './hjalp.ts';
 import {
@@ -19,7 +19,7 @@ import {
 } from './fejkar.ts';
 
 function forvantaSakerhetshuvuden(svar: AnropSvar) {
-  expect(enHuvud(svar, 'Content-Security-Policy')).toBe(APP_CONTENT_SECURITY_POLICY);
+  forvantaAppensCsp(svar, INGEN_INRAMNING);
   expect(enHuvud(svar, 'X-Content-Type-Options')).toBe('nosniff');
   expect(enHuvud(svar, 'Referrer-Policy')).toBe('no-referrer');
 }
@@ -118,6 +118,6 @@ describe('säkerhetshuvuden på alla svar', () => {
 
     const svar = await anropa({ port: server.port, path: '/', host: vardnamnForApp(appId) });
 
-    expect(enHuvud(svar, 'Content-Security-Policy')).toBe(APP_CONTENT_SECURITY_POLICY);
+    forvantaAppensCsp(svar, INGEN_INRAMNING);
   });
 });
