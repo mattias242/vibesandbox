@@ -20,13 +20,14 @@ import type {
 } from '@vibesandbox/contracts';
 import { dataApiError } from './fel.ts';
 import type { TenantHandle } from './handtag.ts';
-import { newDocumentId } from './id.ts';
+import { nextDocumentId } from './id.ts';
 import { encodeCursor } from './markor.ts';
 import {
   COUNT_COLLECTIONS,
   DELETE_DOCUMENT,
   INSERT_COLLECTION,
   INSERT_DOCUMENT,
+  SELECT_LAST_DOCUMENT_ID,
   LIST_APP_DOCUMENTS,
   LIST_USER_DOCUMENTS,
   SELECT_COLLECTION_SCOPE,
@@ -85,7 +86,7 @@ export function createDocument(
   limits: TenantLimits,
   request: CreateRequest,
 ): StoredDocument {
-  const id = newDocumentId();
+  let id = '';
   const now = new Date().toISOString();
 
   // En transaktion: kollektionen får inte bli kvar om dokumentet inte fick plats, och två
@@ -107,6 +108,12 @@ export function createDocument(
     } else {
       assertSameScope(lockedScope, request.scope);
     }
+
+    // Id:t väljs INNE i transaktionen, mot kollektionens största id just nu: då kan inget annat
+    // dokument hinna emellan, och ordningen håller även efter omstart eller bakåtställd klocka.
+    const last: Row | undefined = handle.statement(SELECT_LAST_DOCUMENT_ID).get({ collection: request.collection });
+    const previous = last?.['senaste'];
+    id = nextDocumentId(typeof previous === 'string' ? previous : undefined);
 
     handle.statement(INSERT_DOCUMENT).run({
       collection: request.collection,
