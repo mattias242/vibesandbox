@@ -1,0 +1,109 @@
+# vibesandbox i drift: en docker compose-stack på en enda värd (se deploy/README.md).
+#
+#   internet ─443─► caddy ──(nät "inre", internt)──► platform
+#                                                     │
+#                                  egress ◄───────────┘  enda vägen ut, bara listade värdnamn
+#                                    │
+#                                 (nät "ut") ─► modelleverantör, mejltjänst
+#
+# Plattformen står ENBART på det interna nätet: den når varken internet, värden eller andra
+# containrar utöver proxyn. Varje tjänst får bara de hemligheter den själv behöver.
+
+name: vibesandbox
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  init: true
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  caddy:
+    <<: *hardening
+    build: ./caddy
+    image: vibesandbox-caddy:lokal
+    cap_add: [NET_BIND_SERVICE]
+    ports: ["443:443"]
+    environment:
+      BASE_DOMAIN: ${BASE_DOMAIN:?BASE_DOMAIN saknas}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL saknas}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN saknas}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    tmpfs: [/tmp]
+    networks: [inre, ut]
+    depends_on: [platform]
+    mem_limit: 256m
+    pids_limit: 256
+
+  egress:
+    <<: *hardening
+    image: vibesandbox-platform:lokal
+    command: ["node", "apps/egress/src/main.ts"]
+    user: "10001:10001"
+    environment:
+      EGRESS_ALLOW: ${EGRESS_ALLOW:-api.berget.ai:443,api.eu.mailgun.net:443}
+    networks: [inre, ut]
+    depends_on: [platform]
+    mem_limit: 128m
+    pids_limit: 64
+
+  platform:
+    <<: *hardening
+    build:
+      context: ..
+      dockerfile: deploy/platform.Dockerfile
+    image: vibesandbox-platform:lokal
+    user: "10001:10001"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      # Node 24 följer HTTPS_PROXY bara med den här flaggan. Utan den försöker fetch gå direkt —
+      # vilket misslyckas på det interna nätet (säkert felläge), men ingenting fungerar då.
+      NODE_USE_ENV_PROXY: "1"
+      HTTPS_PROXY: http://egress:3128
+      NO_PROXY: localhost,127.0.0.1
+      BASE_DOMAIN: ${BASE_DOMAIN:?BASE_DOMAIN saknas}
+      APP_DOMAIN: ${APP_DOMAIN:-${BASE_DOMAIN}}
+      DATA_DIR: /data
+      PORT: "8787"
+      LISTEN_HOST: 0.0.0.0
+      PUBLIC_SCHEME: ${PUBLIC_SCHEME:-https}
+      PUBLIC_PORT: ${PUBLIC_PORT:-}
+      IDENTITY_PROVIDER: ${IDENTITY_PROVIDER:-email-otp}
+      IDENTITY_SECRET: ${IDENTITY_SECRET:-}
+      TEST_IDENTITY_SECRET: ${TEST_IDENTITY_SECRET:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.berget.ai/v1}
+      LLM_MODEL: ${LLM_MODEL:-zai-org/GLM-5.3-Flash}
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-low}
+      BERGET_API_KEY: ${BERGET_API_KEY:-}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      BUILD_DRIVER: spool
+      BUILD_JOBS_DIR: /jobs
+    volumes:
+      - ${DATA_ROOT:-/srv/vibesandbox/data}:/data
+      - byggjobb:/jobs
+    tmpfs: [/tmp]
+    networks: [inre]
+    mem_limit: 1024m
+    pids_limit: 256
+
+networks:
+  # Internt: ingen utgång från nätet. Här står plattformen, och hit når caddy och egress.
+  inre:
+    internal: true
+  # Vanligt bryggnät med utgång. Bara caddy (Let's Encrypt, DNS-API) och egress står här.
+  # Värdens brandvägg spärrar dessutom tailnetet, privata nät, metadataadressen och SMTP.
+  ut: {}
+
+volumes:
+  caddy-data:
+  caddy-config:
+  byggjobb:

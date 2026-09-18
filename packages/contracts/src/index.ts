@@ -58,8 +58,14 @@ export interface Identity {
 
 /** Det gatewayn ger en identitetsleverantör att arbeta med. Inga Node-typer här. */
 export interface AuthRequest {
+  /** Värdnamnet UTAN port, härlett ur gatewayns värdnamnstolkning. Porten finns i `headers.host`. */
   readonly host: string;
   readonly headers: Readonly<Record<string, string | undefined>>;
+  /**
+   * Klientens adress enligt TCP-anslutningen till plattformen (bakom en omvänd proxy: proxyns
+   * adress). Aldrig ur `X-Forwarded-For` — ett huvud går att förfalska. För hastighetsbegränsning.
+   */
+  readonly clientAddress?: string;
 }
 
 /**
@@ -110,7 +116,22 @@ export interface AuthRouteRequest extends AuthRequest {
   readonly path: string;
   /** Frågeparametrar. En parameter som förekommer flera gånger ger 400 innan leverantören anropas. */
   readonly query: Readonly<Record<string, string>>;
+  /**
+   * Förfrågningskroppen, rå. Finns bara vid POST. Gatewayn läser den med ett litet tak
+   * (`MAX_AUTH_BODY_BYTES`, 413 annars) och tolkar den inte — leverantören tolkar t.ex.
+   * `application/x-www-form-urlencoded` själv och kontrollerar `Content-Type`.
+   */
+  readonly body?: Uint8Array;
 }
+
+/** Största kropp till en inloggningsrutt. Ett formulär med e-postadress eller kod ryms med marginal. */
+export const MAX_AUTH_BODY_BYTES = 8 * 1024;
+
+/**
+ * Statuskoder en inloggningsrutt får svara med. Gatewayn gör allt annat till 500.
+ * 403 behövs: leverantören nekar själv POST utan exakt rätt `Origin` (rutterna körs före CSRF-steget).
+ */
+export const AUTH_ROUTE_STATUSES: readonly number[] = [200, 303, 400, 401, 403, 404, 405, 413, 429];
 
 export interface AuthRouteResponse {
   readonly status: number;

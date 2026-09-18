@@ -1,0 +1,32 @@
+# Lokal provkörning av driftstacken, ovanpå compose.yml:
+#   docker compose -f compose.yml -f compose.lokal.yml up --build
+# Skillnader mot drift: Caddys egen certifikatutfärdare i stället för Let's Encrypt (ingen
+# DNS-token behövs), *.localtest.me (pekar på 127.0.0.1), port 8443, testinloggning och
+# plattformen i utvecklingsläge. Allt annat — nät, härdning, proxyn — är detsamma som i drift.
+services:
+  caddy:
+    ports: !override ["127.0.0.1:8443:443"]
+    environment:
+      BASE_DOMAIN: localtest.me
+      ACME_EMAIL: drift@example.org
+      CLOUDFLARE_API_TOKEN: används-inte-lokalt
+    volumes: !override
+      - ./Caddyfile.lokal:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  platform:
+    environment:
+      NODE_ENV: development
+      BASE_DOMAIN: localtest.me
+      APP_DOMAIN: localtest.me
+      PUBLIC_SCHEME: https
+      PUBLIC_PORT: "8443"
+      IDENTITY_PROVIDER: test
+      TEST_IDENTITY_SECRET: ${TEST_IDENTITY_SECRET:?TEST_IDENTITY_SECRET saknas}
+    volumes: !override
+      - lokal-data:/data
+      - byggjobb:/jobs
+
+volumes:
+  lokal-data:
