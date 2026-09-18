@@ -360,3 +360,237 @@ export interface AppFile {
 export interface AppFiles {
   read(tenant: TenantContext, path: string): Promise<AppFile | null>;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Byggverktyget
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Flödet: en användare skriver vad appen ska göra → agenten ber språkmodellen om HELA
+// källfiler → byggkedjan kontrollerar (policy, typer) och bygger dem i en sandlåda utan nät →
+// fel matas tillbaka till modellen i några varv → ett grönt bygge blir appens UTKAST, som
+// förhandsvisas på `p-<appId>.<BASE_DOMAIN>` → användaren publicerar.
+
+/** Byggverktygets värd: `bygg.<BASE_DOMAIN>`. Kan aldrig krocka med ett app-id (26 tecken). */
+export const BUILDER_HOST_LABEL = 'bygg';
+
+// ── Språkmodell ─────────────────────────────────────────────────────────────────
+
+export interface ChatMessage {
+  readonly role: 'system' | 'user' | 'assistant';
+  readonly content: string;
+}
+
+export interface CompletionRequest {
+  readonly messages: readonly ChatMessage[];
+  readonly maxTokens: number;
+  readonly temperature: number;
+  readonly signal?: AbortSignal;
+  /** Anropas med varje ny textbit när leverantören strömmar — för framstegsvisning, inte för tolkning. */
+  readonly onText?: (chunk: string) => void;
+}
+
+export interface CompletionResult {
+  readonly text: string;
+  /** `length` ⇒ svaret kapades och får ALDRIG tolkas som komplett. */
+  readonly finishReason: 'stop' | 'length' | 'other';
+  /** Kan saknas hos vissa leverantörer; räkna då själv som reserv. */
+  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
+  /** Modellens fullständiga id som faktiskt svarade — till AI-registret. */
+  readonly model: string;
+}
+
+/**
+ * Utbytbar leverantör: `complete(messages) → text`. Inget beroende av leverantörens verktygsanrop
+ * (tool calling), som är den största felkällan hos öppna modeller. Leverantören ansvarar för
+ * PII-maskning FAIL-CLOSED av användarens text innan något lämnar servern.
+ */
+export interface LlmProvider {
+  readonly name: string;
+  complete(request: CompletionRequest): Promise<CompletionResult>;
+}
+
+// ── Byggkedjan ──────────────────────────────────────────────────────────────────
+
+/** Appens egna källfiler: sökväg (`src/…`) → innehåll. Mallens filer ingår INTE och vinner alltid. */
+export type SourceFiles = Readonly<Record<string, string>>;
+
+export interface Diagnostic {
+  /** `policy` = otillåtet innehåll eller filnamn; `typecheck` = TypeScript; `build` = Vite. */
+  readonly source: 'policy' | 'typecheck' | 'build';
+  readonly file?: string;
+  readonly line?: number;
+  /** Kort och konkret — matas tillbaka till modellen. Inga absoluta sökvägar från värden. */
+  readonly message: string;
+}
+
+export interface BuildResult {
+  readonly ok: boolean;
+  /**
+   * Katalog med byggda filer, redo för `control.importVersion`. Finns bara när `ok`.
+   * Katalogen tillhör anroparen tills `dispose` anropas.
+   */
+  readonly outputDirectory?: string;
+  readonly diagnostics: readonly Diagnostic[];
+  readonly durationMs: number;
+  dispose(): Promise<void>;
+}
+
+/**
+ * Bygger appens källfiler tillsammans med den låsta mallen. Ordning: policy → typkontroll →
+ * bygge → kontroll av det byggda. Opålitlig kod: i drift sker allt i en engångscontainer utan nät.
+ * Högst ETT bygge åt gången (VPS XS); fler köas.
+ */
+export interface BuildRunner {
+  build(files: SourceFiles, options?: { readonly signal?: AbortSignal }): Promise<BuildResult>;
+}
+
+// ── Agenten ─────────────────────────────────────────────────────────────────────
+
+/** Framsteg under en tur, i klarspråk. Visas för användaren och sparas med jobbet. */
+export type AgentEvent =
+  | { readonly type: 'status'; readonly message: string }
+  | { readonly type: 'progress'; readonly outputChars: number }
+  | { readonly type: 'files'; readonly paths: readonly string[] }
+  | { readonly type: 'check'; readonly ok: boolean; readonly problems: number }
+  | { readonly type: 'done'; readonly ok: boolean; readonly message: string };
+
+export interface ConversationEntry {
+  readonly role: 'user' | 'assistant';
+  readonly text: string;
+}
+
+export interface AgentTurnInput {
+  /** Det användaren just bad om. */
+  readonly request: string;
+  /** Tidigare önskemål och svar i samma app — ALDRIG appens körtidsdata. */
+  readonly history: readonly ConversationEntry[];
+  /** Appens nuvarande källfiler (senaste gröna). Tom för en ny app. */
+  readonly currentFiles: SourceFiles;
+  readonly signal?: AbortSignal;
+  readonly onEvent?: (event: AgentEvent) => void;
+}
+
+export interface AgentTurnResult {
+  readonly ok: boolean;
+  /** Vid `ok`: de nya källfilerna. Annars de oförändrade `currentFiles`. */
+  readonly files: SourceFiles;
+  /** Vid `ok`: det gröna bygget. Anroparen importerar och anropar sedan `dispose`. */
+  readonly build?: BuildResult;
+  /** Klarspråk till användaren: vad som gjordes, eller varför det inte gick. */
+  readonly summary: string;
+  readonly rounds: number;
+  readonly model: string;
+  readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
+}
+
+export interface Agent {
+  runTurn(input: AgentTurnInput): Promise<AgentTurnResult>;
+}
+
+// ── Byggverktygets värd i gatewayn ──────────────────────────────────────────────
+
+/**
+ * Det gatewayn lämnar till byggverktyget för ALLA förfrågningar på `bygg.<BASE_DOMAIN>`, utom
+ * `/_auth/…` — EFTER skyddshuvuden, formkontroll, service worker-spärr, inloggning och en STRIKT
+ * CSRF-kontroll (skrivande metoder kräver skyddshuvudet OCH `Origin` exakt lika med byggverktygets
+ * origin; `SameSite` skyddar inte mellan subdomäner, mätt i spik S1).
+ */
+export interface PlatformRequest {
+  readonly method: string;
+  /** Normaliserad av gatewayn, börjar med `/`. */
+  readonly path: string;
+  readonly query: Readonly<Record<string, string>>;
+  readonly headers: Readonly<Record<string, string | undefined>>;
+  /** Högst `MAX_REQUEST_BODY_BYTES`. */
+  readonly body?: Uint8Array;
+  readonly identity: Identity;
+}
+
+export interface PlatformResponse {
+  readonly status: number;
+  /** Bara `Content-Type` och `Cache-Control` släpps igenom; skyddshuvudena vinner alltid. */
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body?: string | Uint8Array;
+}
+
+export interface BuilderHandler {
+  handle(request: PlatformRequest): Promise<PlatformResponse>;
+}
+
+/**
+ * CSP för byggverktyget. Förhandsvisningen ramas in från `frame-src`, som gatewayn fyller i med
+ * mönstret för förhandsvisningsvärdar (`<schema>://*.<BASE_DOMAIN>[:port]`). Byggverktyget självt
+ * får aldrig ramas in av någon.
+ */
+export function builderContentSecurityPolicy(previewFrameSource: string): string {
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    `frame-src ${previewFrameSource}`,
+    "frame-ancestors 'none'",
+    "worker-src 'none'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+  ].join('; ');
+}
+
+// ── Byggverktygets HTTP-gränssnitt (det builder-ui talar med) ───────────────────
+//
+// Allt under `/_api/builder` på byggverktygets egen origin. Kräver rollen `builder` eller `admin`.
+// En app som inte ägs av den som frågar "finns inte" (404) — existensen röjs aldrig.
+// Skrivande anrop: skyddshuvudet `CSRF_HEADER: 1` och exakt `Origin`.
+//
+//   GET  /_api/builder/me                          → BuilderMe
+//   GET  /_api/builder/apps                        → { apps: BuilderAppSummary[] }
+//   POST /_api/builder/apps        { name? }       → 201 { appId }
+//   GET  /_api/builder/apps/:appId                 → BuilderAppDetail
+//   POST /_api/builder/apps/:appId/messages { text } → 202 { jobId }   (409 om ett jobb redan pågår)
+//   GET  /_api/builder/jobs/:jobId?after=<n>       → BuilderJob  (händelser från index n)
+//   POST /_api/builder/apps/:appId/publish         → { publishedUrl }  (409 om inget grönt utkast)
+//   GET  /_api/builder/apps/:appId/open?target=preview|published → { url }
+//        Absolut adress som loggar in webbläsaren på den värden och landar på `/`.
+//
+// Övriga sökvägar på byggverktygets värd serverar byggverktygets egna statiska filer (SPA).
+
+export const BUILDER_API_PREFIX = '/_api/builder';
+
+export interface BuilderMe {
+  readonly displayName: string;
+  readonly canBuild: boolean;
+}
+
+export interface BuilderAppSummary {
+  readonly appId: string;
+  readonly name: string;
+  readonly updatedAt: string;
+  readonly hasDraft: boolean;
+  readonly published: boolean;
+}
+
+export interface BuilderMessage {
+  readonly role: 'user' | 'assistant';
+  readonly text: string;
+  readonly createdAt: string;
+}
+
+export type BuilderJobStatus = 'queued' | 'running' | 'done' | 'failed';
+
+export interface BuilderAppDetail extends BuilderAppSummary {
+  readonly messages: readonly BuilderMessage[];
+  /** Pågående eller senaste jobb, så att en omladdad sida kan fortsätta följa det. */
+  readonly job?: { readonly jobId: string; readonly status: BuilderJobStatus };
+}
+
+export interface BuilderJob {
+  readonly jobId: string;
+  readonly appId: string;
+  readonly status: BuilderJobStatus;
+  readonly events: readonly AgentEvent[];
+  /** Skicka som `after` i nästa anrop. */
+  readonly next: number;
+}
