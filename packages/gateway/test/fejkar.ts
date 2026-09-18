@@ -11,6 +11,8 @@ import type {
   AppId,
   AppRegistry,
   AuthRequest,
+  AuthRouteRequest,
+  AuthRouteResponse,
   CollectionScope,
   DocumentPage,
   Identity,
@@ -71,6 +73,8 @@ export function skapaIdentitet(overrides: Partial<Identity> = {}): Identity {
 
 export interface FejkadIdentityProvider extends IdentityProvider {
   readonly anrop: AuthRequest[];
+  /** Varje anrop till `handleAuthRoute` (alltid tom för en leverantör utan kroken). */
+  readonly authRouteAnrop: AuthRouteRequest[];
 }
 
 /** En identitetsleverantör vars svar (eller kastade fel) styrs helt av testet. */
@@ -81,9 +85,36 @@ export function skapaFejkadIdentityProvider(
   return {
     name: 'fejk',
     anrop,
+    authRouteAnrop: [],
     async authenticate(request) {
       anrop.push(request);
       return beteende(request);
+    },
+  };
+}
+
+/**
+ * Leverantör MED kroken `handleAuthRoute`. Ruttens svar styrs helt av testet och är medvetet
+ * otypat (`unknown`): en fientlig eller slarvig leverantör håller sig inte till kontraktets
+ * typer, och gatewayn ska tåla vad som helst utan att släppa igenom det.
+ */
+export function skapaFejkadAuthRouteProvider(
+  rutt: (request: AuthRouteRequest) => unknown,
+  beteende: (request: AuthRequest) => Promise<Identity | null> | Identity | null = () => null,
+): FejkadIdentityProvider {
+  const anrop: AuthRequest[] = [];
+  const authRouteAnrop: AuthRouteRequest[] = [];
+  return {
+    name: 'fejk-med-inloggningsrutter',
+    anrop,
+    authRouteAnrop,
+    async authenticate(request) {
+      anrop.push(request);
+      return beteende(request);
+    },
+    async handleAuthRoute(request) {
+      authRouteAnrop.push(request);
+      return (await rutt(request)) as AuthRouteResponse | null;
     },
   };
 }
@@ -343,12 +374,24 @@ export interface TestUppsattning {
  */
 export function spelaInIdentityProvider(inre: IdentityProvider): FejkadIdentityProvider {
   const anrop: AuthRequest[] = [];
-  return {
+  const authRouteAnrop: AuthRouteRequest[] = [];
+  const inspelad: FejkadIdentityProvider = {
     name: inre.name,
     anrop,
+    authRouteAnrop,
     async authenticate(request) {
       anrop.push(request);
       return inre.authenticate(request);
+    },
+  };
+  // Kroken förs vidare BARA om den inre leverantören har den — annars skulle inpackningen få en
+  // leverantör utan inloggningsrutter att se ut att ha dem.
+  if (inre.handleAuthRoute === undefined) return inspelad;
+  return {
+    ...inspelad,
+    async handleAuthRoute(request) {
+      authRouteAnrop.push(request);
+      return inre.handleAuthRoute?.(request) ?? null;
     },
   };
 }

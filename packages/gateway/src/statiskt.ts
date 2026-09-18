@@ -4,11 +4,21 @@
  * innehålla `..`, NUL, bakåtstreck eller procentkodning.
  */
 import type { ServerResponse } from 'node:http';
+import { API_PREFIX, AUTH_PREFIX } from '@vibesandbox/contracts';
 import type { AppFiles, TenantContext } from '@vibesandbox/contracts';
 import { methodNotAllowed, notFound } from './fel.ts';
 import { sendFile } from './svar.ts';
 
 const INDEX_PATH = '/index.html';
+
+/**
+ * Prefix som tillhör plattformen. Hanteraren i index.ts routar dem redan till API:t respektive
+ * inloggningsrutterna, så hit ska de aldrig komma — men filservern vägrar dem SJÄLV också, så att
+ * skyddet inte hänger på routningens ordning. En appfil under `/_auth/` vore särskilt farlig:
+ * den sökvägen körs utan inloggning. Jämförelsen är skiftlägesokänslig; en app har inget giltigt
+ * skäl att ha en katalog som heter `_AUTH`, och en lookalike ska inte gå att servera.
+ */
+const RESERVED_SEGMENTS: ReadonlySet<string> = new Set([API_PREFIX.slice(1), AUTH_PREFIX.slice(1)]);
 
 export interface StaticRequest {
   readonly response: ServerResponse;
@@ -21,6 +31,7 @@ export interface StaticRequest {
 export async function handleStatic(request: StaticRequest): Promise<void> {
   const { method, segments, tenant, files, response } = request;
   if (method !== 'GET' && method !== 'HEAD') throw methodNotAllowed(['GET', 'HEAD']);
+  if (RESERVED_SEGMENTS.has((segments[0] ?? '').toLowerCase())) throw notFound();
 
   if (segments.length === 0) {
     const index = await files.read(tenant, INDEX_PATH);
