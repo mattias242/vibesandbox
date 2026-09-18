@@ -10,8 +10,15 @@
  * till eller tas bort mellan sidorna.
  *
  * Varför kryptografisk slump: ett id är inte en hemlighet (åtkomst avgörs av hyresgäst och ägare),
- * men det ska ändå inte gå att räkna ut grannens id. Därför ingen räknare inom samma millisekund;
- * två dokument skapade samma millisekund hamnar i slumpmässig inbördes ordning, vilket är ofarligt.
+ * men det ska inte heller gå att gissa sig till id:n i en annan app eller kollektion.
+ *
+ * SKAPANDEORDNING: kontraktet lovar att listning ger dokumenten i den ordning de skapades.
+ * Tidsprefixet räcker inte för det — inom samma millisekund avgör slumpdelen, och en serverklocka
+ * som ställs bakåt (NTP) ger nya id som sorteras FÖRE gamla. Därför `nextDocumentId`: ett nytt id
+ * är alltid större än kollektionens hittills största. Är det slumpade id:t inte det, räknas det
+ * största upp med ett. Inom en och samma kollektion kan grann-id:n då räknas ut, vilket är
+ * ofarligt: den som får lista kollektionen ser dem ändå, och i en personlig kollektion ger någon
+ * annans id `not_found` hur väl man än gissar.
  */
 import { randomBytes } from 'node:crypto';
 
@@ -37,4 +44,32 @@ export function newDocumentId(nowMs: number = Date.now()): string {
   for (const byte of bytes) random += ALPHABET.charAt(byte & 31);
 
   return time + random;
+}
+
+/**
+ * Ett id som är strikt större än `previous` — kollektionens hittills största id, eller `undefined`
+ * om kollektionen är tom. Anroparen läser `previous` och sparar det nya id:t i SAMMA transaktion.
+ */
+export function nextDocumentId(previous: string | undefined, nowMs: number = Date.now()): string {
+  const candidate = newDocumentId(nowMs);
+  if (previous === undefined || candidate > previous) return candidate;
+  return increment(previous);
+}
+
+/** Tolkar id:t som ett tal i bas 32 och lägger till ett. */
+function increment(id: string): string {
+  const digits = Array.from(id, (character) => ALPHABET.indexOf(character));
+  if (digits.length !== TIME_LENGTH + RANDOM_LENGTH || digits.includes(-1)) {
+    throw new Error('Kollektionens största dokument-id har ett oväntat format.');
+  }
+  for (let i = digits.length - 1; i >= 0; i--) {
+    const digit = digits[i] ?? 0;
+    if (digit < ALPHABET.length - 1) {
+      digits[i] = digit + 1;
+      return digits.map((value) => ALPHABET.charAt(value)).join('');
+    }
+    digits[i] = 0;
+  }
+  // 130 bitar är slut. Inträffar inte i praktiken; hellre ett tydligt fel än ett id som slår runt.
+  throw new Error('Dokument-id:n är slut i kollektionen.');
 }

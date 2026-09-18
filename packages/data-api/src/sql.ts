@@ -52,6 +52,14 @@ export const INSERT_COLLECTION = `
   INSERT INTO collections (name, scope, created_at) VALUES (:collection, :scope, :now)
 `;
 
+/**
+ * Kollektionens största id — går mot primärnyckelns index, så det är ett enda uppslag.
+ * Används för att nästa id alltid ska bli större (skapandeordning, se id.ts).
+ */
+export const SELECT_LAST_DOCUMENT_ID = `
+  SELECT max(id) AS senaste FROM documents WHERE collection = :collection
+`;
+
 export const INSERT_DOCUMENT = `
   INSERT INTO documents (collection, id, owner, data, created_at, updated_at)
   VALUES (:collection, :id, :owner, :data, :now, :now)

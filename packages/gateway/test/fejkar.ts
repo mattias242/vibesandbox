@@ -5,6 +5,7 @@
  * det är poängen med hela testsviten. `@vibesandbox/data-api` är inte implementerat än
  * och importeras aldrig härifrån.
  */
+import { createHash } from 'node:crypto';
 import type {
   AppFile,
   AppFiles,
@@ -37,16 +38,13 @@ const ALFABET = '0123456789abcdefghjkmnpqrstvwxyz'; // samma alfabet som APP_ID_
  * Alltid giltigt enligt `APP_ID_PATTERN` eftersom det bara använder tecken ur ALFABET.
  */
 export function skapaAppId(fro: string): string {
-  let hash = 0;
-  for (let i = 0; i < fro.length; i += 1) {
-    hash = (hash * 31 + fro.charCodeAt(i)) >>> 0;
-  }
+  // SHA-256 av fröet, fem bitar per tecken. Den tidigare varianten tog de LÄGSTA bitarna ur en
+  // linjär kongruensgenerator — de har period 32, så hur många frön man än gav fanns bara 32 olika
+  // app-id. Två "olika" appar i ett isoleringstest kunde då vara samma värd, och testet prövade
+  // ingenting (eller föll slumpvis: en syskonapp som råkade vara offret fick 201 i stället för 403).
+  const digest = createHash('sha256').update(fro, 'utf8').digest();
   let tecken = '';
-  let tillstand = hash || 1;
-  for (let i = 0; i < 26; i += 1) {
-    tillstand = (Math.imul(tillstand, 1103515245) + 12345) >>> 0;
-    tecken += ALFABET[tillstand % ALFABET.length];
-  }
+  for (let i = 0; i < 26; i += 1) tecken += ALFABET[(digest[i] ?? 0) & 31];
   return tecken;
 }
 
