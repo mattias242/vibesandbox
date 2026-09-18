@@ -18,6 +18,7 @@
  */
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
+import type { Socket } from 'node:net';
 import { join } from 'node:path';
 import { createControl } from '@vibesandbox/control';
 import { createTenantStore } from '@vibesandbox/data-api';
@@ -81,6 +82,36 @@ export function createPlatform(config: PlatformConfig): Platform {
   const server = createServer(RECOMMENDED_SERVER_OPTIONS, handler);
   server.on('clientError', handleClientError);
 
+  // Plattformen håller själv reda på sina anslutningar och vilka som har en förfrågan på gång.
+  // Nodes `closeIdleConnections()` räcker inte: vad som räknas som "overksam" skiljer mellan
+  // Node-versioner, och på Node 24 räknas en anslutning som ännu inte skickat något INTE dit —
+  // den får då ligga kvar tills `headersTimeout` löper ut. En enda tyst anslutning skulle alltså
+  // fördröja varje omstart med tio sekunder.
+  const sockets = new Set<Socket>();
+  const inFlight = new Map<Socket, number>();
+  let shuttingDown = false;
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => {
+      sockets.delete(socket);
+      inFlight.delete(socket);
+    });
+  });
+  server.on('request', (request, response) => {
+    const socket = request.socket;
+    inFlight.set(socket, (inFlight.get(socket) ?? 0) + 1);
+    response.once('close', () => {
+      const remaining = (inFlight.get(socket) ?? 1) - 1;
+      if (remaining > 0) {
+        inFlight.set(socket, remaining);
+        return;
+      }
+      inFlight.delete(socket);
+      // Under nedstängning återanvänds ingen anslutning: när svaret är skickat stängs den.
+      if (shuttingDown) socket.destroy();
+    });
+  });
+
   let closing: Promise<void> | undefined;
 
   async function shutDown(): Promise<void> {
@@ -92,7 +123,12 @@ export function createPlatform(config: PlatformConfig): Platform {
       }
       server.close(() => resolve());
     });
-    // Overksamma keep-alive-anslutningar väntar på ingenting; de stängs genast.
+    // Anslutningar utan pågående förfrågan väntar på ingenting; de stängs genast — oavsett om de
+    // är keep-alive-anslutningar mellan två förfrågningar eller aldrig har skickat något alls.
+    shuttingDown = true;
+    for (const socket of sockets) {
+      if (!inFlight.has(socket)) socket.destroy();
+    }
     server.closeIdleConnections();
     const grace = setTimeout(() => server.closeAllConnections(), SHUTDOWN_GRACE_MS);
     try {
