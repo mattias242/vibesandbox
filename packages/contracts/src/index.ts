@@ -91,6 +91,14 @@ export interface IdentityProvider {
    *   av en syskonvärd.
    */
   handleAuthRoute?(request: AuthRouteRequest): Promise<AuthRouteResponse | null>;
+
+  /**
+   * Sidan under `AUTH_PREFIX` där en webbläsare loggar in på DEN HÄR värden (t.ex. `/_auth/login`).
+   * Finns den skickar gatewayn en oinloggad SIDNAVIGERING (inte ett API-anrop) dit med 303 och
+   * `?next=<relativ sökväg>`, i stället för att svara 401. Inloggning sker per värd: varje värd får
+   * sin egen host-only-kaka, så en app ser aldrig en annan värds session.
+   */
+  readonly loginPath?: string;
 }
 
 /** Sökvägsprefix för inloggningsrutter på en apps egen värd. Appkod kan inte ha filer här. */
@@ -571,6 +579,9 @@ export function builderContentSecurityPolicy(previewFrameSource: string): string
 //   POST /_api/builder/apps/:appId/publish         → { publishedUrl }  (409 om inget grönt utkast)
 //   GET  /_api/builder/apps/:appId/open?target=preview|published → { url }
 //        Absolut adress som loggar in webbläsaren på den värden och landar på `/`.
+//   POST /_api/builder/apps/:appId/share { email }  → { shared: true }  (409 om appen inte är publicerad)
+//        Bjuder in adressen (rollen `viewer`) och mejlar länken till den publicerade appen. Svaret är
+//        detsamma oavsett om adressen redan var inbjuden — det röjer inget om vilka som har konto.
 //
 // Övriga sökvägar på byggverktygets värd serverar byggverktygets egna statiska filer (SPA).
 
@@ -610,4 +621,21 @@ export interface BuilderJob {
   readonly events: readonly AgentEvent[];
   /** Skicka som `after` i nästa anrop. */
   readonly next: number;
+}
+
+// ── Inbjudningar ────────────────────────────────────────────────────────────────
+
+/**
+ * Bara uttryckligen inbjudna adresser kan logga in. Byggverktyget bjuder in när en ägare delar en app;
+ * implementeras av identitetspaketet, som också skickar mejlet. Adressen normaliseras (gemener,
+ * blanktecken borttagna) och valideras av implementationen; ogiltig adress ⇒ `DataApiError('invalid_request')`.
+ */
+export interface InvitationService {
+  invite(request: {
+    readonly email: string;
+    readonly role: Role;
+    readonly invitedBy: Identity;
+    /** Mejlet innehåller länken och appens namn. Ingen länk ⇒ en allmän inbjudan. */
+    readonly app?: { readonly name: string; readonly url: string };
+  }): Promise<void>;
 }
