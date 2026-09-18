@@ -158,7 +158,7 @@ export class Webblasare {
     return this.skicka(vard, { method: 'POST', path: sokvag, query: {}, headers, body });
   }
 
-  async skicka(vard: string, forfragan: Omit<AuthRouteRequest, 'host'> & { body?: unknown }): Promise<Svar | null> {
+  async skicka(vard: string, forfragan: Omit<AuthRouteRequest, 'host' | 'body'> & { body?: unknown }): Promise<Svar | null> {
     const request = { host: vard, ...forfragan } as AuthRouteRequest;
     const svar = await this.leverantor.handleAuthRoute(request);
     if (svar === null) return null;
