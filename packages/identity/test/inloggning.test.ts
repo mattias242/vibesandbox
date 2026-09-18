@@ -159,6 +159,15 @@ describe('inloggning med engångskod', () => {
     expect(await webblasare.vem(VARD_A)).toBeNull();
   });
 
+  it('städar bort utgångna utmaningar och sessioner', async () => {
+    await loggaIn(webblasare, u.utkorg, VARD_A, ANNA);
+    await webblasare.post(VARD_A, '/_auth/login', { email: ANNA, next: '/' });
+    u.klocka.flytta(13 * 60 * 60 * 1000);
+    await webblasare.get(VARD_A, '/_auth/login');
+    const stadning = u.logg.filter((p) => p.event === 'cleanup');
+    expect(stadning.at(-1)?.count).toBe(2);
+  });
+
   it('godtar en kod strax före utgången', async () => {
     await webblasare.post(VARD_A, '/_auth/login', { email: ANNA, next: '/' });
     const ratt = kodUrUtkorgen(u.utkorg, ANNA);
