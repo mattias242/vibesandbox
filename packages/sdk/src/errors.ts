@@ -22,6 +22,7 @@ export const DEFAULT_MESSAGES: Readonly<Record<SdkErrorCode, string>> = {
   unauthenticated: 'Du är inte inloggad. Logga in och försök igen.',
   forbidden: 'Du har inte behörighet att göra det här.',
   not_found: 'Det du letar efter finns inte, eller så har det tagits bort.',
+  method_not_allowed: 'Det här går inte att göra på det sättet.',
   invalid_request: 'Begäran är ogiltig. Kontrollera uppgifterna och försök igen.',
   scope_mismatch: 'Kollektionen har en annan synlighet (gemensam eller personlig) än den som angavs.',
   quota_exceeded: 'Appens lagringsutrymme är slut. Ta bort något och försök igen.',
