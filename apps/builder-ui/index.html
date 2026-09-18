@@ -1,0 +1,19 @@
+<!doctype html>
+<!--
+  Byggverktygets enda sida. Under byggverktygets CSP (script-src 'self') får här inte finnas
+  några inline-skript, och inga resurser hämtas utifrån: inga CDN:er, typsnitt eller bilder.
+-->
+<html lang="sv">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="color-scheme" content="light" />
+    <title>Bygg en app</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>Byggverktyget behöver JavaScript för att fungera.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
