@@ -1,0 +1,28 @@
+{
+  "name": "vibesandbox",
+  "version": "0.0.0",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "bdd": "cucumber-js",
+    "check": "npm run typecheck && npm test && npm run bdd",
+    "bdd:pagar": "cucumber-js -p pagar"
+  },
+  "devDependencies": {
+    "@cucumber/cucumber": "^13.2.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  }
+}
