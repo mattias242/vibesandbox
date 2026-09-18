@@ -75,8 +75,11 @@ a:hover {
   border-radius: 2px;
 }
 
-main:focus {
+/* Huvudinnehållet får fokus programmatiskt vid vybyte; det är ingen kontroll att markera. */
+main:focus,
+main:focus-visible {
   outline: none;
+  box-shadow: none;
 }
 
 .visually-hidden {

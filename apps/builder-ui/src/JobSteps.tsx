@@ -31,12 +31,14 @@ export function JobSteps({ summary }: { summary: JobSummary }) {
           </li>
         ))}
       </ol>
-      {summary.finished !== null && (
-        <p className={summary.finished.ok ? 'notice notice-ok' : 'notice notice-error'}>
-          {summary.finished.ok ? '✓ ' : ''}
-          {summary.finished.message}
-        </p>
-      )}
+      {/* Agentens sammanfattning hamnar också i konversationen. Här räcker ett kort besked vid
+          lyckat bygge; ett misslyckande förklaras här, där blicken redan är. */}
+      {summary.finished !== null &&
+        (summary.finished.ok ? (
+          <p className="notice notice-ok">✓ Klart — förhandsvisningen är uppdaterad.</p>
+        ) : (
+          <p className="notice notice-error">{summary.finished.message}</p>
+        ))}
     </div>
   );
 }
