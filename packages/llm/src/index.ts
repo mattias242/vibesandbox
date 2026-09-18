@@ -1,2 +1,10 @@
 export { maskPersonalData, luhnValid } from './maskning.ts';
 export type { MaskResult, PersonalDataKind } from './maskning.ts';
+export { LlmError } from './fel.ts';
+export type { LlmErrorCode } from './fel.ts';
+export { createOpenAiCompatibleProvider, stripThinking } from './openai.ts';
+export type { OpenAiCompatibleOptions } from './openai.ts';
+export { createFakeProvider } from './fejk.ts';
+export type { FakeProvider, FakeReply, RecordedRequest } from './fejk.ts';
+export { createMaskingProvider, FILE_BLOCK_OPEN, FILE_BLOCK_CLOSE } from './maskande.ts';
+export type { MaskingOptions } from './maskande.ts';
