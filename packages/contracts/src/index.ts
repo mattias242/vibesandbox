@@ -609,6 +609,8 @@ export interface BuilderMessage {
 export type BuilderJobStatus = 'queued' | 'running' | 'done' | 'failed';
 
 export interface BuilderAppDetail extends BuilderAppSummary {
+  /** Den publicerade appens adress — finns när `published`, så att delningslänken syns efter omladdning. */
+  readonly publishedUrl?: string;
   readonly messages: readonly BuilderMessage[];
   /** Pågående eller senaste jobb, så att en omladdad sida kan fortsätta följa det. */
   readonly job?: { readonly jobId: string; readonly status: BuilderJobStatus };
