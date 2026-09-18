@@ -1,0 +1,17 @@
+{
+  "name": "@vibesandbox/identity",
+  "version": "0.0.0",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "description": "Inloggning med engångskod via mejl för uttryckligen inbjudna adresser, och inbjudningar.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "anvandare": "node src/cli.ts"
+  },
+  "dependencies": {
+    "@vibesandbox/contracts": "*"
+  }
+}
