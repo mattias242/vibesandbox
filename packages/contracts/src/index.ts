@@ -136,6 +136,13 @@ export const DEFAULT_TENANT_LIMITS: TenantLimits = {
  */
 export const API_PREFIX = '/_api';
 
+/**
+ * Största tillåtna förfrågningskropp. Gatewayn avbryter läsningen när gränsen passeras
+ * (413) i stället för att buffra hela kroppen. Större än `maxDocumentBytes` med marginal,
+ * så att ett för stort dokument ger det begripligare felet `too_large` från data-API:t.
+ */
+export const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+
 /** Skrivande anrop måste bära detta huvud; enkelt skydd mot CSRF via formulär. */
 export const CSRF_HEADER = 'x-vibesandbox-request';
 
@@ -182,6 +189,9 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = {
  * Lagringsgränssnittet som @vibesandbox/data-api implementerar och gatewayn anropar.
  * Varje metod kräver ett TenantContext; det finns inget sätt att nå data utan ett.
  * Fel signaleras med `DataApiError`.
+ *
+ * Ordning: `listDocuments` ger dokumenten i skapandeordning, äldst först. Ordningen är stabil
+ * mellan sidor och mellan anrop.
  *
  * Regler för scope:
  * - En kollektion skapas — och dess scope låses — vid första `createDocument`. ENDAST då.

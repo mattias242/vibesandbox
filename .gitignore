@@ -22,5 +22,7 @@ test-results/
 
 # OS och editor
 .DS_Store
+*.swp
+*.swo
 .idea/
 .vscode/
