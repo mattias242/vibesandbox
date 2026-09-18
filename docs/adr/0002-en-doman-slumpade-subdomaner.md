@@ -48,6 +48,32 @@ flyttas till en egen domän senare utan kodändring.
   så att varje subdomän blir en egen site.
 - **Rykte:** flaggas en enda app av webbläsarnas skyddslistor drabbas hela domänen.
 - **Processisolering** i webbläsare sker per site, inte per origin.
+- **Värdnamnet är ingen hemlighet mot nätet.** Ett app-id i värdnamnet syns i klartext i
+  DNS-frågor (för resolvern och DNS-värden) och i TLS-handskakningens SNI (för alla på vägen).
+  Den hemliga länken skyddar mot gissning och spridning, inte mot den som ser trafiken.
+  Därför är inloggningen — inte länken — åtkomstgränsen, och en app får aldrig vara nåbar
+  utan inloggning. DNS-poster ska vara rena DNS-poster: en DNS-värd som också agerar proxy
+  skulle terminera TLS och hamna i datavägen.
+
+## Mätt i spik S1 (`spikes/s1-sessioner/RESULTAT.md`)
+
+Chromium 153 och WebKit 26.6. **Firefox är omätt** (Playwrights Firefox startade inte på
+utvecklingsmaskinen) och riktig Safari/iOS kan skilja sig från WebKit-bygget — båda återstår.
+
+- `__Host-`-kakor med `SameSite=Lax` fungerar i alla tre flödena: inloggning → appvärd,
+  skal → innehållsram, byggverktyg → förhandsvisning. `SameSite=None` behövs inte.
+- En app KAN plantera en `Domain=`-kaka som når andra värdar, men kan inte förfalska eller
+  skriva över en `__Host-`-kaka. Villkor 1 håller.
+- `SameSite` ger inget skydd mellan subdomäner: även `Strict`-kakor följer med. Servern ser
+  däremot avsändarens `Origin`. **Byggverktygets API ska kräva exakt sin egen origin — inte
+  "same-site".**
+- Skalets `frame-src` stoppar att innehållsramen navigerar sig själv till en extern adress.
+  Övriga prövade vägar ut (fetch, bild, formulär, `window.open`, `top.location`, länk med
+  `target=_top`, `sendBeacon`, preconnect, WebSocket) blockeras också.
+- Direktbesök på innehållsvärden går att neka med `Sec-Fetch-Dest`/`Sec-Fetch-Site`.
+- **Kvarstår:** `RTCPeerConnection` går att skapa (CSP styr inte WebRTC). Kakbombning är
+  bekräftad, och `Clear-Site-Data: "cookies"` rensar i Chromium men INTE i WebKit — dessutom
+  bär städanropet självt de överstora kakorna. Det går alltså inte att lita på som åtgärd.
 
 Växer användningen utanför en pilot bör apparna flyttas till en egen domän eller domänen
-PSL-registreras.
+PSL-registreras — det är den enda hållbara åtgärden mot kakbombning.
