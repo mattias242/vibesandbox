@@ -21,7 +21,7 @@ import type {
   SourceFiles,
 } from '@vibesandbox/contracts';
 import { policyExplanation, securityViolation } from './klarsprak.ts';
-import { buildUserMessage } from './meddelande.ts';
+import { buildUserMessage, topDiagnostics } from './meddelande.ts';
 import type { Feedback } from './meddelande.ts';
 import { parseResponse } from './protokoll.ts';
 import { buildSystemPrompt } from './systemprompt.ts';
@@ -99,6 +99,9 @@ export function createAgent(options: AgentOptions): Agent {
       let working: SourceFiles = isNewApp ? options.knowledge.starterFiles : input.currentFiles;
       let feedback: Feedback | undefined;
       let lastDiagnostics: readonly Diagnostic[] = [];
+      // Felen från varje underkänt bygge i turen, äldst först — till rättningsvarvens historik.
+      const failedRounds: Array<readonly Diagnostic[]> = [];
+      const earlierRounds = (): ReadonlyArray<readonly Diagnostic[]> => failedRounds.slice(0, -1);
       let model = options.provider.name;
       let rounds = 0;
       const usage = { inputTokens: 0, outputTokens: 0 };
@@ -176,13 +179,13 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Ett avkapat svar tolkas ALDRIG, hur komplett det än ser ut.
           if (result.finishReason !== 'stop') {
-            feedback = { responseProblems: [TEXT.truncated], diagnostics: lastDiagnostics };
+            feedback = { responseProblems: [TEXT.truncated], diagnostics: lastDiagnostics, earlier: earlierRounds() };
             continue;
           }
 
           const parsed = parseResponse(stripLeadingThoughts(result.text));
           if (!parsed.ok) {
-            feedback = { responseProblems: parsed.problems, diagnostics: lastDiagnostics };
+            feedback = { responseProblems: parsed.problems, diagnostics: lastDiagnostics, earlier: earlierRounds() };
             continue;
           }
 
@@ -192,7 +195,11 @@ export function createAgent(options: AgentOptions): Agent {
 
           phase = 'build';
           pendingBuild = await options.buildRunner.build(merged, input.signal === undefined ? undefined : { signal: input.signal });
-          emit({ type: 'check', ok: pendingBuild.ok, problems: pendingBuild.diagnostics.length });
+          emit(
+            pendingBuild.ok
+              ? { type: 'check', ok: true, problems: pendingBuild.diagnostics.length }
+              : { type: 'check', ok: false, problems: pendingBuild.diagnostics.length, diagnostics: topDiagnostics(pendingBuild.diagnostics) },
+          );
           checkAbort();
 
           if (pendingBuild.ok) {
@@ -211,7 +218,8 @@ export function createAgent(options: AgentOptions): Agent {
 
           working = merged;
           lastDiagnostics = diagnostics;
-          feedback = { responseProblems: [], diagnostics };
+          failedRounds.push(diagnostics);
+          feedback = { responseProblems: [], diagnostics, earlier: earlierRounds() };
         }
 
         return finish(false, policyExplanation(lastDiagnostics) ?? TEXT.gaveUp(rounds));

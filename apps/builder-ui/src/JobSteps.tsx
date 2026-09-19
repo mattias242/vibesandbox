@@ -1,5 +1,5 @@
 import type { JobSummary } from './steps.ts';
-import { writingProgress } from './steps.ts';
+import { describeDiagnostic, writingProgress } from './steps.ts';
 
 const STATE_TEXT = {
   pending: 'kommer sedan',
@@ -37,7 +37,23 @@ export function JobSteps({ summary }: { summary: JobSummary }) {
         (summary.finished.ok ? (
           <p className="notice notice-ok">✓ Klart — förhandsvisningen är uppdaterad.</p>
         ) : (
-          <p className="notice notice-error">{summary.finished.message}</p>
+          <>
+            <p className="notice notice-error">{summary.finished.message}</p>
+            {/* Tekniska detaljer för den som vill förstå — eller skicka dem vidare. Samma fel som
+                modellen fick se i sista rättningsvarvet. */}
+            {summary.diagnostics.length > 0 && (
+              <details className="job-details">
+                <summary>Visa detaljer</summary>
+                <ul>
+                  {summary.diagnostics.map((d, index) => (
+                    <li key={index}>
+                      <code>{describeDiagnostic(d)}</code>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </>
         ))}
     </div>
   );
