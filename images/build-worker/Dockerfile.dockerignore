@@ -1,0 +1,22 @@
+# Kontexten är repots rot. Skicka bara det byggavbilden behöver — aldrig hemligheter, data,
+# node_modules eller agenternas arbetskataloger.
+*
+!package.json
+!package-lock.json
+!packages/contracts/package.json
+!packages/contracts/src/**
+!packages/sdk/package.json
+!packages/sdk/src/**
+!packages/app-template/package.json
+!packages/app-template/index.html
+!packages/app-template/vite.config.ts
+!packages/app-template/tsconfig.json
+!packages/app-template/approved-packages.json
+!packages/app-template/src/**
+!packages/app-template/starter/**
+!packages/policy/package.json
+!packages/policy/src/**
+!packages/build/package.json
+!packages/build/src/**
+!images/build-worker/entrypoint.ts
+!images/build-worker/spool-worker.ts

@@ -52,6 +52,14 @@ export function outputTooLargeDiagnostic(bytes: number, maxBytes: number): Diagn
   };
 }
 
+export function memoryLimitDiagnostic(memoryMb: number): Diagnostic {
+  return {
+    source: 'build',
+    rule: 'memory-limit',
+    message: `Bygget stoppades: det använde mer minne (eller fler processer) än tillåtet (${memoryMb} MB). Förenkla appen eller dela upp stora filer.`,
+  };
+}
+
 /** Miljön för tsc och Vite: bara det verktygen behöver. Inga av plattformens variabler. */
 export function buildEnvironment(workDir: string, tmpDir: string): Record<string, string> {
   return {
@@ -109,6 +117,8 @@ export async function buildInWorkspace(options: WorkspaceBuildOptions): Promise<
     ...(signal === undefined ? {} : { signal }),
   });
   if (tsc.timedOut) return { diagnostics: [timeoutDiagnostic(limits.timeoutMs)] };
+  // SIGKILL utan att vi själva dödade processen: minnesgränsen (kärnans OOM-dödare i containern).
+  if (tsc.exitSignal === 'SIGKILL') return { diagnostics: [memoryLimitDiagnostic(limits.memoryMb)] };
   if (tsc.exitCode !== 0) return { diagnostics: capDiagnostics(parseTscOutput(`${tsc.stdout}\n${tsc.stderr}`, roots)) };
 
   const vite = await runProcess({
@@ -120,6 +130,7 @@ export async function buildInWorkspace(options: WorkspaceBuildOptions): Promise<
     ...(signal === undefined ? {} : { signal }),
   });
   if (vite.timedOut) return { diagnostics: [timeoutDiagnostic(limits.timeoutMs)] };
+  if (vite.exitSignal === 'SIGKILL' || /heap out of memory/i.test(vite.stderr)) return { diagnostics: [memoryLimitDiagnostic(limits.memoryMb)] };
   if (vite.exitCode !== 0) return { diagnostics: capDiagnostics(parseViteOutput(`${vite.stdout}\n${vite.stderr}`, roots)) };
 
   const distDirectory = path.join(workDir, 'dist');
