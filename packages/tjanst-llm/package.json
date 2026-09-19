@@ -6,9 +6,11 @@
   "type": "module",
   "description": "Språkmodell för appar via Berget, med maskning av personuppgifter och tokenkvot per app.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./fejk-berget": "./test/fejk-berget.ts"
   },
   "dependencies": {
-    "@vibesandbox/contracts": "*"
+    "@vibesandbox/contracts": "*",
+    "@vibesandbox/llm": "*"
   }
 }
