@@ -156,6 +156,10 @@ echo "== Lägger ut i \$K/app"
 rm -rf "\$K/app.ny"; mkdir -p "\$K/app.ny"
 cp -R "\$M/app/." "\$K/app.ny/"; cp "\$M/VERSION" "\$K/app.ny/VERSION"
 chown -R 0:0 "\$K/app.ny"
+# Mellanlagringen har umask 077 (för .env), så allt kom hit som 600/700. Koden är inte hemlig,
+# och containrarna läser den som andra användare än root: läsbart för alla, skrivbart bara för
+# root, körbart där det redan var körbart.
+chmod -R u=rwX,go=rX "\$K/app.ny"
 rm -rf "\$K/app.gammal"; if [ -d "\$K/app" ]; then mv "\$K/app" "\$K/app.gammal"; fi
 mv "\$K/app.ny" "\$K/app"
 echo "== Skriver serverns .env (bara root kan läsa den)"
