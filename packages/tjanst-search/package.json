@@ -9,6 +9,10 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@vibesandbox/contracts": "*"
+    "@vibesandbox/contracts": "*",
+    "@vibesandbox/llm": "*"
+  },
+  "devDependencies": {
+    "@vibesandbox/data-api": "*"
   }
 }

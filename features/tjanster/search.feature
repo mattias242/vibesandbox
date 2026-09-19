@@ -53,9 +53,13 @@ Egenskap: Sökning i en apps dokument efter innebörd
     När Bertil söker efter "stulen cykel" i kollektionen "../arenden" i appen "ärenden"
     Så får han svaret "ogiltig begäran"
 
-  Scenario: En orimligt lång fråga nekas
-    När Bertil söker efter en fråga på 20000 tecken i kollektionen "arenden" i appen "ärenden"
+  Scenario: En för lång fråga nekas
+    När Bertil söker efter en fråga på 5000 tecken i kollektionen "arenden" i appen "ärenden"
     Så får han svaret "ogiltig begäran"
+
+  Scenario: En orimligt stor sökning stoppas innan den ens läses
+    När Bertil söker efter en fråga på 100000 tecken i kollektionen "arenden" i appen "ärenden"
+    Så får han svaret "för stort"
 
   Scenario: Telefonnummer lämnar inte plattformen
     Givet att Anna har sparat dokumentet {"text": "Ring mig på 070-123 45 67 om cykeln"} i kollektionen "arenden" i appen "ärenden"
