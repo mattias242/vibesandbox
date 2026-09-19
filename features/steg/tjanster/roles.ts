@@ -104,10 +104,6 @@ Given(/^att Anna har gett (Bertil|Cecilia) rollen "([^"]+)"$/, async function (t
   await ge(this, person, roll);
 });
 
-Given(/^att appen "([^"]+)" har ett utkast$/, async function (this: Varld, app: string) {
-  await this.sattUtkast(app);
-});
-
 Given(/^att Anna också äger appen "([^"]+)"$/, async function (this: Varld, app: string) {
   await this.publicera(app);
 });

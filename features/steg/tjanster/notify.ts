@@ -86,10 +86,6 @@ Given(
   },
 );
 
-Given(/^att appen "([^"]+)" har ett utkast$/, async function (this: Varld, app: string) {
-  await this.sattUtkast(app);
-});
-
 // ── När ──────────────────────────────────────────────────────────────────────────
 
 When(

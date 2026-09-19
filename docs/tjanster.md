@@ -23,6 +23,7 @@ Inga omdirigeringar. Ett kast blir 500 med fast text.
 | Byggagentens dokumentation | `packages/sdk/tjanster/<namn>.md` — kort, exakt, med exempel; visas bara när tjänsten är påslagen |
 | Scenarier (BDD) | `features/tjanster/<namn>.feature`, taggad `@tjanst-<namn>` |
 | Steg | `features/steg/tjanster/<namn>.ts`; fejkar registreras med `forberedTjanst` (features/steg/stod/tjanster.ts) |
+| Steg flera tjänster behöver | `features/steg/tjanster/gemensamt.ts` — sök alltid (`grep -rn` i features/steg) innan du definierar ett steg; samma text två gånger gör scenariot tvetydigt |
 
 Allt annat är gemensamt och ändras inte av en enskild tjänst: kontrakten, gatewayn, plattformens
 uppkoppling (`apps/platform/src/tjanster.ts`), världen och krokarna i `features/steg`.
