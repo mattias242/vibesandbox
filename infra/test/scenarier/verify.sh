@@ -126,6 +126,17 @@ scenario_verify() {
   printf '# ops ALL=(ALL) NOPASSWD: ALL  (bortkommenterad)\n' >/etc/sudoers.d/zz-panel
   bara anvandare
   if (( KOD == 0 )); then godkand "en bortkommenterad rad räknas inte"; else underkand "bortkommenterad NOPASSWD gav kod ${KOD}"; grep '✗' <<<"$UT" | sed 's/^/      | /'; fi
+  # cloud-inits standardfil på Debian-avbilder: root får inget nytt av en NOPASSWD-rad — root är
+  # redan root. Att larma på den ger ett falskt ✗ på en ren server.
+  echo 'root ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/zz-panel
+  bara anvandare
+  if (( KOD == 0 )); then godkand "NOPASSWD för root (cloud-inits standardrad) räknas inte"; else underkand "NOPASSWD för root gav kod ${KOD}"; grep '✗' <<<"$UT" | sed 's/^/      | /'; fi
+  printf 'root ALL=(ALL) NOPASSWD:ALL\nops ALL=(ALL) NOPASSWD: ALL\n' >/etc/sudoers.d/zz-panel
+  bara anvandare
+  if (( KOD == 1 )) && grep '✗' <<<"$UT" | grep -q 'ops ALL'; then godkand "en ops-rad bredvid root-raden ⇒ ✗"; else underkand "ops-raden bredvid root-raden upptäcktes inte (kod ${KOD})"; fi
+  printf '%%rootgrupp ALL=(ALL) NOPASSWD: ALL\nrootish ALL=(ALL) NOPASSWD: ALL\n' >/etc/sudoers.d/zz-panel
+  bara anvandare
+  if (( KOD == 1 )); then godkand "bara exakt 'root' undantas — inte '%rootgrupp' eller 'rootish'"; else underkand "ett namn som bara börjar på root undantogs (kod ${KOD})"; fi
   find /etc/sudoers.d/zz-panel -delete
 
   test_rubrik "B6: SSH_PORT i en gammal state-fil påverkar ingenting"

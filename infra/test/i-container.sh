@@ -251,6 +251,9 @@ scenario_fas1() {
   if innehaller "$UT" "FAS 1 KLAR"; then godkand "skriptet stannar och ber ägaren verifiera SSH över tailnet"; else underkand "inget stopp efter fas 1"; fi
   pastar_inte "brandväggen är INTE laddad" nft list table inet vibesandbox
   pastar_inte "SSH är INTE härdat" test -e /etc/ssh/sshd_config.d/0-0-vibesandbox.conf
+  # Körordningen kräver att fas 2 körs i tmux (en tappad anslutning får inte döda skriptet mitt i
+  # brandväggssteget) — då måste tmux finnas när fas 1 är klar. En ren Debian-avbild saknar det.
+  pastar "tmux installeras i fas 1, så att fas 2 kan köras i tmux" test -e "${STUBBKATALOG}/tillstand/paket/tmux"
 
   local e
   for e in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; do

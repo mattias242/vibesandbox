@@ -761,8 +761,10 @@ steg_uppdatering() {
   kor env DEBIAN_FRONTEND=noninteractive apt-get -y \
     -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade
 
+  # tmux: körordningen kräver att fas 2 körs i tmux, så att en tappad anslutning inte dödar
+  # skriptet mitt i ett steg med död mans grepp. En ren avbild saknar det.
   installera_paket ca-certificates curl gnupg sudo openssh-server unattended-upgrades \
-    apparmor nftables uidmap iproute2 systemd-timesyncd
+    apparmor nftables uidmap iproute2 systemd-timesyncd tmux
 
   # Är de här maskade ser automatiska uppdateringar påslagna ut men kör aldrig.
   local enhet
