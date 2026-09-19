@@ -1,5 +1,4 @@
 # language: sv
-@pågår
 Egenskap: Bygga en app genom att beskriva den
   Den som inte är utvecklare beskriver ett behov i vanlig svenska och får en fungerande app
   att prova direkt. Språkmodellen skriver koden, men plattformen bestämmer vad som får byggas.
