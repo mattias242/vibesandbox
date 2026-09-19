@@ -55,6 +55,14 @@ describe('inloggning med engångskod', () => {
     expect(svar?.kakor).toEqual([]);
   });
 
+  it('sidan säger inte no-referrer — då skickar webbläsaren Origin: null och formuläret underkänns', async () => {
+    // Sett i drift: med <meta name="referrer" content="no-referrer"> sätter webbläsaren (enligt
+    // Fetch-specen) Origin till "null" på formulärets POST, och Origin-kontrollen säger nej.
+    const svar = await webblasare.get(VARD_A, '/_auth/login', { next: '/' });
+    expect(svar?.body).not.toContain('no-referrer');
+    expect(svar?.body).toContain('<meta name="referrer" content="same-origin">');
+  });
+
   it('släpper in en inbjuden adress och skickar vidare till next', async () => {
     const begaran = await webblasare.post(VARD_A, '/_auth/login', { email: `  ${ANNA.toUpperCase()} `, next: '/lista' });
     expect(begaran?.status).toBe(200);

@@ -34,7 +34,10 @@ export const SECURITY_HEADERS: ReadonlyArray<readonly [name: string, value: stri
   // Webbläsaren får inte gissa innehållstyp — annars kan en uppladdad "bild" köras som skript.
   ['X-Content-Type-Options', 'nosniff'],
   // Appens adress ÄR den hemliga delningslänken; den får aldrig följa med till en annan webbplats.
-  ['Referrer-Policy', 'no-referrer'],
+  // `same-origin` skickar ingenting till andra origins (och varje app är en egen origin). INTE
+  // `no-referrer`: då sätter webbläsaren `Origin: null` på formulär och fetch-POST, och
+  // Origin-kontrollen underkänner varje inloggning och varje skrivande anrop.
+  ['Referrer-Policy', 'same-origin'],
   // Alla appar ligger under samma site (ADR 0002) och kan därmed hamna i samma webbläsarprocess.
   // Med detta vägrar webbläsaren ladda in den här appens svar som bild/skript hos en annan app.
   ['Cross-Origin-Resource-Policy', 'same-origin'],

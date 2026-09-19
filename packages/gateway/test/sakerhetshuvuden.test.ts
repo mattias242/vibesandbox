@@ -21,7 +21,10 @@ import {
 function forvantaSakerhetshuvuden(svar: AnropSvar) {
   forvantaAppensCsp(svar, INGEN_INRAMNING);
   expect(enHuvud(svar, 'X-Content-Type-Options')).toBe('nosniff');
-  expect(enHuvud(svar, 'Referrer-Policy')).toBe('no-referrer');
+  // `no-referrer` gör att webbläsaren skickar `Origin: null` på formulär och fetch-POST (Fetch-
+  // specen) — då underkänns varje inloggning och varje anrop av Origin-kontrollen. `same-origin`
+  // skickar ingenting till andra origins, så den hemliga länken läcker fortfarande inte.
+  expect(enHuvud(svar, 'Referrer-Policy')).toBe('same-origin');
 }
 
 describe('säkerhetshuvuden på alla svar', () => {

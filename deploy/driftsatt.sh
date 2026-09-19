@@ -187,7 +187,9 @@ if [ "${DRIFTSATT_ROKTEST:-1}" = 0 ]; then echo; echo "Klart (röktestet överho
 
 steg "Röktest över HTTPS"
 for _ in $(seq 1 30); do
-  kod="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://bygg.${BAS_DOMAN}/" || true)"
+  # Som en webbläsare som navigerar: bara då skickar plattformen vidare till inloggningen (303).
+  # Ett anrop utan de huvudena räknas som API och får 401.
+  kod="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H 'Sec-Fetch-Mode: navigate' -H 'Accept: text/html' "https://bygg.${BAS_DOMAN}/" || true)"
   [ "$kod" = "303" ] && break
   sleep 5
 done

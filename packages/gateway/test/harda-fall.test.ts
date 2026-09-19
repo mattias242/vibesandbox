@@ -460,7 +460,7 @@ describe('serverinställningar och clientError-hanteraren', () => {
   function forvantaSkyddsregler(svar: AnropSvar) {
     forvantaAppensCsp(svar, INGEN_INRAMNING);
     expect(enHuvud(svar, 'X-Content-Type-Options')).toBe('nosniff');
-    expect(enHuvud(svar, 'Referrer-Policy')).toBe('no-referrer');
+    expect(enHuvud(svar, 'Referrer-Policy')).toBe('same-origin');
     expect(enHuvud(svar, 'Cache-Control')).toBe('no-store');
     expect(enHuvud(svar, 'Connection')).toBe('close');
     expect(allaHuvuden(svar, 'Set-Cookie')).toEqual([]);
@@ -502,7 +502,7 @@ describe('serverinställningar och clientError-hanteraren', () => {
     expect(json<ApiErrorBody>(svar).error.code).toBe('invalid_request');
     forvantaAppensCsp(svar, INGEN_INRAMNING);
     expect(enHuvud(svar, 'X-Content-Type-Options')).toBe('nosniff');
-    expect(enHuvud(svar, 'Referrer-Policy')).toBe('no-referrer');
+    expect(enHuvud(svar, 'Referrer-Policy')).toBe('same-origin');
     expect(uppsattning.identityProvider.anrop).toHaveLength(0);
     expect(uppsattning.register.anrop).toHaveLength(0);
   });
