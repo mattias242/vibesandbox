@@ -109,3 +109,103 @@ export const DELETE_DOCUMENT = `
   DELETE FROM documents
   WHERE collection = :collection AND id = :id AND ${OWNER_RULE}
 `;
+
+// ── Ändringshistorik (bara när lagringen skapats med historiken påslagen) ─────────
+
+/**
+ * Historiken ligger i SAMMA databasfil som dokumenten. Det är det enda sättet att skriva den i
+ * samma transaktion som ändringen: SQLite i WAL-läge gör inte transaktioner över flera filer
+ * atomiska. Följden är att historiken räknas mot appens lagringskvot (se `historik.ts`).
+ *
+ * Tabellen skapas bara när historiken är påslagen och ingår inte i SCHEMA_VERSION: en databas
+ * där historiken aldrig slagits på ser ut exakt som förut, och en äldre version av plattformen
+ * kan fortfarande läsa en databas som har tabellen.
+ *
+ * `owner` är DOKUMENTETS ägare (för synligheten i personliga kollektioner, samma regel som för
+ * dokumenten); `user_id` är den som gjorde ändringen. AUTOINCREMENT: `seq` återanvänds aldrig,
+ * inte ens när de äldsta raderna gallrats bort, så ordningen och markörerna håller.
+ */
+export const CREATE_HISTORY_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS history (
+    seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+    collection TEXT NOT NULL,
+    doc_id     TEXT NOT NULL,
+    owner      TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    event      TEXT NOT NULL CHECK (event IN ('create', 'replace', 'delete', 'restore')),
+    at         TEXT NOT NULL,
+    data       TEXT NOT NULL
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS history_by_document ON history (collection, doc_id, seq);
+  CREATE INDEX IF NOT EXISTS history_by_collection ON history (collection, seq);
+  CREATE INDEX IF NOT EXISTS history_by_time ON history (at);
+`;
+
+export const INSERT_HISTORY = `
+  INSERT INTO history (collection, doc_id, owner, user_id, event, at, data)
+  VALUES (:collection, :id, :owner, :user, :event, :at, :data)
+`;
+
+/** Ägaren till ett dokument som den frågande redan fått skriva till (samma transaktion). */
+export const SELECT_DOCUMENT_OWNER = `
+  SELECT owner FROM documents WHERE collection = :collection AND id = :id
+`;
+
+/** Innehåll och ägare FÖRE en radering — med ägarregeln, så att någon annans dokument "inte finns". */
+export const SELECT_DOCUMENT_FOR_DELETE = `
+  SELECT owner, data
+  FROM documents
+  WHERE collection = :collection AND id = :id AND ${OWNER_RULE}
+`;
+
+/** Ett återställt dokument som raderats: samma id, samma ägare som förut. */
+export const REINSERT_DOCUMENT = `
+  INSERT INTO documents (collection, id, owner, data, created_at, updated_at)
+  VALUES (:collection, :id, :owner, :data, :now, :now)
+  RETURNING id, data, created_at, updated_at
+`;
+
+const HISTORY_COLUMNS = 'seq, collection, doc_id, user_id, event, at, data';
+
+/** Ett dokuments historik, nyast först, före markörens position och inom kvarhållningstiden. */
+export const LIST_DOCUMENT_HISTORY = `
+  SELECT ${HISTORY_COLUMNS}
+  FROM history
+  WHERE collection = :collection AND doc_id = :id AND seq < :before AND at >= :cutoff AND ${OWNER_RULE}
+  ORDER BY seq DESC
+  LIMIT :limit
+`;
+
+/** Kollektionens historik. `:since` är '' när den saknas — alla ISO-tider sorterar efter ''. */
+export const LIST_COLLECTION_HISTORY = `
+  SELECT ${HISTORY_COLUMNS}
+  FROM history
+  WHERE collection = :collection AND seq < :before AND at >= :cutoff AND at > :since AND ${OWNER_RULE}
+  ORDER BY seq DESC
+  LIMIT :limit
+`;
+
+/**
+ * Raden en återställning utgår från: exakt den tiden. Delar flera rader millisekund väljs den
+ * senaste som INTE är en radering — en radering har inget innehåll att återställa till.
+ */
+export const SELECT_HISTORY_AT = `
+  SELECT owner, event, data
+  FROM history
+  WHERE collection = :collection AND doc_id = :id AND at = :at AND at >= :cutoff AND ${OWNER_RULE}
+  ORDER BY event = 'delete', seq DESC
+  LIMIT 1
+`;
+
+/** Gallring efter tid, i begränsade omgångar så att ingen enskild skrivning blir långsam. */
+export const PRUNE_HISTORY = `
+  DELETE FROM history
+  WHERE seq IN (SELECT seq FROM history WHERE at < :cutoff ORDER BY at LIMIT :count)
+`;
+
+/** Gallring efter plats: de äldsta raderna, när appen annars inte kan spara (se `historik.ts`). */
+export const EVICT_OLDEST_HISTORY = `
+  DELETE FROM history
+  WHERE seq IN (SELECT seq FROM history ORDER BY seq LIMIT :count)
+`;

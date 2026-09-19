@@ -85,6 +85,8 @@ export function createDocument(
   handle: TenantHandle,
   limits: TenantLimits,
   request: CreateRequest,
+  /** Körs INNE i transaktionen efter att dokumentet skrivits (ändringshistoriken, se historik.ts). */
+  afterWrite?: (id: string, now: string) => void,
 ): StoredDocument {
   let id = '';
   const now = new Date().toISOString();
@@ -122,6 +124,7 @@ export function createDocument(
       data: request.dataText,
       now,
     });
+    afterWrite?.(id, now);
   });
 
   return { id, data: parseData(request.dataText), createdAt: now, updatedAt: now };
@@ -192,11 +195,11 @@ function assertSameScope(locked: CollectionScope, requested: CollectionScope): v
  * "Finns inte" och "är någon annans" ger avsiktligt exakt samma fel och samma text: den som
  * gissar id:n ska inte kunna skilja fallen åt.
  */
-function notFound(): Error {
+export function notFound(): Error {
   return dataApiError('not_found', 'Dokumentet finns inte.');
 }
 
-function toStoredDocument(row: Row): StoredDocument {
+export function toStoredDocument(row: Row): StoredDocument {
   const { id, data, created_at: createdAt, updated_at: updatedAt } = row;
   if (
     typeof id !== 'string' ||
@@ -209,7 +212,7 @@ function toStoredDocument(row: Row): StoredDocument {
   return { id, data: parseData(data), createdAt, updatedAt };
 }
 
-function parseData(text: string): JsonObject {
+export function parseData(text: string): JsonObject {
   // Texten validerades som ett JSON-objekt innan den sparades; tabellen är STRICT.
   return JSON.parse(text) as JsonObject;
 }

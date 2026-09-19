@@ -33,6 +33,19 @@ import {
 } from './dokument.ts';
 import { dataApiError, translateError } from './fel.ts';
 import { createHandleCache } from './handtag.ts';
+import {
+  EMPTY_HISTORY,
+  createWithHistory,
+  decodeHistoryCursor,
+  deleteWithHistory,
+  parseRetentionDays,
+  readCollectionHistory,
+  readDocumentHistory,
+  replaceWithHistory,
+  restoreWithHistory,
+  validateIsoTime,
+  type HistorySettings,
+} from './historik.ts';
 import { assertValidLimits } from './kvot.ts';
 import { decodeCursor } from './markor.ts';
 import { tenantPaths } from './sokvagar.ts';
@@ -51,6 +64,14 @@ export interface TenantStoreOptions {
   readonly limits?: TenantLimits;
   /** Högsta antal samtidigt öppna SQLite-databaser; de minst nyligen använda stängs. */
   readonly maxOpenDatabases?: number;
+  /**
+   * Ändringshistorik (tjänsten `history`). Saknas valet är historiken AV: inga historikmetoder,
+   * ingen historiktabell, och allt beter sig exakt som förut. Se historik.ts.
+   */
+  readonly history?: {
+    /** Dagar historiken sparas. Heltal, eller texten ur `SVC_HISTORY_RETENTION_DAYS`. Standard 365. */
+    readonly retentionDays?: number | string | undefined;
+  };
 }
 
 const DEFAULT_MAX_OPEN_DATABASES = 100;
@@ -70,7 +91,10 @@ export function createTenantStore(options: TenantStoreOptions): TenantStore {
     throw new TypeError('dataDir måste anges.');
   }
 
-  const handles = createHandleCache(limits, maxOpenDatabases);
+  const history: HistorySettings | undefined =
+    options.history === undefined ? undefined : { retentionDays: parseRetentionDays(options.history.retentionDays) };
+
+  const handles = createHandleCache(limits, maxOpenDatabases, { history: history !== undefined });
   let closed = false;
 
   /** Ram runt varje publik metod: stängd-kontroll först, felöversättning sist. */
@@ -83,7 +107,7 @@ export function createTenantStore(options: TenantStoreOptions): TenantStore {
     }
   }
 
-  return {
+  const store: TenantStore = {
     async listDocuments(
       tenant: TenantContext,
       identity: Identity,
@@ -127,12 +151,10 @@ export function createTenantStore(options: TenantStoreOptions): TenantStore {
 
         // Den enda operation som får skapa något på disk.
         const handle = handles.openOrCreate(tenantPaths(dataDir, tenant));
-        return createDocument(handle, limits, {
-          collection: name,
-          scope: requestedScope,
-          userId,
-          dataText,
-        });
+        const request = { collection: name, scope: requestedScope, userId, dataText };
+        return history === undefined
+          ? createDocument(handle, limits, request)
+          : createWithHistory(handle, limits, history, request);
       });
     },
 
@@ -165,7 +187,9 @@ export function createTenantStore(options: TenantStoreOptions): TenantStore {
         const dataText = serializeDocumentData(data, limits.maxDocumentBytes);
         const handle = handles.openExisting(tenantPaths(dataDir, tenant));
         if (handle === null) throw dataApiError('not_found', 'Dokumentet finns inte.');
-        return replaceDocument(handle, request, dataText);
+        return history === undefined
+          ? replaceDocument(handle, request, dataText)
+          : replaceWithHistory(handle, history, request, dataText);
       });
     },
 
@@ -178,7 +202,8 @@ export function createTenantStore(options: TenantStoreOptions): TenantStore {
         };
         const handle = handles.openExisting(tenantPaths(dataDir, tenant));
         if (handle === null) throw dataApiError('not_found', 'Dokumentet finns inte.');
-        deleteDocument(handle, request);
+        if (history === undefined) deleteDocument(handle, request);
+        else deleteWithHistory(handle, history, request);
       });
     },
 
@@ -192,6 +217,60 @@ export function createTenantStore(options: TenantStoreOptions): TenantStore {
       // Idempotent: nedstängning ska kunna anropas från flera håll utan att något kastar.
       closed = true;
       handles.closeAll();
+    },
+  };
+
+  if (history === undefined) return store;
+  const settings = history;
+
+  // Historikmetoderna läggs bara till när historiken är påslagen; tjänsten `history` vägrar
+  // starta mot en lagring som saknar dem.
+  return {
+    ...store,
+
+    async readDocumentHistory(tenant, identity, collection, id, listOptions) {
+      return guarded(() => {
+        const name = validateCollectionName(collection);
+        const documentId = validateDocumentId(id);
+        const userId = validateUserId(identity);
+        const pageSize = validatePageSize(listOptions?.limit, DEFAULT_PAGE_SIZE, limits.maxPageSize);
+        const cursor: unknown = listOptions?.cursor;
+        const beforeSeq = cursor === undefined ? undefined : decodeHistoryCursor(cursor, 'd', name, documentId);
+
+        const handle = handles.openExisting(tenantPaths(dataDir, tenant));
+        if (handle === null) throw dataApiError('not_found', 'Dokumentet finns inte.');
+        return readDocumentHistory(handle, settings, { collection: name, id: documentId, userId, pageSize, beforeSeq });
+      });
+    },
+
+    async readCollectionHistory(tenant, identity, collection, listOptions) {
+      return guarded(() => {
+        const name = validateCollectionName(collection);
+        const userId = validateUserId(identity);
+        const pageSize = validatePageSize(listOptions?.limit, DEFAULT_PAGE_SIZE, limits.maxPageSize);
+        const since: unknown = listOptions?.since;
+        const validSince = since === undefined ? undefined : validateIsoTime(since);
+        const cursor: unknown = listOptions?.cursor;
+        const beforeSeq = cursor === undefined ? undefined : decodeHistoryCursor(cursor, 'c', name, '-');
+
+        const handle = handles.openExisting(tenantPaths(dataDir, tenant));
+        if (handle === null) return EMPTY_HISTORY;
+        return readCollectionHistory(handle, settings, { collection: name, userId, pageSize, beforeSeq, since: validSince });
+      });
+    },
+
+    async restoreDocument(tenant, identity, collection, id, at) {
+      return guarded(() => {
+        const request = {
+          collection: validateCollectionName(collection),
+          id: validateDocumentId(id),
+          userId: validateUserId(identity),
+        };
+        const time = validateIsoTime(at);
+        const handle = handles.openExisting(tenantPaths(dataDir, tenant));
+        if (handle === null) throw dataApiError('not_found', 'Dokumentet finns inte.');
+        return restoreWithHistory(handle, settings, request, time);
+      });
     },
   };
 }

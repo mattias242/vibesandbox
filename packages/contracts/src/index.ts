@@ -260,6 +260,28 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = {
 
 // ── Data-API: det gatewayn anropar ──────────────────────────────────────────────
 
+/** Händelserna i ändringshistoriken (tjänsten `history`). */
+export type HistoryEvent = 'create' | 'replace' | 'delete' | 'restore';
+
+/** En rad i ändringshistoriken. Bär användar-id, aldrig e-postadress. */
+export interface HistoryEntry {
+  readonly collection: string;
+  readonly documentId: string;
+  readonly event: HistoryEvent;
+  /** ISO-tid, samma värde som dokumentets `updatedAt` efter ändringen. */
+  readonly at: string;
+  /** Den inloggade som gjorde ändringen. */
+  readonly userId: string;
+  /** Innehållet EFTER ändringen; vid `delete` innehållet dokumentet hade innan det raderades. */
+  readonly data: JsonObject;
+}
+
+export interface HistoryPage {
+  readonly entries: readonly HistoryEntry[];
+  /** Skickas tillbaka som `cursor` för nästa (äldre) sida; saknas när historiken är slut. */
+  readonly nextCursor?: string;
+}
+
 /**
  * Lagringsgränssnittet som @vibesandbox/data-api implementerar och gatewayn anropar.
  * Varje metod kräver ett TenantContext; det finns inget sätt att nå data utan ett.
@@ -316,6 +338,45 @@ export interface TenantStore {
     collection: string,
     id: string,
   ): Promise<void>;
+
+  /**
+   * Ändringshistorik (tjänsten `history`). Metoderna FINNS bara när lagringen skapats med
+   * historiken påslagen; annars saknas de, och tjänsten vägrar starta.
+   *
+   * Historiken skrivs av lagringen själv, i samma transaktion som ändringen: en ändring som
+   * sparas har alltid en rad, och en ändring som misslyckas har aldrig någon. Synlighet som för
+   * dokumenten: i en `user`-kollektion ser var och en bara historiken för sina egna dokument
+   * (någon annans ⇒ `not_found`), i en `app`-kollektion ser alla. Nyast först.
+   */
+  readDocumentHistory?(
+    tenant: TenantContext,
+    identity: Identity,
+    collection: string,
+    id: string,
+    options?: { readonly limit?: number; readonly cursor?: string },
+  ): Promise<HistoryPage>;
+
+  /** Kollektionens händelser, nyast först; `since` (ISO-tid) ger bara det som hänt efter den. */
+  readCollectionHistory?(
+    tenant: TenantContext,
+    identity: Identity,
+    collection: string,
+    options?: { readonly since?: string; readonly limit?: number; readonly cursor?: string },
+  ): Promise<HistoryPage>;
+
+  /**
+   * Skriver dokumentets innehåll från historikraden med exakt tiden `at` som en ny version
+   * (händelsen `restore`, som i sin tur loggas). Samma skrivregler som `replaceDocument`; ett
+   * raderat dokument återskapas med samma id. Ingen sådan rad ⇒ `not_found`; en rad som är en
+   * radering ⇒ `invalid_request`.
+   */
+  restoreDocument?(
+    tenant: TenantContext,
+    identity: Identity,
+    collection: string,
+    id: string,
+    at: string,
+  ): Promise<StoredDocument>;
 
   /** Raderar ALL data för en hyresgäst. Används vid avveckling. */
   destroyTenant(tenant: TenantContext): Promise<void>;

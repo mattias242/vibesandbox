@@ -14,7 +14,7 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import type { TenantLimits } from '@vibesandbox/contracts';
 import { dataApiError } from './fel.ts';
 import { pageBudget, pageSizeForNewDatabase, type PageBudget } from './kvot.ts';
-import { CREATE_SCHEMA, SCHEMA_VERSION } from './sql.ts';
+import { CREATE_HISTORY_SCHEMA, CREATE_SCHEMA, SCHEMA_VERSION } from './sql.ts';
 import type { TenantPaths } from './sokvagar.ts';
 
 /** Så länge väntar SQLite på ett lås som en annan process håller, innan det ger upp. */
@@ -49,7 +49,16 @@ interface OpenHandle extends TenantHandle {
   close(): void;
 }
 
-export function createHandleCache(limits: TenantLimits, maxOpenDatabases: number): HandleCache {
+export interface HandleCacheOptions {
+  /** Skapa historiktabellen när en databas öppnas (ändringshistoriken är påslagen). */
+  readonly history?: boolean;
+}
+
+export function createHandleCache(
+  limits: TenantLimits,
+  maxOpenDatabases: number,
+  options: HandleCacheOptions = {},
+): HandleCache {
   // En Map minns insättningsordningen: första nyckeln är alltid den minst nyligen använda.
   const open = new Map<string, OpenHandle>();
 
@@ -66,7 +75,7 @@ export function createHandleCache(limits: TenantLimits, maxOpenDatabases: number
       open.get(oldestKey)?.close();
       open.delete(oldestKey);
     }
-    const handle = openDatabase(paths.databaseFile, limits);
+    const handle = openDatabase(paths.databaseFile, limits, options.history === true);
     open.set(paths.key, handle);
     return handle;
   }
@@ -103,7 +112,7 @@ export function createHandleCache(limits: TenantLimits, maxOpenDatabases: number
   };
 }
 
-function openDatabase(databaseFile: string, limits: TenantLimits): OpenHandle {
+function openDatabase(databaseFile: string, limits: TenantLimits, history: boolean): OpenHandle {
   const db = new DatabaseSync(databaseFile, { enableForeignKeyConstraints: true });
   let budget: PageBudget;
   try {
@@ -118,6 +127,8 @@ function openDatabase(databaseFile: string, limits: TenantLimits): OpenHandle {
     db.exec(`PRAGMA cache_size = -${pragmaInteger(CACHE_SIZE_KIB)}`);
 
     ensureSchema(db);
+    // Före kvoten, som schemat: en full databas ska ändå kunna få historiktabellen.
+    if (history) ensureHistorySchema(db);
 
     // Kvoten sätts EFTER schemat, så att en ny databas alltid går att skapa. Är filen redan
     // större än gränsen (kvoten har sänkts) stannar SQLite på nuvarande storlek: den kan inte
@@ -190,6 +201,18 @@ function ensureSchema(db: DatabaseSync): void {
   try {
     db.exec(CREATE_SCHEMA);
     db.exec(`PRAGMA user_version = ${pragmaInteger(SCHEMA_VERSION)}`);
+    db.exec('COMMIT');
+  } catch (fel) {
+    if (db.isTransaction) db.exec('ROLLBACK');
+    throw fel;
+  }
+}
+
+/** Idempotent. Rör inte `user_version` — se CREATE_HISTORY_SCHEMA i sql.ts. */
+function ensureHistorySchema(db: DatabaseSync): void {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(CREATE_HISTORY_SCHEMA);
     db.exec('COMMIT');
   } catch (fel) {
     if (db.isTransaction) db.exec('ROLLBACK');
