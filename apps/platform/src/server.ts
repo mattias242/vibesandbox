@@ -29,6 +29,7 @@ import { join } from 'node:path';
 import { createAgent } from '@vibesandbox/agent';
 import { createBuilder } from '@vibesandbox/builder';
 import type { Builder } from '@vibesandbox/builder';
+import type { AgentKnowledge } from '@vibesandbox/agent';
 import type { BuildRunner, LlmProvider, Role } from '@vibesandbox/contracts';
 import { createControl } from '@vibesandbox/control';
 import { createTenantStore } from '@vibesandbox/data-api';
@@ -40,18 +41,19 @@ import { ConfigError, platformAddresses } from './config.ts';
 import type { BuilderConfig, PlatformConfig } from './config.ts';
 import { createPlatformIdentity } from './identitet.ts';
 import type { PlatformIdentity } from './identitet.ts';
-import { loadAgentKnowledge } from './kunskap.ts';
 import type { PlatformLogEntry, PlatformLogger } from './logg.ts';
 
 /**
  * Det som inte kommer ur konfigurationen utan kopplas in av den som startar plattformen.
  *
- * Byggkedjan injiceras: `main.ts` och `dev.ts` skapar den ur `@vibesandbox/build` (se byggkedja.ts),
- * testerna skickar en fejkad.
+ * Byggkedjan och agentens kunskap injiceras: `main.ts` och `dev.ts` skapar dem med
+ * `createBuilderDependencies` (byggkedja.ts, kunskap.ts), testerna kan skicka en fejkad byggkedja.
  */
 export interface PlatformDependencies {
   /** Krävs när byggverktyget är påslaget. */
   readonly buildRunner?: BuildRunner;
+  /** Krävs när byggverktyget är påslaget: SDK-referensen, exempelappen och startfilerna (kunskap.ts). */
+  readonly knowledge?: AgentKnowledge;
   /**
    * Språkmodellen FÖRE maskning. Standard: en OpenAI-kompatibel leverantör enligt konfigurationen.
    * Maskningen av personuppgifter läggs alltid på av plattformen, även på en insänd leverantör.
@@ -122,17 +124,20 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
   // byggverktyg där varje önskemål misslyckas.
   const builderConfig = config.builder;
   const buildRunner = deps.buildRunner;
+  const knowledge = deps.knowledge;
   if (builderConfig !== undefined && buildRunner === undefined) {
     throw new ConfigError([
       'Byggverktyget är påslaget (LLM_MODEL är satt), men byggkedjan är inte installerad. ' +
         'Ta bort LLM_MODEL för att köra utan byggverktyget, eller installera @vibesandbox/build.',
     ]);
   }
+  if (builderConfig !== undefined && knowledge === undefined) {
+    throw new ConfigError(['Byggverktyget är påslaget, men agentens kunskap om mallen och SDK:t är inte inläst.']);
+  }
   const addresses = platformAddresses(config);
 
   // Ordningen är vald så att ett fel lämnar så lite som möjligt öppet: det som kan kasta utan
   // att ha öppnat något kommer först. Det som ändå hunnit öppnas stängs i `catch`, i omvänd ordning.
-  const knowledge = builderConfig === undefined ? undefined : loadAgentKnowledge();
   const opened: Array<() => Promise<void>> = [];
   /** Stänger i omvänd ordning, en i taget (ordningen spelar roll), och allt även om något fallerar. */
   const closeOpened = async (): Promise<void> => {

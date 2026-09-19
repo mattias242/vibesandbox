@@ -4,7 +4,9 @@
  */
 export { ConfigError, DEFAULT_BUILDER_UI_DIR, loadConfig, platformAddresses } from './config.ts';
 export type { BuilderConfig, Environment, IdentityConfig, MailConfig, PlatformAddresses, PlatformConfig } from './config.ts';
-export { BUILT_IN_STARTER_FILES, loadAgentKnowledge } from './kunskap.ts';
+export { createBuilderDependencies } from './beroenden.ts';
+export { createPlatformBuildRunner } from './byggkedja.ts';
+export { loadAgentKnowledge } from './kunskap.ts';
 export type { PlatformLogEntry, PlatformLogger } from './logg.ts';
 export { createPlatform } from './server.ts';
 export type { ListenInfo, Platform, PlatformDependencies } from './server.ts';

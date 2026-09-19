@@ -17,7 +17,7 @@ import type { Control } from '@vibesandbox/control';
 import { signTestIdentity, testLoginPath } from '@vibesandbox/gateway';
 import { createFakeProvider } from '@vibesandbox/llm';
 import type { FakeProvider, FakeReply } from '@vibesandbox/llm';
-import { createPlatform } from '@vibesandbox/platform';
+import { createPlatform, loadAgentKnowledge } from '@vibesandbox/platform';
 import type { Platform } from '@vibesandbox/platform';
 import { fejkadByggkedja } from './byggkedja.ts';
 import type { FejkadByggkedja } from './byggkedja.ts';
@@ -179,7 +179,7 @@ export class Varld extends World {
         ...(builder === undefined ? {} : { builder }),
         ...(this.kvot === undefined ? {} : { limits: this.kvot }),
       },
-      this.#byggkedja === undefined ? {} : { buildRunner: this.#byggkedja, llmProvider: modell },
+      this.#byggkedja === undefined ? {} : { buildRunner: this.#byggkedja, llmProvider: modell, knowledge: await loadAgentKnowledge() },
     );
     this.port = (await this.#platform.listen()).port;
   }

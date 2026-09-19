@@ -5,10 +5,12 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { LlmProvider } from '@vibesandbox/contracts';
+import type { BuildRunner, LlmProvider } from '@vibesandbox/contracts';
 import { createFakeProvider } from '@vibesandbox/llm';
 import type { FakeProvider, FakeReply } from '@vibesandbox/llm';
 import type { BuilderConfig, IdentityConfig, PlatformConfig } from '../../src/config.ts';
+import { createPlatformBuildRunner } from '../../src/byggkedja.ts';
+import { loadAgentKnowledge } from '../../src/kunskap.ts';
 import type { PlatformLogEntry } from '../../src/logg.ts';
 import { createPlatform } from '../../src/server.ts';
 import type { Platform } from '../../src/server.ts';
@@ -39,6 +41,8 @@ export interface Val {
   readonly utanByggverktyg?: boolean;
   /** Utan byggkedja trots påslaget byggverktyg (för startfelet). */
   readonly utanByggkedja?: boolean;
+  /** Den RIKTIGA byggkedjan (`local`: tsc och Vite som barnprocesser) i stället för den fejkade. */
+  readonly riktigByggkedja?: boolean;
 }
 
 export async function startaPlattform(val: Val = {}): Promise<Testplattform> {
@@ -74,12 +78,16 @@ export async function startaPlattform(val: Val = {}): Promise<Testplattform> {
   const modell = createFakeProvider(val.modellsvar ?? []);
   const byggkedja = fejkadByggkedja();
   const llmProvider: LlmProvider = modell;
+  const riktig: BuildRunner | undefined =
+    val.riktigByggkedja === true ? await createPlatformBuildRunner({ ...config, ...(config.builder === undefined ? {} : { builder }) }) : undefined;
+  const knowledge = await loadAgentKnowledge();
   let platform: Platform;
   let port: number;
   try {
     platform = createPlatform(config, {
-      ...(val.utanByggkedja === true ? {} : { buildRunner: byggkedja }),
+      ...(val.utanByggkedja === true ? {} : { buildRunner: riktig ?? byggkedja }),
       llmProvider,
+      knowledge,
     });
   } catch (error) {
     await rm(arbetskatalog, { recursive: true, force: true });

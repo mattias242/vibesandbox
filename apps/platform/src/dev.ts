@@ -10,8 +10,9 @@
  *
  * Byggverktyget slås på när en nyckel till språkmodellen finns i miljön (`BERGET_API_KEY` eller
  * `LLM_API_KEY`) — skriptet läser projektets `.env` i repots rot om den finns. Då byggs också
- * byggverktygets webbgränssnitt, och Berget används med samma modell som i drift om inget annat
- * anges. Utan nyckel körs plattformen utan byggverktyg, och det sägs.
+ * byggverktygets webbgränssnitt, Berget används med samma modell som i drift om inget annat
+ * anges, och apparna byggs med byggkedjans `local`-drivrutin (snabbast; appkoden transformeras
+ * men körs inte vid bygget). Utan nyckel körs plattformen utan byggverktyg, och det sägs.
  *
  * Allt går genom samma `loadConfig` som i drift — även här vägrar plattformen alltså starta med
  * testinloggningen om NODE_ENV=production. Hemligheten slumpas fram vid varje start om ingen är
@@ -22,7 +23,7 @@ import { randomBytes } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { createControl } from '@vibesandbox/control';
 import { signTestIdentity, testLoginPath } from '@vibesandbox/gateway';
-import { createBuildRunner } from './byggkedja.ts';
+import { createBuilderDependencies } from './beroenden.ts';
 import { loadConfig, platformAddresses } from './config.ts';
 import type { PlatformConfig } from './config.ts';
 import { exitWithStartupError, startPlatform } from './start.ts';
@@ -63,7 +64,7 @@ try {
   const hasKey = fromEnvironment['LLM_API_KEY'] !== undefined || fromEnvironment['BERGET_API_KEY'] !== undefined;
   const port = fromEnvironment['PORT'] ?? DEV_PORT;
 
-  let config: PlatformConfig = loadConfig({
+  const config: PlatformConfig = loadConfig({
     BASE_DOMAIN: DEV_DOMAIN,
     APP_DOMAIN: DEV_DOMAIN,
     DATA_DIR: join(PACKAGE_ROOT, 'data', 'dev'),
@@ -76,16 +77,10 @@ try {
     ...fromEnvironment,
   });
 
-  let buildRunner = await createBuildRunner(config);
-  let builderNote: string | undefined;
-  if (config.builder === undefined) {
-    builderNote = 'Byggverktyget är avstängt: det kräver en nyckel till språkmodellen (BERGET_API_KEY i projektets .env).';
-  } else if (buildRunner === undefined) {
-    // Utvecklingsläget kör hellre som förut än inte alls. (I drift är detta ett startfel.)
-    const { builder: _avstangt, ...utan } = config;
-    config = utan;
-    builderNote = 'Byggverktyget är avstängt: byggkedjan (@vibesandbox/build) är inte installerad än.';
-  }
+  const builderNote =
+    config.builder === undefined
+      ? 'Byggverktyget är avstängt: det kräver en nyckel till språkmodellen (BERGET_API_KEY i projektets .env).'
+      : undefined;
 
   npmRun('@vibesandbox/app-template', 'Appmallen gick inte att bygga. Har du kört "npm install --ignore-scripts"?');
   if (config.builder !== undefined) {
@@ -102,7 +97,7 @@ try {
     await control.close();
   }
 
-  await startPlatform(config, buildRunner === undefined ? {} : { buildRunner });
+  await startPlatform(config, await createBuilderDependencies(config));
 
   if (config.identity.provider !== 'test') throw new Error('Utvecklingsläget kräver IDENTITY_PROVIDER=test.');
   const secret = config.identity.testSecret;
