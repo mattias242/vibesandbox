@@ -82,6 +82,7 @@ describe('Plattformen som en riktig server', () => {
       dataDir,
       port: 0,
       listenHost: '127.0.0.1',
+      publicScheme: 'http',
       identity: { provider: 'test', testSecret: HEMLIGHET },
       ...extra,
     };
