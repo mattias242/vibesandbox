@@ -20,11 +20,14 @@
 #     behöver följer med. Den skickas via stdin, aldrig på en kommandorad (syns i `ps`), och blir
 #     läsbar bara för root.
 #   - Hemligheter skrivs aldrig ut.
+#   - sudo kräver lösenord på värden, och cachen gäller bara i samma terminal. Därför läggs allt
+#     först i en mellanlagring hos ops (utan sudo), och ALLT som kräver root görs sedan i EN
+#     session med terminal (ssh -t): lösenordet efterfrågas en gång.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 REPO="$PWD"
-LOKAL_ENV="${REPO}/.env"
+LOKAL_ENV="${DRIFTSATT_ENV:-${REPO}/.env}"
 MAL_KATALOG="/srv/vibesandbox/compose"
 BAS_DOMAN="${BAS_DOMAN:-example.test}"
 
@@ -130,30 +133,53 @@ git fetch -q origin main 2>/dev/null || true
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main 2>/dev/null || git rev-parse HEAD)" ] || echo "  obs: HEAD är inte origin/main"
 sakerstall_identitetsnyckel
 serverns_env >/dev/null # avbryter om något saknas
-ssh -o BatchMode=yes "$MAL" 'sudo -n true' 2>/dev/null || fel "kan inte köra sudo utan lösenord över SSH. Kör först: ssh -t ${MAL} sudo -v   (och sedan skriptet igen inom några minuter)"
 ssh "$MAL" "test -d ${MAL_KATALOG}" || fel "${MAL_KATALOG} finns inte på värden — har provision.sh körts?"
 
-steg "Lägger ut $(git log -1 --format='%h %s')"
-git archive --format=tar HEAD | ssh "$MAL" "sudo sh -c 'set -e; rm -rf ${MAL_KATALOG}/app.ny; mkdir -p ${MAL_KATALOG}/app.ny; tar -x -C ${MAL_KATALOG}/app.ny; rm -rf ${MAL_KATALOG}/app.gammal; if [ -d ${MAL_KATALOG}/app ]; then mv ${MAL_KATALOG}/app ${MAL_KATALOG}/app.gammal; fi; mv ${MAL_KATALOG}/app.ny ${MAL_KATALOG}/app'"
-git rev-parse --short HEAD | ssh "$MAL" "sudo tee ${MAL_KATALOG}/app/VERSION >/dev/null"
-echo "  utlagt i ${MAL_KATALOG}/app"
+# Mellanlagringen i ops hemkatalog (läge 700). Den innehåller serverns .env en kort stund; den
+# tas bort av root-steget, och av städningen nedan om något går fel innan dess.
+MELLAN='.driftsatt'
+stada_mellan() { ssh "$MAL" "rm -rf ~/${MELLAN}" 2>/dev/null || true; }
+trap stada_mellan EXIT
 
-steg "Skriver serverns .env (bara root kan läsa den)"
-serverns_env | ssh "$MAL" "sudo sh -c 'umask 077; cat >${MAL_KATALOG}/.env.ny && mv ${MAL_KATALOG}/.env.ny ${MAL_KATALOG}/.env && chmod 600 ${MAL_KATALOG}/.env'"
-echo "  ${MAL_KATALOG}/.env skriven"
-
-COMPOSE="sudo docker compose --project-name vibesandbox --project-directory ${MAL_KATALOG}/app/deploy -f ${MAL_KATALOG}/app/deploy/compose.yml --env-file ${MAL_KATALOG}/.env"
-
-steg "Bygger och startar stacken (första gången tar det några minuter)"
-ssh "$MAL" "${COMPOSE} up -d --build --remove-orphans --wait --wait-timeout 300"
+steg "Skickar $(git log -1 --format='%h %s') (utan sudo)"
+git archive --format=tar HEAD | ssh "$MAL" "set -e; umask 077; rm -rf ~/${MELLAN}; mkdir ~/${MELLAN} ~/${MELLAN}/app; tar -x -C ~/${MELLAN}/app"
+git rev-parse --short HEAD | ssh "$MAL" "umask 077; cat >~/${MELLAN}/VERSION"
+serverns_env | ssh "$MAL" "umask 077; cat >~/${MELLAN}/env"
+# Root-steget som skript: inga hemligheter i det, bara sökvägar. Bara MAL_KATALOG expanderas
+# här; allt som ska tolkas på värden är skyddat med \.
+# shellcheck disable=SC2087
+ssh "$MAL" "umask 077; cat >~/${MELLAN}/installera.sh" <<EOF
+set -eu
+M="\$1"; FORSTA="\${2:-}"
+K='${MAL_KATALOG}'
+echo "== Lägger ut i \$K/app"
+rm -rf "\$K/app.ny"; mkdir -p "\$K/app.ny"
+cp -R "\$M/app/." "\$K/app.ny/"; cp "\$M/VERSION" "\$K/app.ny/VERSION"
+chown -R 0:0 "\$K/app.ny"
+rm -rf "\$K/app.gammal"; if [ -d "\$K/app" ]; then mv "\$K/app" "\$K/app.gammal"; fi
+mv "\$K/app.ny" "\$K/app"
+echo "== Skriver serverns .env (bara root kan läsa den)"
+(umask 077; cp "\$M/env" "\$K/.env.ny"); chown 0:0 "\$K/.env.ny"; chmod 600 "\$K/.env.ny"; mv -f "\$K/.env.ny" "\$K/.env"
+rm -rf "\$M"
+C="docker compose --project-name vibesandbox --project-directory \$K/app/deploy -f \$K/app/deploy/compose.yml --env-file \$K/.env"
+echo "== Bygger och startar stacken (första gången tar det några minuter)"
+\$C up -d --build --remove-orphans --wait --wait-timeout 300
 sleep 5
-ssh "$MAL" "${COMPOSE} ps --format '{{.Service}}: {{.State}}'" | sed 's/^/  /'
-ssh "$MAL" "${COMPOSE} ps --format '{{.State}}'" | grep -qv running && fel "någon tjänst kör inte — se: ssh ${MAL} '${COMPOSE} logs --tail 50'"
-
-if [ -n "$FORSTA_BYGGARE" ]; then
-  steg "Lägger in första byggaren"
-  ssh "$MAL" "${COMPOSE} exec -T -e DATA_DIR=/data platform node packages/identity/src/cli.ts lagg-till $(printf '%q' "$FORSTA_BYGGARE") builder"
+\$C ps --format '{{.Service}}: {{.State}}' | sed 's/^/  /'
+if \$C ps --format '{{.State}}' | grep -qv running; then
+  echo "någon tjänst kör inte:"; \$C logs --tail 50; exit 1
 fi
+if [ -n "\$FORSTA" ]; then
+  echo "== Lägger in första byggaren"
+  \$C exec -T -e DATA_DIR=/data platform node packages/identity/src/cli.ts lagg-till "\$FORSTA" builder
+fi
+EOF
+
+steg "Installerar och startar som root (sudo frågar efter ops lösenord EN gång)"
+ssh -t "$MAL" "sudo sh ~/${MELLAN}/installera.sh ~/${MELLAN} $(printf '%q' "$FORSTA_BYGGARE")"
+trap - EXIT
+
+if [ "${DRIFTSATT_ROKTEST:-1}" = 0 ]; then echo; echo "Klart (röktestet överhoppat)."; exit 0; fi
 
 steg "Röktest över HTTPS"
 for _ in $(seq 1 30); do
