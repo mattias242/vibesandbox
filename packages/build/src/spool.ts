@@ -206,6 +206,8 @@ export interface SpoolWorkerOptions {
   readonly maxJobAgeMs?: number;
   /** Arbetskataloger. Standard: operativsystemets temp (i containern en tmpfs). */
   readonly tempDirectory?: string;
+  /** Bara för tester: körs precis innan ett resultat publiceras, för att pröva kapplöpningar. */
+  readonly beforePublish?: (id: string) => Promise<void>;
 }
 
 function parseJob(text: string, expectedId: string): Job | undefined {
@@ -264,7 +266,12 @@ export async function runSpoolWorker(options: SpoolWorkerOptions): Promise<void>
     try {
       await writeFile(path.join(staging, 'result.json'), JSON.stringify({ ok: report.ok, diagnostics: capDiagnostics(report.diagnostics) }), { flag: 'wx' });
       if (distDirectory !== undefined) await copyTreeSafely(distDirectory, path.join(staging, 'dist'), limits.maxOutputBytes);
+      await options.beforePublish?.(id);
       await rename(staging, dir('done', id));
+      // Plattformen kan ha gett upp mellan kontrollen ovan och flytten. Den skriver alltid cancel/
+      // INNAN den städar done/ — så antingen hann den städa vårt resultat, eller så ser vi markören
+      // här och städar själva. Utan det blev resultatet liggande tills städningen efter tio minuter.
+      if (await exists(dir('cancel', id))) await rm(dir('done', id), { recursive: true, force: true });
     } finally {
       await rm(staging, { recursive: true, force: true });
     }

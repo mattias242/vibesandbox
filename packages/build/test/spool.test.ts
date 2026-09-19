@@ -3,7 +3,7 @@
  * (egen container utan nät och utan hemligheter) bygger dem. Här körs båda sidorna i samma
  * testprocess mot en temporär katalog.
  */
-import { mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +35,7 @@ afterEach(async () => {
   await rm(jobsDirectory, { recursive: true, force: true });
 });
 
-function startWorker(options: { maxJobAgeMs?: number } = {}): { stop: () => Promise<void>; done: Promise<void> } {
+function startWorker(options: { maxJobAgeMs?: number; beforePublish?: (id: string) => Promise<void> } = {}): { stop: () => Promise<void>; done: Promise<void> } {
   const controller = new AbortController();
   const done = runSpoolWorker({ jobsDirectory, templateDirectory, signal: controller.signal, pollIntervalMs: 20, ...options });
   const handle = {
@@ -155,6 +155,29 @@ describe('spool: plattform och byggarbetare', () => {
     const second = await build(starterFiles);
     expect(second.ok).toBe(true);
     await until(async () => (await entries('done')).length === 0 && (await entries('cancel')).length === 0);
+  }, SLOW);
+
+  it('plattformen ger upp precis när arbetaren publicerar: inget övergivet resultat blir kvar', async () => {
+    // Kapplöpningen: arbetaren kontrollerar avbrott, plattformen ger upp (skriver cancel/ och städar
+    // done/, som ännu inte finns) och slutar vänta, arbetaren flyttar sedan sitt resultat på plats.
+    // Utan åtgärd blev resultatet liggande tills städningen efter tio minuter. Ingen plattform väntar
+    // här — jobbet läggs direkt i katalogen, precis som en plattform som redan har gått vidare.
+    const id = `${Date.now()}-${'0123456789abcdef'}`;
+    const job = { version: 1, id, deadline: Date.now() + 60_000, files: starterFiles };
+    await mkdir(path.join(jobsDirectory, 'tmp'), { recursive: true });
+    await mkdir(path.join(jobsDirectory, 'incoming'), { recursive: true });
+    await writeFile(path.join(jobsDirectory, 'tmp', `${id}.json`), JSON.stringify(job));
+    await rename(path.join(jobsDirectory, 'tmp', `${id}.json`), path.join(jobsDirectory, 'incoming', `${id}.json`));
+    let publicerat = false;
+    const handle = startWorker({
+      beforePublish: async (publishId) => {
+        await writeFile(path.join(jobsDirectory, 'cancel', publishId), '');
+        publicerat = true;
+      },
+    });
+    await until(async () => publicerat && (await entries('running')).length === 0);
+    expect(await entries('done')).toEqual([]);
+    await handle.stop();
   }, SLOW);
 
   it('arbetaren slutar när signalen avbryts', async () => {
