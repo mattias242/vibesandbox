@@ -1,7 +1,7 @@
 /**
  * Gränser för ett bygge. Standardvärdena är satta för driftservern: en VPS med 2 vCPU och 4 GB
  * minne, där plattformen, databasen och ett bygge åt gången ska få plats samtidigt.
- * Mätt 2026-09-19: startappen bygger på ~1–3 s och tar långt under 512 MB (se README).
+ * Mätt 2026-09-19 (Mac): startappen bygger på under 1 s varm, minnestopp 164 MB, 31 trådar (se README).
  */
 export interface BuildLimits {
   /** Hela bygget (typkontroll + Vite). Överskridet ⇒ processerna dödas och bygget misslyckas. */
