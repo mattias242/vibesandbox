@@ -8,14 +8,14 @@
  * Vilken attack som körs styrs av en kommentar i appens App.tsx.
  */
 import { execFile } from 'node:child_process';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { BuildResult, SourceFiles } from '@vibesandbox/contracts';
-import { createBuildRunner, readTemplateKnowledge } from '../src/index.ts';
+import { createBuildRunner, createSpoolBuildRunner, readTemplateKnowledge } from '../src/index.ts';
 import { dockerRunArguments } from '../src/docker.ts';
 import { DEFAULT_LIMITS } from '../src/limits.ts';
 import { TODO_APP } from './apps.ts';
@@ -180,6 +180,36 @@ describe.skipIf(!enabled)('docker: engångscontainer per bygge', () => {
     expect(result.ok).toBe(false);
     expect(result.diagnostics[0]?.source).toBe('policy');
   });
+
+  it('spool: byggarbetaren i en egen container utan nät, skrivskyddad, bygger jobb ur den delade katalogen', async () => {
+    const jobsDirectory = await mkdtemp(path.join(tmpdir(), 'vibesandbox-jobb-docker-'));
+    await chmod(jobsDirectory, 0o777);
+    const name = `vibesandbox-arbetare-test-${process.pid}`;
+    // I drift kör plattform och arbetare båda som uid 10001. Här skriver testprocessen jobben,
+    // så arbetaren får testprocessens uid för att kunna läsa dem även på Linux.
+    const user = `${process.getuid?.() ?? 10001}:${process.getgid?.() ?? 10001}`;
+    await run('docker', [
+      'run', '-d', '--rm', '--name', name, '--network', 'none', '--read-only', '--tmpfs', '/tmp:rw,size=512m',
+      '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256', '--memory', '1536m',
+      '--user', user, '--volume', `${jobsDirectory}:/jobs`, IMAGE, 'node', 'images/build-worker/spool-worker.ts',
+    ]);
+    try {
+      const spool = createSpoolBuildRunner({ jobsDirectory, timeoutMs: 120_000 });
+      for (const round of ['kall', 'varm']) {
+        const started = performance.now();
+        const result = await spool.build(starterFiles);
+        results.push(result);
+        console.info(`[build/spool i container] startappen (${round}): ${((performance.now() - started) / 1000).toFixed(2)} s`);
+        expect(result.diagnostics).toEqual([]);
+        expect(result.ok).toBe(true);
+      }
+      const denied = await spool.build({ 'src/App.tsx': "export const App = () => { const a: number = 'x'; return null; };\n", 'src/styles.css': '' });
+      expect(denied.diagnostics[0]).toMatchObject({ source: 'typecheck', file: 'src/App.tsx' });
+    } finally {
+      await run('docker', ['stop', '-t', '10', name]).catch(() => undefined);
+      await rm(jobsDirectory, { recursive: true, force: true });
+    }
+  }, SLOW);
 
   it('mallens låsta filer i avbilden är de i repot', async () => {
     const { stdout } = await run('docker', ['run', '--rm', '--network', 'none', IMAGE, 'cat', '/opt/vibesandbox/packages/app-template/vite.config.ts']);
