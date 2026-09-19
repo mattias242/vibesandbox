@@ -4,19 +4,23 @@
   "private": true,
   "license": "EUPL-1.2",
   "type": "module",
-  "description": "Den körbara plattformen: sätter ihop lagring, appregister och gateway till en server.",
+  "description": "Den körbara plattformen: sätter ihop lagring, appregister, inloggning, byggverktyg och gateway till en server.",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/main.ts",
-    "dev": "node src/dev.ts",
+    "dev": "node --env-file-if-exists=../../.env src/dev.ts",
     "cli": "node --env-file-if-exists=.env src/cli.ts"
   },
   "dependencies": {
+    "@vibesandbox/agent": "*",
+    "@vibesandbox/builder": "*",
     "@vibesandbox/contracts": "*",
     "@vibesandbox/control": "*",
     "@vibesandbox/data-api": "*",
-    "@vibesandbox/gateway": "*"
+    "@vibesandbox/gateway": "*",
+    "@vibesandbox/identity": "*",
+    "@vibesandbox/llm": "*"
   }
 }

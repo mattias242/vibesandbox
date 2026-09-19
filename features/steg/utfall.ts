@@ -6,14 +6,14 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { Then } from '@cucumber/cucumber';
-import { APP_CONTENT_SECURITY_POLICY } from '@vibesandbox/contracts';
+import { APP_CONTENT_SECURITY_POLICY, builderContentSecurityPolicy } from '@vibesandbox/contracts';
 import type { ApiErrorBody, DocumentPage, StoredDocument } from '@vibesandbox/contracts';
 import { APPENS_KANNETECKEN, EGEN_META_REGEL } from './stod/fixtur.ts';
 import { huvud, jsonKropp } from './stod/http.ts';
 import type { Svar } from './stod/http.ts';
 import { somJsonObjekt } from './stod/json.ts';
 import { vantatFelsvar } from './stod/svarsfraser.ts';
-import { dokument, dokumentlista } from './stod/varld.ts';
+import { DOMAN, dokument, dokumentlista } from './stod/varld.ts';
 import type { Varld } from './stod/varld.ts';
 
 function allaSvar(varld: Varld): readonly Svar[] {
@@ -32,6 +32,16 @@ function kravPaSkyddsregler(svar: Svar): void {
   assert.equal(inramning.length, 1, 'Skyddsreglerna ska ange frame-ancestors exakt en gång.');
   assert.match(inramning[0] ?? '', /^frame-ancestors (?:'none'|https?:\/\/bygg\.[a-z0-9.-]+(?::[0-9]{1,5})?)$/);
   assert.equal(regler.length, kontraktet.length + 1, 'Skyddsreglerna innehåller något utöver kontraktet.');
+  assert.equal(huvud(svar, 'Content-Security-Policy-Report-Only'), undefined);
+  assert.equal(huvud(svar, 'X-Content-Type-Options'), 'nosniff');
+}
+
+/**
+ * Byggverktygets skyddsregler: exakt kontraktets värde, där förhandsvisningarna (och bara de) får
+ * ramas in, och byggverktyget självt aldrig av någon.
+ */
+function kravPaByggverktygetsSkyddsregler(svar: Svar): void {
+  assert.equal(huvud(svar, 'Content-Security-Policy'), builderContentSecurityPolicy(`http://*.${DOMAN}`));
   assert.equal(huvud(svar, 'Content-Security-Policy-Report-Only'), undefined);
   assert.equal(huvud(svar, 'X-Content-Type-Options'), 'nosniff');
 }
@@ -66,8 +76,10 @@ Then(/^får (?:han|hon|anroparen) svaret "([^"]+)"$/, function (this: Varld, fra
     const kropp = jsonKropp(svar) as ApiErrorBody;
     assert.equal(kropp.error?.code, vantat.kod);
     assert.ok(typeof kropp.error.message === 'string' && kropp.error.message.length > 0, 'Felsvaret saknar ett meddelande att visa.');
-    // "Även felsidor bär skyddsreglerna" — prövas på varje felsvar i varje scenario.
-    kravPaSkyddsregler(svar);
+    // "Även felsidor bär skyddsreglerna" — prövas på varje felsvar i varje scenario, med de regler
+    // som gäller för värden svaret kom från.
+    if (this.svarFranByggverktyget) kravPaByggverktygetsSkyddsregler(svar);
+    else kravPaSkyddsregler(svar);
   }
 });
 

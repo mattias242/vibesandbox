@@ -6,17 +6,21 @@
  * Apparna skapas genom en egen `@vibesandbox/control`-instans mot samma datakatalog, precis som
  * CLI:t gör bredvid en server i drift. All övrig kontakt med plattformen går över rå HTTP.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { World, setWorldConstructor } from '@cucumber/cucumber';
-import { CSRF_HEADER, DEFAULT_TENANT_LIMITS } from '@vibesandbox/contracts';
-import type { AppId, Identity, JsonObject, TenantLimits } from '@vibesandbox/contracts';
+import { BUILDER_API_PREFIX, CSRF_HEADER, DEFAULT_TENANT_LIMITS } from '@vibesandbox/contracts';
+import type { AgentEvent, AppId, BuilderJob, ChatMessage, Identity, JsonObject, LlmProvider, TenantLimits } from '@vibesandbox/contracts';
 import { createControl } from '@vibesandbox/control';
 import type { Control } from '@vibesandbox/control';
-import { signTestIdentity } from '@vibesandbox/gateway';
-import { createPlatform } from '@vibesandbox/platform';
+import { signTestIdentity, testLoginPath } from '@vibesandbox/gateway';
+import { createFakeProvider } from '@vibesandbox/llm';
+import type { FakeProvider, FakeReply } from '@vibesandbox/llm';
+import { createPlatform, loadAgentKnowledge } from '@vibesandbox/platform';
 import type { Platform } from '@vibesandbox/platform';
+import { fejkadByggkedja } from './byggkedja.ts';
+import type { FejkadByggkedja } from './byggkedja.ts';
 import { skrivFixturapp } from './fixtur.ts';
 import type { FixturVal } from './fixtur.ts';
 import { anropa, jsonKropp } from './http.ts';
@@ -24,6 +28,10 @@ import type { Svar } from './http.ts';
 
 /** Scenariot "Ett ogiltigt värdnamn…" nämner `appar.test`, så det är plattformens domän här. */
 export const DOMAN = 'appar.test';
+
+/** Byggverktygets värd och origin. Ingen port i origin: den publika porten är schemats standard. */
+export const BYGGVARD = `bygg.${DOMAN}`;
+export const BYGG_ORIGIN = `http://${BYGGVARD}`;
 
 /** Finns bara i testerna. Slumpas inte: en fast hemlighet gör ett fallerat scenario återskapbart. */
 const TESTHEMLIGHET = 'bdd-hemlighet-som-bara-finns-i-scenarierna-0123456789';
@@ -68,6 +76,26 @@ export interface AnropTillApp {
 
 const SKRIVANDE = new Set(['POST', 'PUT', 'DELETE']);
 
+export interface AnropTillByggverktyget {
+  /** Vem som anropar. Utelämnas det skickas ingen inloggning alls. */
+  readonly person?: string;
+  readonly metod?: string;
+  readonly sokvag: string;
+  readonly json?: unknown;
+  /** `Origin`-huvudet. Standard för skrivande anrop: byggverktygets egen. `null` = inget huvud. */
+  readonly origin?: string | null;
+  readonly utanSkyddshuvud?: boolean;
+  /** Logga in med webbläsarens kaka i stället för `Authorization` — som en riktig sida gör. */
+  readonly medKaka?: boolean;
+}
+
+/** Ett jobb som följts till sitt slut: status och ALLA händelser i den ordning de kom. */
+export interface FoljtJobb {
+  readonly jobId: string;
+  readonly status: BuilderJob['status'];
+  readonly events: readonly AgentEvent[];
+}
+
 export class Varld extends World {
   kvot: TenantLimits | undefined;
   port = 0;
@@ -86,6 +114,24 @@ export class Varld extends World {
   /** Id:n på dokument som skapats i en app, i ordning — för "raderar ett dokument". */
   readonly dokumentIApp = new Map<string, string[]>();
 
+  // ── Byggverktyget (bara i scenarierna under features/bygga/) ──────────────────
+  /** Sätts av kroken innan plattformen startar. */
+  byggverktyg = false;
+  /** Allt som skickades till språkmodellen, EFTER plattformens maskning. */
+  readonly modellanrop: ChatMessage[][] = [];
+  /** Varje persons app i byggverktyget ("Annas app"). */
+  readonly byggappar = new Map<string, string>();
+  /** Det senaste jobbet, följt till sitt slut. */
+  jobb: FoljtJobb | undefined;
+  /** Den senast öppnade förhandsvisningen. */
+  forhandsvisning: Svar | undefined;
+  /** Kom svaren i `svar` från byggverktygets värd? Avgör vilka skyddsregler som gäller för dem. */
+  svarFranByggverktyget = false;
+  #modell: FakeProvider = createFakeProvider([]);
+  #byggkedja: FejkadByggkedja | undefined;
+  /** Byggverktygets inloggningskaka per person (testinloggningens `vs-test-session`). */
+  readonly #byggkakor = new Map<string, string>();
+
   #arbetskatalog: string | undefined;
   #platform: Platform | undefined;
   #control: Control | undefined;
@@ -99,15 +145,42 @@ export class Varld extends World {
   async starta(): Promise<void> {
     this.#arbetskatalog = await mkdtemp(join(tmpdir(), 'vibesandbox-bdd-'));
     this.#control = createControl({ dataDir: this.dataDir });
-    this.#platform = createPlatform({
-      baseDomain: DOMAN,
-      appDomain: DOMAN,
-      dataDir: this.dataDir,
-      port: 0,
-      listenHost: '127.0.0.1',
-      identity: { provider: 'test', testSecret: TESTHEMLIGHET },
-      ...(this.kvot === undefined ? {} : { limits: this.kvot }),
-    });
+
+    let builder;
+    if (this.byggverktyg) {
+      const ui = join(this.#arbetskatalog, 'ui');
+      await mkdir(ui);
+      await writeFile(join(ui, 'index.html'), '<!doctype html><title>Byggverktyget</title>');
+      builder = {
+        llm: { baseUrl: 'https://llm.example.org/v1', model: 'fejk/inspelad', apiKey: 'bdd-nyckel-som-aldrig-anvands' },
+        build: { driver: 'local' as const },
+        uiDirectory: ui,
+      };
+      this.#byggkedja = fejkadByggkedja();
+    }
+    // Språkmodellen byts av scenariots Givet-steg; plattformen lägger sin maskning framför den här.
+    const modell: LlmProvider = {
+      name: 'fejk',
+      complete: (request) => {
+        this.modellanrop.push(request.messages.map((m) => ({ role: m.role, content: m.content })));
+        return this.#modell.complete(request);
+      },
+    };
+
+    this.#platform = createPlatform(
+      {
+        baseDomain: DOMAN,
+        appDomain: DOMAN,
+        dataDir: this.dataDir,
+        port: 0,
+        listenHost: '127.0.0.1',
+        publicScheme: 'http',
+        identity: { provider: 'test', testSecret: TESTHEMLIGHET },
+        ...(builder === undefined ? {} : { builder }),
+        ...(this.kvot === undefined ? {} : { limits: this.kvot }),
+      },
+      this.#byggkedja === undefined ? {} : { buildRunner: this.#byggkedja, llmProvider: modell, knowledge: await loadAgentKnowledge() },
+    );
     this.port = (await this.#platform.listen()).port;
   }
 
@@ -115,6 +188,7 @@ export class Varld extends World {
   async stada(): Promise<void> {
     await this.#platform?.close().catch(() => {});
     await this.#control?.close().catch(() => {});
+    for (const katalog of this.#byggkedja?.kvar ?? []) await rm(katalog, { recursive: true, force: true }).catch(() => {});
     if (this.#arbetskatalog !== undefined) {
       await rm(this.#arbetskatalog, { recursive: true, force: true }).catch(() => {});
     }
@@ -218,6 +292,122 @@ export class Varld extends World {
     this.senastSparat.set(personnamn, sparat);
     this.dokumentIApp.set(app, [...(this.dokumentIApp.get(app) ?? []), id]);
     return sparat;
+  }
+
+  // ── Byggverktyget ────────────────────────────────────────────────────────────
+
+  /** Språkmodellen svarar härefter med de här svaren, i tur och ordning. */
+  sattModellsvar(svar: readonly FakeReply[]): void {
+    this.#modell = createFakeProvider(svar);
+  }
+
+  loggaInSomByggare(namn: string): Person {
+    const identitet: Identity = { userId: `anv-${namn.toLowerCase()}`, email: `${namn.toLowerCase()}@example.org`, roles: ['builder'] };
+    const person: Person = { namn, identitet, inloggning: signTestIdentity(identitet, TESTHEMLIGHET) };
+    this.personer.set(namn, person);
+    this.senastInloggad = namn;
+    return person;
+  }
+
+  /** `Host` för en adress som byggverktyget gett ut (utan port) — med plattformens verkliga port. */
+  vardFor(url: string): string {
+    return `${new URL(url).hostname}:${this.port}`;
+  }
+
+  async #byggkaka(namn: string): Promise<string> {
+    const sparad = this.#byggkakor.get(namn);
+    if (sparad !== undefined) return sparad;
+    const kaka = await this.loggaInWebblasare(namn, `http://${BYGGVARD}/`);
+    this.#byggkakor.set(namn, kaka);
+    return kaka;
+  }
+
+  /**
+   * Loggar in en webbläsare på adressens värd med testinloggningens länk och ger kakan
+   * (`namn=värde`) som webbläsaren sedan skickar dit.
+   */
+  async loggaInWebblasare(namn: string, url: string): Promise<string> {
+    const svar = await anropa({ port: this.port, host: this.vardFor(url), sokvag: testLoginPath(this.person(namn).identitet, TESTHEMLIGHET) });
+    const kaka = (svar.huvuden['set-cookie'] ?? [])[0]?.split(';')[0];
+    if (svar.status !== 303 || kaka === undefined) throw new Error(`Testinloggningen misslyckades: ${svar.status}`);
+    return kaka;
+  }
+
+  async anropaByggverktyget(anrop: AnropTillByggverktyget): Promise<Svar> {
+    const metod = anrop.metod ?? 'GET';
+    const huvuden: Record<string, string> = {};
+    if (anrop.person !== undefined) {
+      if (anrop.medKaka === true) huvuden['Cookie'] = await this.#byggkaka(anrop.person);
+      else huvuden['Authorization'] = this.person(anrop.person).inloggning;
+    }
+    if (SKRIVANDE.has(metod)) {
+      if (anrop.utanSkyddshuvud !== true) huvuden[CSRF_HEADER] = '1';
+      const origin = anrop.origin === undefined ? BYGG_ORIGIN : anrop.origin;
+      if (origin !== null) huvuden['Origin'] = origin;
+    } else if (anrop.origin !== undefined && anrop.origin !== null) {
+      huvuden['Origin'] = anrop.origin;
+    }
+    return anropa({
+      port: this.port,
+      metod,
+      sokvag: anrop.sokvag,
+      host: `${BYGGVARD}:${this.port}`,
+      huvuden,
+      ...(anrop.json === undefined ? {} : { json: anrop.json }),
+    });
+  }
+
+  /** Byggverktygets API: kräver att anropet lyckas med den angivna statusen — för Givet-steg och förberedelser. */
+  async byggApi<T>(person: string, metod: string, sokvag: string, status: number, json?: unknown): Promise<T> {
+    const svar = await this.anropaByggverktyget({ person, metod, sokvag: `${BUILDER_API_PREFIX}${sokvag}`, ...(json === undefined ? {} : { json }) });
+    if (svar.status !== status) throw new Error(`${metod} ${sokvag} gav ${svar.status}, väntade ${status}: ${svar.kropp.slice(0, 200)}`);
+    return jsonKropp(svar) as T;
+  }
+
+  /** Personens app i byggverktyget — skapas första gången den behövs. */
+  async byggapp(person: string): Promise<string> {
+    const finns = this.byggappar.get(person);
+    if (finns !== undefined) return finns;
+    const { appId } = await this.byggApi<{ appId: string }>(person, 'POST', '/apps', 201, {});
+    this.byggappar.set(person, appId);
+    return appId;
+  }
+
+  /** Personen ber om något i sin app; jobbet följs, händelse för händelse, tills det är slut. */
+  async bestall(person: string, text: string): Promise<FoljtJobb> {
+    const appId = await this.byggapp(person);
+    const { jobId } = await this.byggApi<{ jobId: string }>(person, 'POST', `/apps/${appId}/messages`, 202, { text });
+    const events: AgentEvent[] = [];
+    let after = 0;
+    for (let forsok = 0; forsok < 1000; forsok += 1) {
+      const jobb = await this.byggApi<BuilderJob>(person, 'GET', `/jobs/${jobId}?after=${after}`, 200);
+      events.push(...jobb.events);
+      after = jobb.next;
+      if (jobb.status === 'done' || jobb.status === 'failed') {
+        this.jobb = { jobId, status: jobb.status, events };
+        return this.jobb;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error('Jobbet blev aldrig klart.');
+  }
+
+  /**
+   * Öppnar förhandsvisningen eller den publicerade appen som byggverktyget gör: adressen från
+   * "öppna" loggar in webbläsaren på målvärden, och sedan hämtas startsidan med den kakan.
+   */
+  async oppnaFranByggverktyget(person: string, target: 'preview' | 'published'): Promise<Svar> {
+    const appId = await this.byggapp(person);
+    const { url } = await this.byggApi<{ url: string }>(person, 'GET', `/apps/${appId}/open?target=${target}`, 200);
+    const inloggning = await anropa({ port: this.port, host: this.vardFor(url), sokvag: `${new URL(url).pathname}${new URL(url).search}` });
+    const kaka = (inloggning.huvuden['set-cookie'] ?? [])[0]?.split(';')[0];
+    if (inloggning.status !== 303 || kaka === undefined) throw new Error(`Adressen från "öppna" loggade inte in: ${inloggning.status}`);
+    return anropa({ port: this.port, host: this.vardFor(url), sokvag: '/', huvuden: { Cookie: kaka } });
+  }
+
+  /** Byggkataloger som plattformen tagit emot men inte städat bort. */
+  ostadadeByggen(): number {
+    return this.#byggkedja?.kvar.size ?? 0;
   }
 
   /** Det enda svaret från det senaste När-steget. */
