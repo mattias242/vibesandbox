@@ -23,3 +23,20 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run bdd
+
+  # Byggkedjans isolering prövad på riktigt: byggavbilden byggs, och en fientlig testmall visar
+  # att bygget inte når nätet, inte kan skriva utanför /work och stoppas av minnes- och
+  # tidsgränsen. Eget jobb, eftersom det kräver Docker och tar några minuter.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx vitest run packages/build/test/docker.test.ts
+        env:
+          VIBESANDBOX_DOCKER_TESTS: '1'
