@@ -143,7 +143,7 @@ describe('den byggda mallen', () => {
     });
 
     it('index.html har inga inline-skript: varje <script> har src och saknar innehåll', () => {
-      const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
+      const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)];
       expect(scripts.length).toBeGreaterThan(0);
       for (const [, attributes = '', body = ''] of scripts) {
         expect(attributes).toMatch(/\bsrc=/);
