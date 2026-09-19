@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { StatementSync } from 'node:sqlite';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export const DATABASE_FILE = 'identity.sqlite';
 
 /** CLI:t får köras bredvid en server som är igång. */
@@ -67,6 +67,19 @@ const MIGRATIONS: readonly string[] = [
     at       INTEGER NOT NULL
   ) STRICT;
   `,
+  // 2: överlämning till en annan värd (förhandsvisningen) utan ny kod. En rad per länk, engångs,
+  // bunden till användare och värd; lever en minut.
+  `
+  CREATE TABLE handoffs (
+    token_hash BLOB PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    host       TEXT NOT NULL,
+    next_path  TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE INDEX handoffs_by_expiry ON handoffs (expires_at);
+  `,
 ];
 
 // ── Satser ─────────────────────────────────────────────────────────────────────
@@ -98,6 +111,13 @@ export const SQL = {
     FROM sessions s JOIN users u ON u.user_id = s.user_id
     WHERE s.token_hash = :token_hash`,
   deleteSession: 'DELETE FROM sessions WHERE token_hash = :token_hash',
+
+  insertHandoff: `
+    INSERT INTO handoffs (token_hash, user_id, host, next_path, expires_at)
+    VALUES (:token_hash, :user_id, :host, :next_path, :expires_at)`,
+  findHandoff: 'SELECT user_id, host, next_path, expires_at FROM handoffs WHERE token_hash = :token_hash',
+  deleteHandoff: 'DELETE FROM handoffs WHERE token_hash = :token_hash',
+  deleteExpiredHandoffs: 'DELETE FROM handoffs WHERE expires_at <= :now',
 
   deleteExpiredChallenges: 'DELETE FROM challenges WHERE expires_at <= :now',
   deleteExpiredSessions: 'DELETE FROM sessions WHERE expires_at <= :now',

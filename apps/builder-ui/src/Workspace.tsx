@@ -262,6 +262,9 @@ function Preview({ appId, hasDraft, version }: { appId: string; hasDraft: boolea
     if (!hasDraft) return;
     let current = true;
     setError(null);
+    // Adressen är en engångslänk som loggar in förhandsfönstret. Den gamla är förbrukad: visa inte
+    // ramen igen förrän den nya har kommit, annars laddas den om med en länk som inte längre gäller.
+    setUrl(null);
     api.openUrl(appId, 'preview').then(
       (value) => {
         if (current) setUrl(value);

@@ -5,7 +5,7 @@
  *   - leverantören gatewayn frågar (`test` eller `email-otp`)
  *   - inbjudningarna byggverktyget gör när en app delas
  *   - adressen "öppna" ger: i testläge en testinloggningsadress på målvärden; med e-postinloggning
- *     målets adress oförändrad — inloggningen sker per värd, när man kommer dit
+ *     en engångslänk på målvärden (en minut, same-site) som loggar in där utan ny kod
  */
 import { DataApiError } from '@vibesandbox/contracts';
 import type { Identity, IdentityProvider, InvitationService, Role } from '@vibesandbox/contracts';
@@ -72,7 +72,8 @@ export function createPlatformIdentity(config: PlatformConfig, log: PlatformLogg
   return {
     provider,
     invitations: provider,
-    openUrl: (_who, targetUrl) => targetUrl,
+    // En engångslänk som loggar in på målets värd utan ny kod (förhandsvisningen i byggverktyget).
+    openUrl: (who, targetUrl) => provider.handoffUrl(who, targetUrl),
     addUser: (email, role) => provider.addUser(email, role),
     close: () => provider.close(),
   };

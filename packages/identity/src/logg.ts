@@ -13,11 +13,22 @@ export type IdentityEvent =
   | 'rate_limited'
   | 'bad_request'
   | 'logout'
+  | 'handoff_created'
+  | 'handoff_succeeded'
+  | 'handoff_failed'
   | 'mail_failed'
   | 'cleanup';
 
 /** Varför en inloggning misslyckades — fasta värden ur koden, aldrig indata. */
-export type LoginFailure = 'no_challenge' | 'ambiguous_cookie' | 'wrong_host' | 'expired' | 'wrong_code' | 'exhausted' | 'not_invited';
+export type LoginFailure =
+  | 'no_challenge'
+  | 'ambiguous_cookie'
+  | 'wrong_host'
+  | 'expired'
+  | 'wrong_code'
+  | 'exhausted'
+  | 'not_invited'
+  | 'cross_site';
 
 export interface IdentityLogEntry {
   readonly level: 'info' | 'warn' | 'error';

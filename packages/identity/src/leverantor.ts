@@ -46,6 +46,7 @@ import type { IdentityEvent, IdentityLogEntry, IdentityLogger, LoginFailure } fr
 import type { MailSender } from './mejl.ts';
 import { safeNext } from './nasta.ts';
 import {
+  HANDOFF_PATH,
   LOGIN_PATH,
   LOGOUT_PATH,
   VERIFY_PATH,
@@ -64,6 +65,15 @@ const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
 
 const CODE_LIFETIME_MS = 10 * MINUTE;
+/** Överlämningslänken används direkt av förhandsfönstret; en minut räcker gott. */
+const HANDOFF_LIFETIME_MS = MINUTE;
+/**
+ * Varifrån en överlämningslänk får öppnas (`Sec-Fetch-Site`). Från byggverktyget är det
+ * `same-site`; en omladdning är `same-origin`. `cross-site` och `none` (inklistrad, eller från ett
+ * mejl) nekas: annars kunde en angripare låta någon öppna ANGRIPARENS länk och logga in offret som
+ * angriparen. Saknas huvudet helt nekas det också — alla aktuella webbläsare skickar det.
+ */
+const HANDOFF_ALLOWED_SITES: ReadonlySet<string> = new Set(['same-origin', 'same-site']);
 const MAX_CODE_ATTEMPTS = 5;
 const DEFAULT_SESSION_LIFETIME_MS = 12 * HOUR;
 /** Inget av formulären är i närheten av så här stort. */
@@ -136,6 +146,13 @@ export interface EmailOtpProvider extends IdentityProvider, InvitationService {
   readonly name: 'email-otp';
   readonly loginPath: string;
   handleAuthRoute(request: AuthRouteRequest): Promise<AuthRouteResponse | null>;
+  /**
+   * En engångslänk som loggar in `identity` på målets värd utan ny kod — så att förhandsvisningen
+   * i byggverktyget öppnas direkt. Gäller en minut, bara på den värden, och bara om den öppnas
+   * från samma site. Kastar om målet inte är en vanlig adress med plattformens schema och port,
+   * eller om användaren inte finns.
+   */
+  handoffUrl(identity: Identity, targetUrl: string): string;
   /** Administrativ: lägger till adressen eller höjer dess roll. Skickar inget mejl. */
   addUser(email: string, role: Role): Promise<AddedUser>;
   /** Väntar in mejl som skickas i bakgrunden och stänger databasen. */
@@ -230,6 +247,7 @@ export function createEmailOtpProvider(options: EmailOtpProviderOptions): EmailO
     session: subkey('session'),
     email: subkey('email'),
     client: subkey('client'),
+    handoff: subkey('handoff'),
   };
   function mac(key: Buffer, ...parts: ReadonlyArray<string | Buffer>): Buffer {
     const h = createHmac('sha256', key);
@@ -261,6 +279,7 @@ export function createEmailOtpProvider(options: EmailOtpProviderOptions): EmailO
     try {
       const challenges = db.statement(SQL.deleteExpiredChallenges).run({ now: at }).changes;
       const sessions = db.statement(SQL.deleteExpiredSessions).run({ now: at }).changes;
+      db.statement(SQL.deleteExpiredHandoffs).run({ now: at });
       db.statement(SQL.deleteOldEvents).run({ before: at - EVENT_RETENTION_MS });
       const count = Number(challenges) + Number(sessions);
       if (count > 0) log({ level: 'info', event: 'cleanup', count });
@@ -460,6 +479,72 @@ export function createEmailOtpProvider(options: EmailOtpProviderOptions): EmailO
     };
   }
 
+  /** Identiteten bakom webbläsarens session på JUST den här värden, eller `null`. */
+  function sessionOnHost(request: AuthRequest): Identity | null {
+    const cookie = readToken(request.headers['cookie'], names.session);
+    if (!('token' in cookie)) return null;
+    const tokenHash = mac(keys.session, cookie.token);
+    const row = db.statement(SQL.findSession).get({ token_hash: tokenHash });
+    if (row === undefined) return null;
+    // Bunden till värdnamnet: en session från app A godtas aldrig på värd B.
+    if (row['host'] !== request.host) return null;
+    if (typeof row['expires_at'] !== 'number' || row['expires_at'] <= now()) {
+      db.statement(SQL.deleteSession).run({ token_hash: tokenHash });
+      return null;
+    }
+    const user = rowToUser(row);
+    if (user === null) return null;
+    return { userId: user.userId, email: user.email, roles: [user.role] };
+  }
+
+  function handoff(request: AuthRouteRequest): AuthRouteResponse {
+    // Ett misslyckande loggar in ingen. Har webbläsaren redan en giltig session på den här värden
+    // (förhandsfönstret laddas om med samma adress, eller man backar) går den till appen; annars
+    // till den vanliga inloggningen.
+    const fail = (reason: LoginFailure, userId: string | null): AuthRouteResponse => {
+      record('handoff_failed', userId, { level: 'warn', reason });
+      return { status: 303, headers: { Location: sessionOnHost(request) === null ? LOGIN_PATH : '/' } };
+    };
+    const site = request.headers['sec-fetch-site'];
+    if (typeof site !== 'string' || !HANDOFF_ALLOWED_SITES.has(site)) return fail('cross_site', null);
+    if (!consumeAll([['global:handoff', limits.verifyAttemptsGlobalPerHour]])) {
+      record('rate_limited', null, { level: 'warn', reason: 'verify' });
+      return html(429, rateLimitedPage());
+    }
+    const token = request.query['t'];
+    if (typeof token !== 'string' || !TOKEN_PATTERN.test(token)) return fail('no_challenge', null);
+
+    const tokenHash = mac(keys.handoff, token);
+    const row = db.statement(SQL.findHandoff).get({ token_hash: tokenHash });
+    if (row === undefined) return fail('no_challenge', null);
+    const userId = typeof row['user_id'] === 'string' ? row['user_id'] : null;
+    // En länk till app A går aldrig att lösa in på värd B.
+    if (row['host'] !== request.host || userId === null) return fail('wrong_host', userId);
+    if (typeof row['expires_at'] !== 'number' || row['expires_at'] <= now()) {
+      db.statement(SQL.deleteHandoff).run({ token_hash: tokenHash });
+      return fail('expired', userId);
+    }
+
+    // Engångs: länken raderas i samma transaktion som sessionen skapas.
+    const session = randomBytes(32).toString('base64url');
+    const created = now();
+    db.transaction(() => {
+      db.statement(SQL.deleteHandoff).run({ token_hash: tokenHash });
+      db.statement(SQL.insertSession).run({
+        token_hash: mac(keys.session, session),
+        user_id: userId,
+        host: request.host,
+        created_at: created,
+        expires_at: created + sessionLifetimeMs,
+      });
+    });
+    record('handoff_succeeded', userId, { level: 'info' });
+    return {
+      status: 303,
+      headers: { Location: safeNext(row['next_path']), 'Set-Cookie': sessionCookie(names, session, sessionMaxAge) },
+    };
+  }
+
   function logout(request: AuthRouteRequest): AuthRouteResponse {
     const cookie = readToken(request.headers['cookie'], names.session);
     let userId: string | null = null;
@@ -523,20 +608,7 @@ export function createEmailOtpProvider(options: EmailOtpProviderOptions): EmailO
     async authenticate(request) {
       assertOpen();
       cleanup();
-      const cookie = readToken(request.headers['cookie'], names.session);
-      if (!('token' in cookie)) return null;
-      const tokenHash = mac(keys.session, cookie.token);
-      const row = db.statement(SQL.findSession).get({ token_hash: tokenHash });
-      if (row === undefined) return null;
-      // Bunden till värdnamnet: en session från app A godtas aldrig på värd B.
-      if (row['host'] !== request.host) return null;
-      if (typeof row['expires_at'] !== 'number' || row['expires_at'] <= now()) {
-        db.statement(SQL.deleteSession).run({ token_hash: tokenHash });
-        return null;
-      }
-      const user = rowToUser(row);
-      if (user === null) return null;
-      return { userId: user.userId, email: user.email, roles: [user.role] };
+      return sessionOnHost(request);
     },
 
     async handleAuthRoute(request) {
@@ -545,6 +617,9 @@ export function createEmailOtpProvider(options: EmailOtpProviderOptions): EmailO
       const isLogin = request.path === LOGIN_PATH;
       const isVerify = request.path === VERIFY_PATH;
       const isLogout = request.path === LOGOUT_PATH;
+      if (request.path === HANDOFF_PATH) {
+        return request.method === 'GET' ? handoff(request) : html(405, methodNotAllowedPage(), { Allow: 'GET' });
+      }
       if (!isLogin && !isVerify && !isLogout) return null;
 
       if (request.method === 'GET') return isLogin ? showLogin(request) : onlyPost();
@@ -595,6 +670,35 @@ export function createEmailOtpProvider(options: EmailOtpProviderOptions): EmailO
         record('mail_failed', user.userId, { level: 'error', errorName: error instanceof Error ? error.name : typeof error });
         throw new DataApiError('internal', 'Inbjudan är sparad, men mejlet kunde inte skickas. Försök igen om en stund.');
       }
+    },
+
+    handoffUrl(identity, targetUrl) {
+      assertOpen();
+      let target: URL;
+      try {
+        target = new URL(targetUrl);
+      } catch {
+        throw new Error('Överlämningens mål är ingen adress.');
+      }
+      const expectedPort = originSuffix === '' ? '' : originSuffix.slice(1);
+      if (target.protocol !== `${scheme}:` || target.username !== '' || target.password !== '' || target.port !== expectedPort) {
+        throw new Error('Överlämningens mål ska vara en vanlig adress med plattformens schema och port.');
+      }
+      const next = `${target.pathname}${target.search}`;
+      if (safeNext(next) !== next) throw new Error('Överlämningens mål har en sökväg som inte får användas.');
+      const user = db.statement(SQL.findUserById).get({ user_id: identity.userId });
+      if (user === undefined) throw new Error('Användaren finns inte.');
+
+      const token = randomBytes(32).toString('base64url');
+      db.statement(SQL.insertHandoff).run({
+        token_hash: mac(keys.handoff, token),
+        user_id: identity.userId,
+        host: target.hostname,
+        next_path: next,
+        expires_at: now() + HANDOFF_LIFETIME_MS,
+      });
+      record('handoff_created', identity.userId, { level: 'info' });
+      return `${target.origin}${HANDOFF_PATH}?t=${token}`;
     },
 
     async addUser(email, role) {

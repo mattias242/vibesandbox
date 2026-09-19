@@ -12,6 +12,8 @@ import { AUTH_PREFIX } from '@vibesandbox/contracts';
 export const LOGIN_PATH = `${AUTH_PREFIX}/login`;
 export const VERIFY_PATH = `${AUTH_PREFIX}/verify`;
 export const LOGOUT_PATH = `${AUTH_PREFIX}/logout`;
+/** Överlämning från byggverktyget till en annan värd (förhandsvisningen) — ingen ny kod. */
+export const HANDOFF_PATH = `${AUTH_PREFIX}/handoff`;
 
 function escapeHtml(text: string): string {
   return text

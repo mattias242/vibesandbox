@@ -65,14 +65,23 @@ describe('Målet: bygga en todo-lista och dela den med en vän', () => {
     expect(plattform.modell.requests).toHaveLength(1);
     expect(plattform.byggkedja.kvar.size).toBe(0);
 
-    // 3. Förhandsvisningen: byggverktyget ger adressen, och på den värden loggar Anna in där.
+    // 3. Förhandsvisningen: byggverktyget ger en engångslänk till förhandsvisningens värd, och Anna
+    //    är inloggad där direkt — ingen kod, inget mejl (förhandsfönstret öppnar den same-site).
     const oppna = await anna.api(BYGG, 'GET', `/_api/builder/apps/${appId}/open?target=preview`, { origin: null });
     expect(oppna.status).toBe(200);
-    const forhandsvisning = json<{ url: string }>(oppna).url;
-    expect(forhandsvisning).toBe(`http://p-${appId}.example.org/`);
-    const pHost = vard(forhandsvisning);
-    expect((await anna.oppna(pHost, '/')).status).toBe(303);
-    expect((await loggaInMedKod(anna, plattform, pHost, 'anna@example.org')).status).toBe(303);
+    const forhandsvisning = new URL(json<{ url: string }>(oppna).url);
+    expect(forhandsvisning.origin).toBe(`http://p-${appId}.example.org`);
+    expect(forhandsvisning.pathname).toBe('/_auth/handoff');
+    const pHost = forhandsvisning.host;
+    const mejlFore = (await lasUtkorg(plattform.utkorg)).length;
+    const overlamning = await anna.oppna(pHost, `${forhandsvisning.pathname}${forhandsvisning.search}`, { 'Sec-Fetch-Site': 'same-site' });
+    expect(overlamning.status).toBe(303);
+    expect(overlamning.headers.location).toBe('/');
+    expect((await lasUtkorg(plattform.utkorg)).length).toBe(mejlFore);
+    // Länken är förbrukad: en andra webbläsare med samma länk hamnar på inloggningen.
+    const nagonAnnan = new Webblasare(plattform.port);
+    const igen = await nagonAnnan.oppna(pHost, `${forhandsvisning.pathname}${forhandsvisning.search}`, { 'Sec-Fetch-Site': 'same-site' });
+    expect(igen.headers.location).toBe('/_auth/login');
     const utkast = await anna.oppna(pHost, '/');
     expect(utkast.status).toBe(200);
     expect(utkast.body).toContain('Våra att göra');
