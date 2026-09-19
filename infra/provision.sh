@@ -4,11 +4,13 @@
 # Idempotent: varje steg läser av läget först och ändrar bara det som avviker.
 # Ordningen är ett säkerhetskrav (se infra/README.md):
 #   - man får aldrig låsa ute sig  ⇒ Tailscale före brandvägg, brandvägg före SSH-härdning,
-#     och båda de riskabla stegen har en "död mans grepp"-bekräftelse som ångrar sig själv;
+#     och båda de riskabla stegen har en "död mans grepp"-bekräftelse som ångrar sig själv —
+#     även om det här skriptet dör (se "Ångra-mekanismen" nedan och angra.sh);
 #   - Docker får aldrig vara uppe utan brandvägg ⇒ Docker-steget vägrar utan laddad tabell.
 #
-# Inga hemligheter, adresser eller nycklar hör hemma i den här filen. Allt sådant kommer
-# från miljön eller från infra/provision.env (gitignorerad).
+# Inga hemligheter, adresser eller nycklar hör hemma i den här filen. Icke-hemliga val kommer
+# från miljön eller från infra/provision.env (gitignorerad). Tailscale-nyckeln läses ALDRIG
+# ur miljön eller från kommandoraden — bara ur en rootägd 600-fil eller dold inmatning.
 
 set -euo pipefail
 
@@ -32,7 +34,26 @@ readonly NFT_SUMMAFIL="${TILLSTANDSKATALOG}/nft.sha256"
 readonly SSHD_CONFIG="/etc/ssh/sshd_config"
 readonly SSH_DROPIN_KATALOG="/etc/ssh/sshd_config.d"
 readonly SSH_DROPIN="${SSH_DROPIN_KATALOG}/0-0-vibesandbox.conf"
+# Skrivs redan i fas 1 och stänger lösenordsinloggning för driftanvändaren ENBART (ett
+# Match-block; det första som träffar vinner ⇒ filen ska sorteras före alla andras, även vår).
+readonly SSH_OPS_DROPIN="${SSH_DROPIN_KATALOG}/0-0-0-vibesandbox-ops.conf"
 readonly SSH_INCLUDE="Include ${SSH_DROPIN_KATALOG}/*.conf"
+# sshd lyssnar på 22 och nås bara via tailnetet. Porten är INTE en inställning: en tidigare
+# SSH_PORT skrevs aldrig till sshd, och gick att lista bland de publika portarna.
+readonly SSHD_PORT=22
+
+# Ångra-mekanismen (A1–A3). Underlag och markörer ligger i en rootägd 700-katalog; se angra.sh.
+#   <katalog>/<steg>/obekraftad   ändringen är gjord men ägaren har inte svarat JA
+#   ssh.bekraftad, brandvagg.bekraftad   sha256 över filerna SÅ SOM ÄGAREN BEKRÄFTADE DEM
+readonly ANGRA_SKRIPT="/usr/local/sbin/vibesandbox-angra"
+readonly ANGRA_ENHET="vibesandbox-angra-uppstart.service"
+readonly ANGRA_KATALOG="${TILLSTANDSKATALOG}/angra"
+readonly SSH_BEKRAFTAD="${TILLSTANDSKATALOG}/ssh.bekraftad"
+readonly NFT_BEKRAFTAD="${TILLSTANDSKATALOG}/brandvagg.bekraftad"
+readonly BEKRAFTELSE_SEKUNDER=180
+# Backstoppets timer löper ut en stund EFTER skriptets egen tidsgräns, så att de två inte
+# tävlar i normalfallet. (Tävlar de ändå serialiseras de av ett lås, och markören avgör.)
+readonly BACKSTOPP_MARGINAL=60
 readonly SYSCTL_FIL="/etc/sysctl.d/zz-vibesandbox.conf"
 readonly CLOUDINIT_FIL="/etc/cloud/cloud.cfg.d/zzz-vibesandbox.cfg"
 readonly LOGGFIL="/var/log/vibesandbox-provision.log"
@@ -57,7 +78,8 @@ HOPPA_OVER_SESSIONSKONTROLL=0
 VALDA_STEG=()
 
 FIL_ANDRAD=0      # sätts av skriv_fil
-SSHD_OMLADDAD=0   # sätts när sshd har läst in ny konfiguration (styr om ett ångrande laddar om)
+ANGRA_STEG=""     # steget som just nu har en OBEKRÄFTAD ändring ⇒ varje väg ut ur skriptet ångrar den
+NYCKELFIL=""      # tillfällig fil med Tailscale-nyckeln i /run ⇒ varje väg ut ur skriptet raderar den
 TEE_PID=""
 
 anvandning() {
@@ -70,13 +92,15 @@ Användning: provision.sh [flaggor]
   --bekrafta-tailscale-ssh        Intyga att du har loggat in med SSH över tailnet.
                                   Krävs för brandvägg, SSH-härdning och allt därefter.
   --ingen-bekraftelse             Hoppa över "död mans grepp" (JA-frågan) efter brandvägg
-                                  och SSH. Bara för obevakad körning där leverantörens
-                                  webbkonsol är nödvägen.
-  --hoppa-over-sessionskontroll   Kräv inte en pågående SSH-session från tailnet
-                                  (t.ex. vid körning från leverantörens webbkonsol).
+                                  och SSH — då finns heller inget backstopp. Bara för
+                                  obevakad körning där leverantörens webbkonsol är nödvägen.
+  --hoppa-over-sessionskontroll   Kräv varken en pågående SSH-session från tailnet eller
+                                  journalens bevis på nyckelinloggning (t.ex. vid körning
+                                  från leverantörens webbkonsol). JA-frågan ställs ändå.
   --hjalp                         Den här texten.
 
 Konfiguration läses från miljön och från infra/provision.env (se provision.env.example).
+Tailscale-nyckeln läses ur TAILSCALE_AUTHKEY_FILE (rootägd, läge 600) eller med dold inmatning.
 Körordning, nödväg och flytt till ny värd: se infra/README.md.
 EOF
 }
@@ -120,10 +144,17 @@ tailnet_adress() {
 
 # ── Hjälpfunktioner ────────────────────────────────────────────────────────────────────────
 
-# skriv_fil <sökväg> <läge> [ägare:grupp] — innehållet kommer på stdin.
+# skriv_fil <sökväg> <läge> [ägare:grupp] [validerare] — innehållet kommer på stdin.
 # Skriver bara om innehållet skiljer sig. Sätter FIL_ANDRAD=1 om filen (skulle ha) ändrats.
+#
+# ATOMISKT: innehållet skrivs till en dold tempfil i SAMMA katalog och byts in med 'mv'. Ett
+# strömavbrott mitt i kan då aldrig lämna en tom eller halv sshd_config, nftables.conf eller
+# daemon.json — antingen gäller den gamla filen eller den nya. (Dold ⇒ varken sshd, apt,
+# systemd eller cloud-init läser tempfilen; de tar bara *.conf, *.cfg o.s.v.)
+# Valideraren, om en anges, får kandidatens sökväg och körs FÖRE bytet: en underkänd kandidat
+# ersätter aldrig den fil som gäller.
 skriv_fil() {
-  local mal="$1" lage="$2" agare="${3:-root:root}" tmp nuvarande
+  local mal="$1" lage="$2" agare="${3:-root:root}" validera="${4:-}" tmp ny nuvarande
   tmp="$(mktemp)"
   cat >"$tmp"
   FIL_ANDRAD=0
@@ -149,9 +180,61 @@ skriv_fil() {
     rm -f "$tmp"
     return 0
   fi
+  if [[ -n "$validera" ]] && ! "$validera" "$tmp"; then
+    rm -f "$tmp"
+    avbryt "kandidaten till ${mal} underkändes av kontrollen (${validera}) — filen som gäller är ORÖRD."
+  fi
   gor "skriver ${mal}"
-  install -D -m "$lage" -o "${agare%%:*}" -g "${agare##*:}" "$tmp" "$mal"
+  ny="$(dirname "$mal")/.$(basename "$mal").vsb-ny"
+  install -D -m "$lage" -o "${agare%%:*}" -g "${agare##*:}" "$tmp" "$ny"
   rm -f "$tmp"
+  mv -f -- "$ny" "$mal"
+}
+
+# lagg_till_rad <fil> <rad> [validerare] — lägger en rad SIST i en fil som andra också äger
+# (fstab, subuid, subgid). Tre saker som ett naket 'printf >>' inte gör:
+#   - saknar filen avslutande radbrytning läggs en till först, annars smälter vår rad ihop med
+#     den sista (i fstab ⇒ nödläge vid nästa omstart; i subuid ⇒ fel ägare till all data);
+#   - läget före sparas som <fil>.vibesandbox-fore;
+#   - kandidaten byggs vid sidan av, valideras, och byts in atomiskt.
+# validera_fstab <kandidat> <nuvarande fil> — en fstab som inte går att tolka ger nödläge vid
+# nästa omstart (och då finns bara webbkonsolen). Varningar ([W], t.ex. en källa som inte finns
+# än) släpps igenom av findmnt; fel gör det inte.
+validera_fstab() {
+  local kandidat="$1" nuvarande="${2:-}" ut
+  if ut="$(findmnt --verify --tab-file "$kandidat" 2>&1)"; then
+    return 0
+  fi
+  varna "'findmnt --verify' underkänner fstab-kandidaten:"
+  printf '%s\n' "$ut" | sed 's/^/      /' >&2
+  if [[ -f "$nuvarande" ]] && ! findmnt --verify --tab-file "$nuvarande" >/dev/null 2>&1; then
+    varna "…och /etc/fstab underkänns REDAN FÖRE vår ändring. Rätta den först: en fstab med fel ger nödläge vid nästa omstart."
+  fi
+  return 1
+}
+
+lagg_till_rad() {
+  local fil="$1" rad="$2" validera="${3:-}" ny
+  gor "lägger till i ${fil}: ${rad}"
+  (( DRY_RUN )) && return 0
+  ny="$(dirname "$fil")/.$(basename "$fil").vsb-ny"
+  if [[ -e "$fil" ]]; then
+    cp -p -- "$fil" "${fil}.vibesandbox-fore"
+    cp -p -- "$fil" "$ny"
+    # Kommandosubstitution skalar bort radbrytningar i slutet ⇒ ett x som vaktpost.
+    if [[ -s "$ny" && "$(tail -c1 -- "$ny"; printf x)" != $'\nx' ]]; then
+      varna "${fil} saknar avslutande radbrytning — lägger till en före vår rad"
+      printf '\n' >>"$ny"
+    fi
+  else
+    install -m 0644 -o root -g root /dev/null "$ny"
+  fi
+  printf '%s\n' "$rad" >>"$ny"
+  if [[ -n "$validera" ]] && ! "$validera" "$ny" "$fil"; then
+    rm -f -- "$ny"
+    avbryt "${fil} är ORÖRD — se ovan."
+  fi
+  mv -f -- "$ny" "$fil"
 }
 
 paket_installerat() {
@@ -261,29 +344,68 @@ kontrollera_os() {
   [[ -n "$OS_KODNAMN" ]] || avbryt "VERSION_CODENAME saknas i ${fil}."
 }
 
+# Tailscale-nyckeln får inte komma via miljön: 'sudo VAR=… ./provision.sh' lägger den i sudos
+# argv (synlig i 'ps' och i sudo-loggen), en rad i skalet hamnar i .bash_history, och en
+# miljövariabel ärvs av varje barnprocess. Att vägra i efterhand tar inte tillbaka läckan —
+# men det hindrar att arbetssättet fastnar, och nyckeln förs aldrig vidare härifrån.
+avvisa_nyckel_i_miljon() {
+  [[ -n "${TAILSCALE_AUTHKEY:-}" ]] || return 0
+  unset TAILSCALE_AUTHKEY
+  avbryt "TAILSCALE_AUTHKEY får inte ges via miljön eller provision.env (hamnar i historik, 'ps' och alla barnprocesser).
+Betrakta nyckeln som röjd: återkalla den i Tailscales adminkonsol och skapa en ny. Ge den nya på ett av två sätt:
+  - svara på frågan när skriptet ber om nyckeln (dold inmatning), eller
+  - TAILSCALE_AUTHKEY_FILE=/root/ts.nyckel  (rootägd, läge 600; raderas efter lyckad anslutning)."
+}
+
+# En hash som inte är en HEL hash ger en ops utan fungerande lösenord: sudo fungerar inte, och
+# när root sedan låses finns ingen root kvar. Formatet kontrolleras därför tecken för tecken.
+#   SHA-512:  $6$[rounds=N$]<salt 1–16>$<86 tecken>        yescrypt:  $y$<param>$<salt>$<43 tecken>
+kontrollera_losenordshash() {
+  [[ -n "$OPS_PASSWORD_HASH" ]] || return 0
+  # Mönstren ska stå ORDAGRANT ($ är ett tecken i hashen, inte en variabel).
+  # shellcheck disable=SC2016
+  local sha512='^\$6\$(rounds=[0-9]{4,9}\$)?[./0-9A-Za-z]{1,16}\$[./0-9A-Za-z]{86}$'
+  # shellcheck disable=SC2016
+  local yescrypt='^\$y\$[./0-9A-Za-z]{1,8}\$[./0-9A-Za-z]{1,86}\$[./0-9A-Za-z]{43}$'
+  if [[ "$OPS_PASSWORD_HASH" == *EXEMPEL* ]]; then
+    avbryt "OPS_PASSWORD_HASH är EXEMPEL-värdet ur provision.env.example. Skapa en riktig hash på din egen dator: openssl passwd -6"
+  fi
+  if [[ ! "$OPS_PASSWORD_HASH" =~ $sha512 && ! "$OPS_PASSWORD_HASH" =~ $yescrypt ]]; then
+    avbryt "OPS_PASSWORD_HASH är ingen hel SHA-512- eller yescrypt-hash (\$6\$<salt>\$<86 tecken> eller \$y\$…\$<43 tecken>).
+Avklippt vid kopiering? Dubbla citattecken i stället för enkla (då äter skalet \$-tecknen)? Skapa en ny: openssl passwd -6"
+  fi
+}
+
 las_konfiguration() {
   local envfil="${PROVISION_ENV:-${SKRIPTKATALOG}/provision.env}"
+  avvisa_nyckel_i_miljon
   if [[ -f "$envfil" ]]; then
-    # Filen körs som root ⇒ den får inte gå att skriva för någon annan.
-    local rattigheter
+    # Filen körs som root ⇒ den får varken ägas av eller gå att skriva för någon annan.
+    # (Den som äger filen kan ändra dess rättigheter, så skrivbitarna ensamma bevisar inget.)
+    local rattigheter agare
     rattigheter="$(stat -c '%a' "$envfil")"
+    agare="$(stat -c '%u' "$envfil")"
+    if [[ "$agare" != 0 ]]; then
+      avbryt "${envfil} ägs inte av root (uid ${agare}) men läses in som kod av root. Kör: chown root:root ${envfil}"
+    fi
     if [[ "$rattigheter" =~ [2367]$ || "$rattigheter" =~ [2367].$ ]]; then
       avbryt "${envfil} går att skriva för grupp/andra (${rattigheter}). Kör: chmod 600 ${envfil}"
     fi
-    set -a
+    # INTE 'set -a': då exporterades varje rad — även lösenordshashen — till alla barnprocesser.
     # shellcheck disable=SC1090
     . "$envfil"
-    set +a
+    avvisa_nyckel_i_miljon
   fi
+  # Kom hashen in via miljön är den redan exporterad; ta tillbaka det.
+  export -n OPS_PASSWORD_HASH 2>/dev/null || true
 
   OPS_USER="${OPS_USER:-ops}"
   OPS_SSH_PUBKEY="${OPS_SSH_PUBKEY:-}"
   OPS_SSH_PUBKEY_FILE="${OPS_SSH_PUBKEY_FILE:-}"
   OPS_PASSWORD_HASH="${OPS_PASSWORD_HASH:-}"
-  TAILSCALE_AUTHKEY="${TAILSCALE_AUTHKEY:-}"
+  TAILSCALE_AUTHKEY_FILE="${TAILSCALE_AUTHKEY_FILE:-}"
   TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-vibesandbox}"
   TAILSCALE_TAGS="${TAILSCALE_TAGS:-tag:vibesandbox}"
-  SSH_PORT="${SSH_PORT:-22}"
   # '-' och inte ':-': en uttryckligen TOM lista ska betyda "inga portar", inte standardvärdet.
   PUBLIC_TCP_PORTS="${PUBLIC_TCP_PORTS-443}"
   PUBLIC_UDP_PORTS="${PUBLIC_UDP_PORTS-443}"
@@ -306,8 +428,14 @@ las_konfiguration() {
   DOCKREMAP_SUBID_BASE="${DOCKREMAP_SUBID_BASE:-100000}"
   PLATFORM_CONTAINER_UID="${PLATFORM_CONTAINER_UID:-10001}"
 
-  local v
-  for v in SSH_PORT DOCKER_XFS_SIZE_GB SWAPFILE_SIZE_GB VM_SWAPPINESS DOCKREMAP_SUBID_BASE PLATFORM_CONTAINER_UID; do
+  # SSH_PORT fanns som inställning men nådde aldrig sshd (ingen Port-rad skrevs): brandväggen
+  # öppnade då en port som sshd inte lyssnade på. Hellre ingen inställning än en halv.
+  if [[ -n "${SSH_PORT:-}" && "${SSH_PORT}" != "$SSHD_PORT" ]]; then
+    avbryt "SSH_PORT='${SSH_PORT}' stöds inte längre. sshd lyssnar på ${SSHD_PORT} och nås bara via tailnetet — ta bort raden."
+  fi
+
+  local v p
+  for v in DOCKER_XFS_SIZE_GB SWAPFILE_SIZE_GB VM_SWAPPINESS DOCKREMAP_SUBID_BASE PLATFORM_CONTAINER_UID; do
     [[ "${!v}" =~ ^[0-9]+$ ]] || avbryt "${v} måste vara ett heltal (är '${!v}')."
   done
   for v in OPEN_TAILSCALE_UDP AUTO_REBOOT AUTO_UPGRADE_DOCKER LOCK_ROOT_PASSWORD HARDEN_GUEST_AGENT INSTALL_GVISOR DOCKER_XFS_LOOP; do
@@ -315,12 +443,24 @@ las_konfiguration() {
   done
   for v in PUBLIC_TCP_PORTS PUBLIC_UDP_PORTS; do
     [[ "${!v}" =~ ^([0-9]+( +[0-9]+)*)?$ ]] || avbryt "${v} ska vara portnummer åtskilda av blanksteg (är '${!v}')."
+    for p in ${!v}; do
+      (( 10#$p >= 1 && 10#$p <= 65535 )) || avbryt "${v}: '${p}' är inget portnummer (1–65535)."
+    done
+  done
+  for p in $PUBLIC_TCP_PORTS; do
+    (( 10#$p != SSHD_PORT )) || avbryt "PUBLIC_TCP_PORTS innehåller ${SSHD_PORT}: det öppnar SSH mot hela internet. SSH släpps bara in på tailscale0."
   done
   [[ "$OPS_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || avbryt "OPS_USER '${OPS_USER}' är inget giltigt användarnamn."
   [[ "$OPS_USER" != "root" ]] || avbryt "OPS_USER får inte vara root."
   [[ "$DATA_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || avbryt "DATA_USER '${DATA_USER}' är inget giltigt användarnamn."
   [[ "$AUTO_REBOOT_TIME" =~ ^[0-2][0-9]:[0-5][0-9]$ ]] || avbryt "AUTO_REBOOT_TIME ska vara TT:MM."
-  [[ "$PLATFORM_ROOT" == /* && "$PLATFORM_ROOT" != "/" ]] || avbryt "PLATFORM_ROOT måste vara en absolut sökväg (inte /)."
+  # Sökvägarna hamnar i state-filen (som verify.sh läser in som root varje timme) och i fstab.
+  # Bara tråkiga tecken, ingen '..', inte roten.
+  for v in PLATFORM_ROOT DOCKER_XFS_IMAGE; do
+    [[ "${!v}" =~ ^/[A-Za-z0-9._/-]+$ && "${!v}" != "/" && "/${!v}/" != *"/../"* && "/${!v}/" != *"/./"* ]] \
+      || avbryt "${v} måste vara en absolut sökväg med bara A–Z, a–z, 0–9, '.', '_', '-' och '/', utan '..' och inte '/' (är '${!v}')."
+  done
+  kontrollera_losenordshash
   (( PLATFORM_CONTAINER_UID > 0 && PLATFORM_CONTAINER_UID < 65536 )) \
     || avbryt "PLATFORM_CONTAINER_UID måste ligga i 1–65535 (uid 0 i containern ska inte äga data)."
 
@@ -330,25 +470,20 @@ las_konfiguration() {
 
 # Icke-hemliga val sparas så att verify.sh vet vad som är FÖRVÄNTAT läge (t.ex. om
 # gästagenten ska vara härdad). Inga nycklar, hashar eller adresser hamnar här.
+#
+# Filen läses in som KOD av verify.sh, som root, varje timme. Varje värde är redan validerat
+# ovan och skrivs dessutom med %q, så att inget värde kan bli något annat än en tilldelning.
 skriv_tillstand() {
-  skriv_fil "$TILLSTANDSFIL" 0644 <<EOF
-# Skriven av provision.sh — läses av verify.sh. Innehåller inga hemligheter.
-OPS_USER=${OPS_USER}
-SSH_PORT=${SSH_PORT}
-PUBLIC_TCP_PORTS="${PUBLIC_TCP_PORTS}"
-PUBLIC_UDP_PORTS="${PUBLIC_UDP_PORTS}"
-OPEN_TAILSCALE_UDP=${OPEN_TAILSCALE_UDP}
-LOCK_ROOT_PASSWORD=${LOCK_ROOT_PASSWORD}
-HARDEN_GUEST_AGENT=${HARDEN_GUEST_AGENT}
-INSTALL_GVISOR=${INSTALL_GVISOR}
-DOCKER_XFS_LOOP=${DOCKER_XFS_LOOP}
-SWAPFILE_SIZE_GB=${SWAPFILE_SIZE_GB}
-VM_SWAPPINESS=${VM_SWAPPINESS}
-PLATFORM_ROOT=${PLATFORM_ROOT}
-DATA_USER=${DATA_USER}
-DATA_UID=${DATA_UID}
-DOCKREMAP_SUBID_BASE=${DOCKREMAP_SUBID_BASE}
-EOF
+  local v innehall
+  innehall="$(
+    printf '# Skriven av provision.sh — läses av verify.sh. Innehåller inga hemligheter.\n'
+    for v in OPS_USER PUBLIC_TCP_PORTS PUBLIC_UDP_PORTS OPEN_TAILSCALE_UDP LOCK_ROOT_PASSWORD \
+      HARDEN_GUEST_AGENT INSTALL_GVISOR DOCKER_XFS_LOOP SWAPFILE_SIZE_GB VM_SWAPPINESS \
+      PLATFORM_ROOT DATA_USER DATA_UID DOCKREMAP_SUBID_BASE; do
+      printf '%s=%q\n' "$v" "${!v}"
+    done
+  )"
+  skriv_fil "$TILLSTANDSFIL" 0644 <<<"$innehall"
 }
 
 # ── Spärrar mot utelåsning ─────────────────────────────────────────────────────────────────
@@ -357,17 +492,34 @@ tailscale_uppe() {
   har_kommando tailscale && tailscale ip -4 >/dev/null 2>&1
 }
 
-# Finns det just nu en etablerad SSH-session som kommer från tailnetet? Det är ett starkare
-# bevis än en flagga: någon har faktiskt loggat in den vägen.
-ssh_session_fran_tailnet() {
-  local rad peer
+# Etablerade SSH-sessioner vars motpart ligger i tailnetet, en per rad: "<adress> <port>".
+# Det är ett starkare bevis än en flagga: någon har faktiskt loggat in den vägen.
+tailnet_sessioner() {
+  local rad peer adress port
   while read -r rad; do
     peer="$(awk '{print $NF}' <<<"$rad")"
-    peer="${peer%:*}"; peer="${peer#[}"; peer="${peer%]}"
-    if [[ "$peer" =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\. || "$peer" == fd7a:115c:a1e0:* ]]; then
+    port="${peer##*:}"
+    adress="${peer%:*}"; adress="${adress#[}"; adress="${adress%]}"; adress="${adress#::ffff:}"
+    if [[ "$adress" =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\. || "$adress" == fd7a:115c:a1e0:* ]]; then
+      printf '%s %s\n' "$adress" "$port"
+    fi
+  done < <(ss -Htn state established "( sport = :${SSHD_PORT} )" 2>/dev/null || true)
+}
+
+# Att en session FINNS visar inte HUR den loggade in. Så länge lösenordsinloggning inte är
+# avstängd globalt (det sker först i SSH-steget) kan sessionen vara en lösenordsinloggning — och
+# då är nyckeln obevisad när lösenorden stängs av. Beviset är därför raden i sshd:s journal för
+# JUST den pågående sessionen: samma användare, samma adress och samma port.
+# '_UID=0': raden skrivs av sshd:s privilegierade del; en vanlig användares 'logger -t sshd' räknas inte.
+nyckelinloggning_bevisad() {
+  local sessioner="$1" journal adress port
+  journal="$(journalctl --no-pager -o cat -b -t sshd -t sshd-session _UID=0 2>/dev/null)" || return 2
+  while read -r adress port; do
+    [[ -n "$adress" ]] || continue
+    if grep -qF -- "Accepted publickey for ${OPS_USER} from ${adress} port ${port} " <<<"$journal"; then
       return 0
     fi
-  done < <(ss -Htn state established "( sport = :${SSH_PORT} )" 2>/dev/null || true)
+  done <<<"$sessioner"
   return 1
 }
 
@@ -382,29 +534,196 @@ krav_tailscale_bekraftad() {
 och kör sedan om med --bekrafta-tailscale-ssh."
   tailscale_uppe || avbryt "Tailscale är inte anslutet ('tailscale ip -4' misslyckas). Kör steget 'tailscale' först."
   if (( ! HOPPA_OVER_SESSIONSKONTROLL )); then
-    ssh_session_fran_tailnet || avbryt "hittar ingen pågående SSH-session från tailnetet (100.64.0.0/10).
+    local sessioner kod=0
+    sessioner="$(tailnet_sessioner)"
+    [[ -n "$sessioner" ]] || avbryt "hittar ingen pågående SSH-session från tailnetet (100.64.0.0/10).
 Kör det här steget FRÅN en session över tailnet — då vet vi att vägen in fungerar.
 (Från leverantörens webbkonsol: lägg till --hoppa-over-sessionskontroll.)"
     klart "pågående SSH-session från tailnetet hittad"
+    nyckelinloggning_bevisad "$sessioner" || kod=$?
+    case "$kod" in
+      0) klart "sshd:s journal visar en nyckelinloggning som ${OPS_USER} för just den sessionen" ;;
+      2) avbryt "kan inte läsa sshd:s journal (journalctl misslyckades). Utan raden 'Accepted publickey for ${OPS_USER} from 100.…'
+går det inte att visa att sessionen är en NYCKELinloggning — och det är nyckeln som måste fungera när lösenorden stängs av.
+(Från leverantörens webbkonsol: lägg till --hoppa-over-sessionskontroll.)" ;;
+      *) avbryt "den pågående tailnet-sessionen är inte en bevisad nyckelinloggning som ${OPS_USER}.
+Journalen saknar raden 'Accepted publickey for ${OPS_USER} from <sessionens adress> port <sessionens port>'.
+Loggade du in med lösenord, eller som en annan användare? Logga ut, logga in med  ssh ${OPS_USER}@<tailnet-namn>  (nyckel) och kör om.
+(Från leverantörens webbkonsol: lägg till --hoppa-over-sessionskontroll.)" ;;
+    esac
   fi
 }
 
-# "Död mans grepp": efter en ändring som kan låsa ute ägaren måste hen svara JA inom en
-# tidsgräns. Annars — eller om sessionen har dött — körs ångra-funktionen. Ångrandet sker
-# FÖRE all utskrift, eftersom en utskrift till en död terminal annars avbryter skriptet.
-bekrafta_eller_angra() {
-  local fraga="$1" angra="$2" sekunder="${3:-180}" svar=""
-  (( DRY_RUN )) && return 0
-  (( INGEN_BEKRAFTELSE )) && { varna "hoppar över bekräftelse (--ingen-bekraftelse)"; return 0; }
-  trap '' HUP PIPE
-  printf '\n  ?? %s\n  ?? Skriv JA inom %s sekunder för att behålla ändringen: ' "$fraga" "$sekunder" || true
-  if read -r -t "$sekunder" svar </dev/tty 2>/dev/null && [[ "$svar" == "JA" ]]; then
-    klart "bekräftat"
+# ── Ångra-mekanismen: "död mans grepp" som överlever att skriptet dör ───────────────────────
+#
+# Efter en ändring som kan låsa ute ägaren måste hen svara JA inom en tidsgräns. Varje annan
+# utgång ångrar ändringen. Ordningen är hela poängen — allt nedan sker FÖRE ändringen:
+#
+#   angra_installera   ångra-skriptet + uppstartsenheten på plats och AKTIVERAD
+#   angra_kvarglomt    en obekräftad ändring från en avbruten körning ångras först
+#   angra_forbered     ögonblicksbild av filerna som ska röras (700-katalog)
+#   angra_armera       markören 'obekraftad' skrivs, fällorna gäller, den transienta timern går
+#   … ändringen …
+#   bekrafta_eller_angra   JA ⇒ angra_bekrafta (markören bort under lås, timern stoppas).
+#                          Allt annat ⇒ skriptet avslutas, och vid_avslut kör ångra-skriptet.
+#
+# Dör skriptet utan att hinna någonting (kill -9, OOM, tappad anslutning) ångrar timern; startar
+# värden om ångrar uppstartsenheten. Alla tre vägarna kör SAMMA fristående skript (angra.sh),
+# så det finns bara en implementation av själva återställningen att granska.
+
+installera_dokumentation() {
+  # Nödvägen ska gå att läsa PÅ servern, från webbkonsolen, när man väl är utelåst.
+  [[ -f "${SKRIPTKATALOG}/README.md" ]] || return 0
+  skriv_fil /usr/local/share/doc/vibesandbox/README.md 0644 <"${SKRIPTKATALOG}/README.md"
+}
+
+angra_installera() {
+  [[ -f "${SKRIPTKATALOG}/angra.sh" && -f "${SKRIPTKATALOG}/${ANGRA_ENHET}" ]] \
+    || avbryt "hittar inte ${SKRIPTKATALOG}/angra.sh och ${ANGRA_ENHET} — utan dem finns inget backstopp, och då görs ingen ändring."
+  skriv_fil "$ANGRA_SKRIPT" 0755 <"${SKRIPTKATALOG}/angra.sh"
+  skriv_fil "/etc/systemd/system/${ANGRA_ENHET}" 0644 <"${SKRIPTKATALOG}/${ANGRA_ENHET}"
+  if (( FIL_ANDRAD )); then systemctl daemon-reload; fi
+  installera_dokumentation
+  if [[ "$(systemctl is-enabled "$ANGRA_ENHET" 2>/dev/null || true)" == "enabled" ]]; then
+    klart "${ANGRA_ENHET} är aktiverad (ångrar en obekräftad ändring vid omstart)"
+  else
+    sakerstall_omaskad "$ANGRA_ENHET"
+    gor "aktiverar ${ANGRA_ENHET}"
+    systemctl enable "$ANGRA_ENHET"
+    [[ "$(systemctl is-enabled "$ANGRA_ENHET" 2>/dev/null || true)" == "enabled" ]] \
+      || avbryt "${ANGRA_ENHET} gick inte att aktivera — utan den ångras ingenting vid en omstart, och då görs ingen ändring."
+  fi
+  sakerstall_katalog "$TILLSTANDSKATALOG" 0755 "0:0"
+  sakerstall_katalog "$ANGRA_KATALOG" 0700 "0:0"
+}
+
+# Kör ångra-skriptet för det armerade steget. Utdata går till loggen (skriptet loggar själv), inte
+# till terminalen: den kan vara död, och en utskrift dit får inte vara det som stoppar ångrandet.
+angra_nu() {
+  local steg="$ANGRA_STEG"
+  [[ -n "$steg" ]] || return 0
+  ANGRA_STEG=""
+  "$ANGRA_SKRIPT" "$steg" >/dev/null 2>&1
+}
+
+angra_kvarglomt() {
+  local steg="$1" k="${ANGRA_KATALOG}/$1"
+  if [[ -e "${k}/obekraftad" ]]; then
+    varna "hittar en OBEKRÄFTAD ändring i steget '${steg}' från en avbruten körning — ångrar den först"
+    "$ANGRA_SKRIPT" "$steg" >/dev/null 2>&1 \
+      || avbryt "den obekräftade ändringen gick inte att ångra — se ${LOGGFIL}. Ingenting nytt har ändrats."
+    klart "läget före den avbrutna körningen är återställt"
+  fi
+  # Ett underlag UTAN markör är förbrukat (bekräftat eller redan ångrat) och får aldrig användas igen.
+  rm -rf -- "${ANGRA_KATALOG:?}/${steg}"
+}
+
+angra_forbered() {
+  install -d -m 0700 -o root -g root "${ANGRA_KATALOG}/$1"
+}
+
+# angra_bild <steg> <namn> <fil> — hur såg filen ut FÖRE? Finns den: en kopia. Finns den inte:
+# en anteckning om det, så att ångrandet tar bort den nya. (Varken eller ⇒ "rördes aldrig".)
+angra_bild() {
+  local k="${ANGRA_KATALOG}/$1" namn="$2" fil="$3"
+  if [[ -f "$fil" ]]; then
+    cp -p -- "$fil" "${k}/${namn}.fore"
+  else
+    : >"${k}/${namn}.saknades"
+  fi
+}
+
+angra_armera() {
+  local steg="$1" k="${ANGRA_KATALOG}/$1" enhet
+  : >"${k}/obekraftad"
+  sync -- "${k}/obekraftad" "$k" 2>/dev/null || true
+  ANGRA_STEG="$steg"
+  if (( INGEN_BEKRAFTELSE )); then
+    varna "--ingen-bekraftelse: inget backstopp armeras och ingen fråga ställs"
     return 0
   fi
-  "$angra" >>"$LOGGFIL" 2>&1 || true
-  printf '\n✗ Ingen bekräftelse — ändringen är ÅNGRAD. Se %s\n' "$LOGGFIL" >&2 || true
+  enhet="vibesandbox-angra-${steg}-$(date +%s)"
+  printf '%s\n' "$enhet" >"${k}/timer-enhet"
+  gor "armerar backstoppet: ${enhet}.timer ångrar om $(( BEKRAFTELSE_SEKUNDER + BACKSTOPP_MARGINAL )) s, vad som än händer med det här skriptet"
+  systemd-run --quiet --collect --unit="$enhet" \
+    --description="vibesandbox: ångra obekräftad ändring (${steg})" \
+    --on-active="$(( BEKRAFTELSE_SEKUNDER + BACKSTOPP_MARGINAL ))s" --timer-property=AccuracySec=1s \
+    "$ANGRA_SKRIPT" "$steg" \
+    || avbryt "backstoppet gick inte att armera (systemd-run misslyckades). Ingenting har ändrats — utan backstopp görs ingen ändring."
+}
+
+# Ägaren har svarat JA. Markören tas bort under SAMMA lås som ångra-skriptet håller, så att
+# "bekräftat" och "ångrat" aldrig kan ske samtidigt: hann backstoppet före är markören borta,
+# och då gäller ångrandet — inte svaret.
+angra_bekrafta() {
+  local steg="$1" k="${ANGRA_KATALOG}/$1" enhet=""
+  exec 8>>"${ANGRA_KATALOG}/.las"
+  flock -w 120 8 || avbryt "fick inte låset ${ANGRA_KATALOG}/.las — ett ångrande pågår. Ändringen ångras."
+  if [[ ! -e "${k}/obekraftad" ]]; then
+    exec 8>&-
+    ANGRA_STEG=""
+    avbryt "backstoppet hann före: ändringen i steget '${steg}' var redan ÅNGRAD när svaret kom. Kör steget igen."
+  fi
+  rm -f -- "${k}/obekraftad"
+  exec 8>&-
+  ANGRA_STEG=""
+  if [[ -f "${k}/timer-enhet" ]]; then
+    enhet="$(head -n1 "${k}/timer-enhet")"
+    systemctl stop "${enhet}.timer" >/dev/null 2>&1 || true
+    if systemctl is-active --quiet "${enhet}.timer" 2>/dev/null; then
+      varna "timern ${enhet}.timer gick inte att stoppa. Den är ofarlig (markören är borta ⇒ ångra-skriptet gör ingenting), men kontrollera med: systemctl list-timers"
+    fi
+  fi
+  rm -rf -- "${ANGRA_KATALOG:?}/${steg}"
+}
+
+# Öppnar styrterminalen på fd 7. Lyckas bara om det FINNS en terminal (annars ENXIO).
+#
+# Varför en egen fd och inte 'read … </dev/tty 2>/dev/null': en omdirigering på ett inbyggt
+# kommando får bash att spara undan fd 0 och 2 (som fd 10 och 11) medan kommandot kör. Kommer
+# Ctrl-C eller SIGTERM MITT I 'read' körs fällan med de sparade kopiorna fortfarande öppna — och
+# fd 11 är skrivänden på röret till loggens 'tee'. Då får tee aldrig EOF, avslutet väntar på tee
+# för evigt, och skriptet hänger (efter att ha ångrat) medan ett nytt Ctrl-C ignoreras.
+oppna_terminal() {
+  { exec 7<>/dev/tty; } 2>/dev/null
+}
+stang_terminal() { exec 7>&- 2>/dev/null || true; }
+
+bekrafta_eller_angra() {
+  local steg="$1" fraga="$2" svar=""
+  if (( INGEN_BEKRAFTELSE )); then
+    angra_bekrafta "$steg"
+    return 0
+  fi
+  trap '' HUP PIPE
+  printf '\n  ?? %s\n  ?? Skriv JA inom %s sekunder för att behålla ändringen: ' "$fraga" "$BEKRAFTELSE_SEKUNDER" || true
+  if oppna_terminal && read -r -t "$BEKRAFTELSE_SEKUNDER" -u 7 svar && [[ "$svar" == "JA" ]]; then
+    stang_terminal
+    angra_bekrafta "$steg"
+    klart "bekräftat — backstoppet är avbrutet"
+    return 0
+  fi
+  stang_terminal
+  # Tidsgräns, annat svar eller ingen/död terminal. ANGRA_STEG är satt ⇒ vid_avslut ångrar.
   exit 1
+}
+
+# Varje väg ut ur skriptet går hit (EXIT-fällan; INT/TERM/QUIT avslutar och hamnar därmed här).
+# Ångrandet sker FÖRE all utskrift: en utskrift till en död terminal får aldrig komma emellan.
+vid_avslut() {
+  local kod=$? steg="$ANGRA_STEG"
+  trap '' INT TERM QUIT HUP PIPE
+  if [[ -n "$steg" ]]; then
+    if angra_nu; then
+      printf '\n✗ Ingen bekräftelse — ändringen i steget "%s" är ÅNGRAD. Se %s\n' "$steg" "$LOGGFIL" >&2 || true
+    else
+      printf '\n✗ Ändringen i steget "%s" gick INTE att ångra fullständigt. Backstoppet (timern, och uppstartsenheten vid omstart) försöker igen.\n  Se %s och nödvägen i README.\n' "$steg" "$LOGGFIL" >&2 || true
+    fi
+    (( kod == 0 )) && kod=1
+  fi
+  if [[ -n "$NYCKELFIL" ]]; then rm -f -- "$NYCKELFIL"; fi
+  avsluta_logg
+  exit "$kod"
 }
 
 # ── Steg 1: uppdatering och automatiska säkerhetsuppdateringar ─────────────────────────────
@@ -503,16 +822,104 @@ ops_nycklar() {
 
 ops_har_losenord() { [[ "$(passwd -S "$OPS_USER" 2>/dev/null | awk '{print $2}')" == "P" ]]; }
 
+# Är lösenordsinloggning AVSTÄNGD för driftanvändaren i sshd:s effektiva läge?
+losenord_stangt_for_ops() {
+  local utdata
+  utdata="$(sshd -T -C "user=${OPS_USER},host=localhost,addr=203.0.113.10" 2>/dev/null)" || return 1
+  grep -qix 'passwordauthentication no' <<<"$utdata" && grep -qix 'kbdinteractiveauthentication no' <<<"$utdata"
+}
+
+validera_sshd_fil() { sshd -t -f "$1"; }
+
+# B2: mellan fas 1 och fas 2 står port 22 öppen mot internet med lösenordsinloggning på (det
+# stängs globalt först i SSH-steget, bakom JA-frågan). Ett nytt sudo-konto MED lösenord vore då
+# ett lösenordsangripbart root-konto, i timmar. Därför: stäng lösenord för just den användaren
+# FÖRST — och sätt lösenordet först när 'sshd -T' visar att det verkar.
+#
+# Ett Match-block gäller till filens slut men inte längre (prövat i testerna med 'sshd -T -C'),
+# värden ur ett Match-block går före globala direktiv var de än står, och bland flera Match-block
+# vinner det FÖRSTA som träffar ⇒ filen sorteras före alla andra. Den rör ingen annan användare:
+# roots väg in är orörd, så det här behöver ingen JA-fråga.
+stang_losenord_for_ops() {
+  local andrad
+  skriv_fil "$SSH_OPS_DROPIN" 0600 root:root validera_sshd_fil <<EOF
+# Skriven av vibesandbox provision.sh (steget 'anvandare') — ändra i infra/provision.sh, inte här.
+# Stänger lösenordsinloggning över SSH för driftanvändaren redan i fas 1. Lösenordet finns för
+# sudo och för leverantörens webbkonsol, aldrig för SSH.
+Match User ${OPS_USER}
+	PasswordAuthentication no
+	KbdInteractiveAuthentication no
+EOF
+  andrad=$FIL_ANDRAD
+  (( DRY_RUN )) && return 0
+  if (( andrad )); then
+    if ! sshd -t; then
+      rm -f -- "$SSH_OPS_DROPIN"
+      avbryt "'sshd -t' underkände konfigurationen med ${SSH_OPS_DROPIN} — filen är borttagen, sshd är orörd. Inget lösenord har satts."
+    fi
+    gor "stänger lösenordsinloggning för ${OPS_USER}: laddar om sshd (befintliga sessioner påverkas inte)"
+    ladda_om_sshd
+  fi
+  if losenord_stangt_for_ops; then
+    klart "sshd -T (user=${OPS_USER}): lösenordsinloggning är avstängd"
+  else
+    rm -f -- "$SSH_OPS_DROPIN"
+    ladda_om_sshd || true
+    avbryt "lösenordsinloggning för ${OPS_USER} blev INTE avstängd i sshd:s effektiva läge ('sshd -T -C user=${OPS_USER}').
+Troligast: ${SSHD_CONFIG} saknar raden '${SSH_INCLUDE}', eller har ett Match-block före den. Lägg Include-raden
+FÖRST i filen, kontrollera med 'sshd -t' och kör om. Filen är borttagen igen och INGET lösenord har satts för ${OPS_USER}."
+  fi
+}
+
+# B5: 'useradd' delar ut underordnade id:n till nya användare — på en färsk Debian 13 får den
+# första användaren 100000:65536, alltså exakt dockremaps intervall. Då delar containrarnas
+# "root" uid-rymd med en riktig användares namnrymder. Hellre avbrott än en gissning om vems
+# rad som ska bort: den som ändras byter ägare på data.
+kontrollera_subid_overlapp() {
+  local f namn start antal bas="$DOCKREMAP_SUBID_BASE" slut=$(( DOCKREMAP_SUBID_BASE + 65536 ))
+  for f in /etc/subuid /etc/subgid; do
+    [[ -r "$f" ]] || continue
+    while IFS=: read -r namn start antal _ || [[ -n "$namn" ]]; do
+      [[ -n "$namn" && "$namn" != \#* && "$namn" != "dockremap" ]] || continue
+      [[ "$start" =~ ^[0-9]+$ && "$antal" =~ ^[0-9]+$ ]] || continue
+      if (( start < slut && start + antal > bas )); then
+        avbryt "${f}: posten '${namn}:${start}:${antal}' överlappar dockremap-intervallet ${bas}–$(( slut - 1 )).
+Containrarnas uid:n får inte delas med någon annan. Behöver ${namn} inga underordnade id:n (gäller t.ex. ${OPS_USER}), ta bort dem:
+    usermod --del-subuids ${start}-$(( start + antal - 1 )) --del-subgids ${start}-$(( start + antal - 1 )) ${namn}
+Annars: flytta ${namn}:s intervall. Ändra INTE DOCKREMAP_SUBID_BASE på en värd som redan har data."
+      fi
+    done <"$f"
+  done
+  return 0
+}
+
 steg_anvandare() {
   rubrik "Steg 2 — driftanvändaren '${OPS_USER}' (sudo, men INTE docker-gruppen)"
+
+  # Nycklarna kontrolleras INNAN något skapas: ett konto utan fungerande nyckel är just det
+  # som låser ute ägaren i fas 2.
+  local nycklar hem
+  nycklar="$(ops_nycklar)"
+  if [[ -n "$nycklar" ]]; then
+    local tmp rad
+    if grep -q 'EXEMPEL' <<<"$nycklar"; then
+      avbryt "den publika nyckeln är EXEMPEL-värdet ur provision.env.example — ingen kan logga in med den. Lägg in din egen (cat ~/.ssh/id_ed25519.pub)."
+    fi
+    tmp="$(mktemp)"
+    while IFS= read -r rad; do
+      printf '%s\n' "$rad" >"$tmp"
+      ssh-keygen -l -f "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; avbryt "ogiltig publik SSH-nyckel i konfigurationen: ${rad:0:40}…"; }
+    done <<<"$nycklar"
+    rm -f "$tmp"
+  fi
 
   installera_paket sudo
 
   if id "$OPS_USER" >/dev/null 2>&1; then
     klart "användaren ${OPS_USER} finns"
   else
-    gor "skapar användaren ${OPS_USER}"
-    kor useradd --create-home --shell /bin/bash "$OPS_USER"
+    gor "skapar användaren ${OPS_USER} (utan underordnade uid/gid — se kontrollera_subid_overlapp)"
+    kor useradd --create-home --shell /bin/bash -K SUB_UID_COUNT=0 -K SUB_GID_COUNT=0 "$OPS_USER"
   fi
 
   if i_grupp "$OPS_USER" sudo; then
@@ -531,18 +938,9 @@ steg_anvandare() {
   fi
 
   # Nycklar: konfigurationen är facit. Finns ingen nyckel i konfigurationen rörs filen inte.
-  local nycklar hem
-  nycklar="$(ops_nycklar)"
   hem="$(getent passwd "$OPS_USER" | cut -d: -f6 || true)"
   hem="${hem:-/home/${OPS_USER}}"
   if [[ -n "$nycklar" ]]; then
-    local tmp rad
-    tmp="$(mktemp)"
-    while IFS= read -r rad; do
-      printf '%s\n' "$rad" >"$tmp"
-      ssh-keygen -l -f "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; avbryt "ogiltig publik SSH-nyckel i konfigurationen: ${rad:0:40}…"; }
-    done <<<"$nycklar"
-    rm -f "$tmp"
     if (( ! DRY_RUN )) || [[ -d "$hem" ]]; then
       kor install -d -m 0700 -o "$OPS_USER" -g "$OPS_USER" "${hem}/.ssh"
     fi
@@ -557,15 +955,26 @@ steg_anvandare() {
     avbryt "ingen publik nyckel för ${OPS_USER}: sätt OPS_SSH_PUBKEY eller OPS_SSH_PUBKEY_FILE."
   fi
 
-  # Lösenordet behövs för sudo OCH som nödväg via leverantörens webbkonsol.
+  # FÖRE lösenordet: ingen lösenordsinloggning över SSH för den här användaren (B2).
+  stang_losenord_for_ops
+
+  # Lösenordet behövs för sudo OCH som nödväg via leverantörens webbkonsol. Formatet är redan
+  # kontrollerat i las_konfiguration (kontrollera_losenordshash).
   if [[ -n "$OPS_PASSWORD_HASH" ]]; then
-    [[ "$OPS_PASSWORD_HASH" =~ ^\$(6|y)\$ ]] || avbryt "OPS_PASSWORD_HASH ska vara en SHA-512- eller yescrypt-hash (börjar med \$6\$ eller \$y\$)."
     if [[ "$(getent shadow "$OPS_USER" 2>/dev/null | cut -d: -f2)" == "$OPS_PASSWORD_HASH" ]]; then
       klart "lösenordet för ${OPS_USER} är redan satt"
     else
       gor "sätter lösenord för ${OPS_USER} (från hash)"
-      # -p tar en färdig hash; klartextlösenordet finns aldrig på servern eller i repot.
-      kor usermod -p "$OPS_PASSWORD_HASH" "$OPS_USER"
+      # 'chpasswd -e' tar en färdig hash på STDIN: klartexten finns aldrig på servern, och hashen
+      # står aldrig i något argv ('usermod -p <hash>' syns i 'ps'). printf är inbyggt i skalet.
+      if (( DRY_RUN )); then
+        printf '  [dry-run] chpasswd -e  (hashen på stdin)\n'
+      else
+        printf '%s:%s\n' "$OPS_USER" "$OPS_PASSWORD_HASH" | chpasswd -e
+        if [[ "$(getent shadow "$OPS_USER" | cut -d: -f2)" != "$OPS_PASSWORD_HASH" ]] || ! ops_har_losenord; then
+          avbryt "lösenordet för ${OPS_USER} blev inte satt som väntat (kontrollera 'passwd -S ${OPS_USER}')."
+        fi
+      fi
     fi
   elif ops_har_losenord; then
     klart "${OPS_USER} har ett lösenord"
@@ -573,12 +982,47 @@ steg_anvandare() {
     varna "${OPS_USER} saknar lösenord ⇒ sudo fungerar inte. Sätt OPS_PASSWORD_HASH eller kör 'passwd ${OPS_USER}'."
     varna "SSH-steget vägrar stänga root-inloggningen tills det är gjort."
   fi
+
+  # Redan nu, i fas 1 — inte först i Docker-steget, mitt i fas 2.
+  kontrollera_subid_overlapp
 }
 
 # ── Steg 3: Tailscale ──────────────────────────────────────────────────────────────────────
 
+# Varifrån kommer auth-nyckeln? Aldrig från kommandoraden eller miljön (se avvisa_nyckel_i_miljon).
+# Skriver sökvägen till en fil som 'tailscale up --auth-key=file:' kan läsa, i variabeln NYCKELKALLA.
+NYCKELKALLA=""
+hamta_tailscale_nyckel() {
+  local f="$TAILSCALE_AUTHKEY_FILE" nyckel=""
+  if [[ -n "$f" ]]; then
+    # Filen läses av root ⇒ samma krav som på provision.env, och lite till: ingen länk (den som
+    # kan byta länkens mål väljer vilken fil root läser), ägd av root, inga rättigheter för andra.
+    [[ -f "$f" && ! -L "$f" ]] || avbryt "TAILSCALE_AUTHKEY_FILE (${f}) finns inte eller är ingen vanlig fil (symboliska länkar godtas inte)."
+    [[ "$(stat -c '%u' -- "$f")" == 0 ]] || avbryt "TAILSCALE_AUTHKEY_FILE (${f}) ägs inte av root. Kör: chown root:root ${f}"
+    [[ "$(stat -c '%a' -- "$f")" =~ ^[46]00$ ]] || avbryt "TAILSCALE_AUTHKEY_FILE (${f}) har läge $(stat -c '%a' -- "$f") — ska vara 600. Kör: chmod 600 ${f}"
+    [[ -s "$f" ]] || avbryt "TAILSCALE_AUTHKEY_FILE (${f}) är tom."
+    NYCKELKALLA="$f"
+    return 0
+  fi
+  # Dold inmatning från terminalen. 'read' och 'printf' är inbyggda i skalet ⇒ nyckeln står aldrig
+  # i någon process argument, och variabeln exporteras inte.
+  # Terminalen på en egen fd — se oppna_terminal.
+  oppna_terminal || avbryt "inte ansluten till tailnetet, och ingen terminal att fråga efter auth-nyckeln i. Lägg nyckeln i en rootägd 600-fil och sätt TAILSCALE_AUTHKEY_FILE."
+  printf '\n  ?? Klistra in Tailscales auth-nyckel (engångsnyckel; visas inte) och tryck Enter: ' >&7
+  IFS= read -rs -u 7 nyckel || { stang_terminal; avbryt "fick ingen auth-nyckel."; }
+  printf '\n' >&7
+  stang_terminal
+  [[ "$nyckel" =~ ^tskey-[A-Za-z0-9_-]+$ ]] || { nyckel=""; avbryt "det inmatade ser inte ut som en Tailscale-nyckel (tskey-…)."; }
+  # I /run (tmpfs, aldrig på disk), 0600, och NYCKELFIL sätts FÖRE skrivningen så att
+  # avslutsfällan raderar filen vad som än händer — även vid Ctrl-C eller SIGTERM mitt i 'tailscale up'.
+  NYCKELFIL="$(umask 077; mktemp /run/vibesandbox-ts.XXXXXX)"
+  printf '%s' "$nyckel" >"$NYCKELFIL"
+  nyckel=""
+  NYCKELKALLA="$NYCKELFIL"
+}
+
 steg_tailscale() {
-  rubrik "Steg 3 — Tailscale (måste fungera INNAN port ${SSH_PORT} stängs mot internet)"
+  rubrik "Steg 3 — Tailscale (måste fungera INNAN port ${SSHD_PORT} stängs mot internet)"
 
   installera_paket ca-certificates curl gnupg
   hamta_nyckel "https://pkgs.tailscale.com/stable/${OS_ID}/${OS_KODNAMN}.noarmor.gpg" \
@@ -606,26 +1050,26 @@ EOF
   if tailscale_uppe; then
     klart "ansluten till tailnetet som $(tailnet_adress)"
   else
-    if [[ -z "$TAILSCALE_AUTHKEY" ]]; then
-      (( DRY_RUN )) && { varna "[dry-run] TAILSCALE_AUTHKEY saknas — krävs vid skarp körning"; return 0; }
-      avbryt "inte ansluten till tailnetet och TAILSCALE_AUTHKEY saknas. Ge den via miljön (aldrig i en fil i repot)."
-    fi
-    gor "ansluter till tailnetet som ${TAILSCALE_HOSTNAME} (${TAILSCALE_TAGS})"
     if (( DRY_RUN )); then
-      printf '  [dry-run] tailscale up --auth-key=file:<tillfällig fil> --hostname=%s --advertise-tags=%s --ssh=false --accept-routes=false --accept-dns=false\n' \
+      printf '  [dry-run] skulle fråga efter auth-nyckeln (dold inmatning) eller läsa TAILSCALE_AUTHKEY_FILE, och sedan köra:\n'
+      printf '  [dry-run] tailscale up --auth-key=file:<fil> --hostname=%s --advertise-tags=%s --ssh=false --accept-routes=false --accept-dns=false\n' \
         "$TAILSCALE_HOSTNAME" "$TAILSCALE_TAGS"
     else
-      # Nyckeln ges via en fil med 0600 i /run: ett kommandoradsargument syns i 'ps'.
-      local nyckelfil
-      nyckelfil="$(umask 077; mktemp /run/vibesandbox-ts.XXXXXX)"
-      printf '%s' "$TAILSCALE_AUTHKEY" >"$nyckelfil"
+      hamta_tailscale_nyckel
+      gor "ansluter till tailnetet som ${TAILSCALE_HOSTNAME} (${TAILSCALE_TAGS})"
+      # Nyckeln ges till tailscale som en FIL (file:…): ett kommandoradsargument syns i 'ps'.
       # --ssh=false: vanlig sshd används, inte Tailscale SSH. --accept-routes/dns=false:
       # servern ska inte ta emot vägar eller namnuppslag från tailnetet — den kör opålitlig kod
       # och ska bara vara NÅBAR därifrån. (Tailnetets ACL är det som faktiskt hindrar utgående.)
-      tailscale up --auth-key="file:${nyckelfil}" --hostname="$TAILSCALE_HOSTNAME" \
+      tailscale up --auth-key="file:${NYCKELKALLA}" --hostname="$TAILSCALE_HOSTNAME" \
         --advertise-tags="$TAILSCALE_TAGS" --ssh=false --accept-routes=false --accept-dns=false \
-        || { rm -f "$nyckelfil"; avbryt "'tailscale up' misslyckades."; }
-      rm -f "$nyckelfil"
+        || avbryt "'tailscale up' misslyckades. (Nyckelfilen i /run raderas nu; en fil du själv angav ligger kvar.)"
+      if [[ -n "$NYCKELFIL" ]]; then rm -f -- "$NYCKELFIL"; NYCKELFIL=""; fi
+      if [[ -n "$TAILSCALE_AUTHKEY_FILE" ]]; then
+        # En engångsnyckel är förbrukad efter lyckad anslutning; filen har inget mer att göra på disk.
+        rm -f -- "$TAILSCALE_AUTHKEY_FILE"
+        klart "nyckelfilen ${TAILSCALE_AUTHKEY_FILE} är raderad (engångsnyckeln är förbrukad)"
+      fi
       klart "ansluten som $(tailnet_adress)"
     fi
   fi
@@ -639,18 +1083,26 @@ skriv_fas1_stopp() {
 ════════════════════════════════════════════════════════════════════════════════
  FAS 1 KLAR — skriptet STANNAR här med flit.
 
- Innan brandväggen stänger port ${SSH_PORT} mot internet måste DU visa att vägen in via
- tailnetet fungerar. Gör så här, från din egen dator:
+ Innan brandväggen stänger port ${SSHD_PORT} mot internet måste DU visa att vägen in via
+ tailnetet fungerar — och att NÖDVÄGEN gör det. Tre bevis, alla tre:
 
-   1. ssh ${OPS_USER}@${adress}          (eller serverns MagicDNS-namn)
-   2. sudo -v                           (lösenordet ska fungera)
-   3. Kontrollera tailnetets ACL enligt infra/README.md (servern får inte kunna
+   1. Från din egen dator:  ssh ${OPS_USER}@${adress}     (eller MagicDNS-namnet)
+      Med NYCKEL. Lösenord över SSH är redan avstängt för ${OPS_USER}; fas 2 kräver att
+      sshd:s journal visar 'Accepted publickey for ${OPS_USER}' för just den sessionen.
+   2. I den sessionen:      sudo -v                      (lösenordet ska fungera)
+   3. I leverantörens WEBBKONSOL: logga in som ${OPS_USER} med lösenordet. Det är den
+      vägen du har kvar om allt annat går fel — pröva den NU, inte då.
+   4. Kontrollera tailnetets ACL enligt infra/README.md (servern får inte kunna
       initiera trafik mot resten av tailnetet).
-   4. Kör fas 2 FRÅN DEN SESSIONEN:
+   5. Kör fas 2 FRÅN TAILNET-SESSIONEN, i tmux (så att en tappad anslutning inte
+      lämnar dig utan terminal att svara JA i):
 
+        tmux new -s fas2
         sudo ./provision.sh --bekrafta-tailscale-ssh
 
- Behåll den här root-sessionen öppen tills fas 2 är klar.
+ Behåll den här root-sessionen öppen tills fas 2 är klar. Svara JA först när en NY
+ terminal har loggat in. Tryck inte Ctrl-C vid frågan för att "prova igen" — det ångrar
+ (med flit), och du får börja om steget.
 ════════════════════════════════════════════════════════════════════════════════
 EOF
 }
@@ -717,7 +1169,7 @@ $( [[ -n "$tcp" ]] && printf '\n\t\ttcp dport { %s } accept' "$tcp" )
 $( [[ -n "$udp" ]] && printf '\t\tudp dport { %s } accept' "$udp" )
 
 		# SSH ENDAST över tailnetet.
-		iifname "tailscale0" tcp dport ${SSH_PORT} accept
+		iifname "tailscale0" tcp dport ${SSHD_PORT} accept
 $( (( OPEN_TAILSCALE_UDP )) && printf '\t\t# Direktanslutningar till tailscaled (WireGuard). Valfritt — se README.\n\t\tudp dport 41641 accept' )
 
 		limit rate 6/minute burst 10 packets log prefix "vsb-in-drop: " level info
@@ -773,16 +1225,9 @@ nft_tabell_laddad() { nft list table inet "$NFT_TABELL" >/dev/null 2>&1; }
 
 nft_summa() { nft -s list table inet "$NFT_TABELL" 2>/dev/null | sha256sum | awk '{print $1}'; }
 
-angra_brandvagg() {
-  echo "ÅNGRAR brandvägg $(date -Is)"
-  if [[ -f "${NFT_FIL}.vibesandbox-fore" ]] && grep -q "table inet ${NFT_TABELL}" "${NFT_FIL}.vibesandbox-fore"; then
-    cp -f "${NFT_FIL}.vibesandbox-fore" "$NFT_FIL"
-    nft -f "$NFT_FIL"
-  else
-    # Första körningen: tillbaka till läget före (ingen brandvägg). Docker finns inte än.
-    nft delete table inet "$NFT_TABELL" || true
-  fi
-}
+# Har ägaren bekräftat JUST den här filen? Markören skrivs först efter ett JA (eller med
+# --ingen-bekraftelse, där ägaren har tagit på sig ansvaret) och täcker filens innehåll.
+brandvagg_bekraftad() { [[ -s "$NFT_BEKRAFTAD" ]] && sha256sum -c --status "$NFT_BEKRAFTAD" 2>/dev/null; }
 
 steg_brandvagg() {
   rubrik "Steg 4 — brandvägg (nftables): INPUT drop, FORWARD drop, SSH bara på tailscale0"
@@ -814,27 +1259,43 @@ EOF
     return 0
   fi
 
+  # Kandidaten kontrolleras som TEMPFIL, före allt annat.
   nft -c -f "$ny" || { rm -f "$ny"; avbryt "det genererade regelverket går inte igenom 'nft -c' — inget har ändrats."; }
 
-  local andrad=0
-  if [[ -f "$NFT_FIL" ]] && cmp -s "$ny" "$NFT_FIL"; then
-    klart "${NFT_FIL} är redan rätt"
-  else
-    [[ -f "$NFT_FIL" ]] && cp -f "$NFT_FIL" "${NFT_FIL}.vibesandbox-fore"
-    gor "skriver ${NFT_FIL}"
-    install -m 0755 -o root -g root "$ny" "$NFT_FIL"
-    andrad=1
-  fi
-  rm -f "$ny"
+  angra_installera
+  angra_kvarglomt brandvagg
 
-  if (( andrad )) || ! nft_tabell_laddad || [[ "$(nft_summa)" != "$(cat "$NFT_SUMMAFIL" 2>/dev/null || true)" ]]; then
+  local fil_ratt=0
+  if [[ -f "$NFT_FIL" ]] && cmp -s "$ny" "$NFT_FIL"; then fil_ratt=1; fi
+
+  if (( fil_ratt )) && brandvagg_bekraftad && nft_tabell_laddad \
+    && [[ "$(nft_summa)" == "$(cat "$NFT_SUMMAFIL" 2>/dev/null || true)" ]]; then
+    rm -f "$ny"
+    klart "${NFT_FIL} är rätt och bekräftad; tabellen inet ${NFT_TABELL} är laddad och oförändrad"
+  else
+    # FÖRE ändringen: ögonblicksbild, markör, fällor, backstopp. Fanns en fil före läggs den
+    # tillbaka byte för byte (A3); fanns ingen tas den nya bort. Se angra.sh.
+    angra_forbered brandvagg
+    angra_bild brandvagg nftables.conf "$NFT_FIL"
+    angra_armera brandvagg
+
+    if (( fil_ratt )); then
+      klart "${NFT_FIL} är redan rätt (men inte bekräftad, eller tabellen avviker)"
+    else
+      gor "skriver ${NFT_FIL}"
+      install -m 0755 -o root -g root "$ny" "$(dirname "$NFT_FIL")/.$(basename "$NFT_FIL").vsb-ny"
+      mv -f -- "$(dirname "$NFT_FIL")/.$(basename "$NFT_FIL").vsb-ny" "$NFT_FIL"
+    fi
+    rm -f "$ny"
     gor "laddar tabellen inet ${NFT_TABELL}"
     nft -f "$NFT_FIL"
-    bekrafta_eller_angra "Brandväggen är laddad. Öppna en NY terminal och kontrollera att 'ssh ${OPS_USER}@<tailnet-adress>' fungerar." angra_brandvagg
-    install -d -m 0755 "$TILLSTANDSKATALOG"
+    bekrafta_eller_angra brandvagg "Brandväggen är laddad. Öppna en NY terminal och kontrollera att 'ssh ${OPS_USER}@<tailnet-adress>' fungerar."
+    # Först NU — efter JA — skrivs markörerna. Avbröts körningen före den här raden finns ingen
+    # markör, och nästa körning bekräftar om i stället för att lita på filen.
+    local summa
+    summa="$(sha256sum "$NFT_FIL")"
+    skriv_fil "$NFT_BEKRAFTAD" 0600 <<<"$summa"
     nft_summa >"$NFT_SUMMAFIL"
-  else
-    klart "tabellen inet ${NFT_TABELL} är laddad och oförändrad"
   fi
 
   if [[ "$(systemctl is-enabled nftables.service 2>/dev/null || true)" == "enabled" ]]; then
@@ -855,7 +1316,7 @@ sshd_effektivt_ratt() {
   for anv in root "$OPS_USER"; do
     utdata="$(sshd -T -C "user=${anv},host=localhost,addr=203.0.113.10" 2>/dev/null)" || return 1
     for par in "permitrootlogin no" "passwordauthentication no" "kbdinteractiveauthentication no" \
-      "pubkeyauthentication yes" "allowusers ${OPS_USER}" "allowagentforwarding no" \
+      "pubkeyauthentication yes" "allowusers ${OPS_USER}" "authorizedkeyscommand none" "allowagentforwarding no" \
       "allowtcpforwarding no" "maxauthtries 3" "x11forwarding no" "permittunnel no"; do
       nyckel="${par%% *}"; varde="${par#* }"
       if ! grep -qix "${nyckel} ${varde}" <<<"$utdata"; then
@@ -880,34 +1341,31 @@ include_ar_forst() {
   [[ "${forsta,,}" == "${SSH_INCLUDE,,}" ]]
 }
 
-# Andra dropins som sorteras FÖRE vår (byteordning, som sshd:s glob). Inga antaganden om namn.
+# ANDRAS dropins som sorteras FÖRE vår (byteordning, som sshd:s glob). Inga antaganden om deras
+# namn. Vår egen fas 1-fil (Match-blocket för driftanvändaren) sorteras före med flit och räknas inte.
 dropins_fore_var() {
-  local f var
+  local f var egen
   var="$(basename "$SSH_DROPIN")"
+  egen="$(basename "$SSH_OPS_DROPIN")"
   (
     LC_ALL=C
     cd "$SSH_DROPIN_KATALOG" 2>/dev/null || exit 0
     for f in *.conf; do
-      [[ -e "$f" && "$f" != "$var" && "$f" < "$var" ]] && printf '%s ' "$f"
+      [[ -e "$f" && "$f" != "$var" && "$f" != "$egen" && "$f" < "$var" ]] && printf '%s ' "$f"
     done
     true
   )
 }
 
-angra_ssh() {
-  echo "ÅNGRAR SSH-härdning $(date -Is)"
-  if [[ -f "${SSH_DROPIN}.vibesandbox-fore" ]]; then
-    mv -f "${SSH_DROPIN}.vibesandbox-fore" "$SSH_DROPIN"
-  else
-    rm -f "$SSH_DROPIN"
-  fi
-  if [[ -f "${SSHD_CONFIG}.vibesandbox-fore" ]]; then
-    mv -f "${SSHD_CONFIG}.vibesandbox-fore" "$SSHD_CONFIG"
-  fi
-  # Ladda bara om ifall sshd faktiskt har hunnit läsa in den nya konfigurationen.
-  if (( SSHD_OMLADDAD )); then
-    sshd -t && ladda_om_sshd
-  fi
+# A2: har ägaren bekräftat JUST de här två filerna? Markören skrivs först efter ett JA och
+# täcker innehållet i både dropinen och sshd_config. Saknas den, eller har någon av filerna
+# ändrats sedan dess, är läget OBEKRÄFTAT — hur rätt 'sshd -T' än ser ut. ('sshd -T' läser
+# filer, inte den körande demonen, och säger ingenting om ifall ägaren kommer in.)
+ssh_bekraftad() {
+  [[ -s "$SSH_BEKRAFTAD" ]] || return 1
+  [[ "$(grep -c . "$SSH_BEKRAFTAD")" == 2 ]] || return 1
+  grep -qF -- "  ${SSH_DROPIN}" "$SSH_BEKRAFTAD" && grep -qF -- "  ${SSHD_CONFIG}" "$SSH_BEKRAFTAD" || return 1
+  sha256sum -c --status "$SSH_BEKRAFTAD" 2>/dev/null
 }
 
 ladda_om_sshd() {
@@ -935,12 +1393,14 @@ steg_ssh() {
 # Skriven av vibesandbox provision.sh — ändra i infra/provision.sh, inte här.
 # sshd använder FÖRSTA förekomsten av varje direktiv; därför måste den här filen sorteras
 # först i katalogen. Lyssnaradressen begränsas inte här (sshd skulle då vägra starta om
-# tailscale0 inte är uppe vid start) — det är brandväggen som stänger port ${SSH_PORT} mot internet.
+# tailscale0 inte är uppe vid start) — det är brandväggen som stänger port ${SSHD_PORT} mot internet.
 PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 AuthenticationMethods publickey
+# Ett kommando som avgör vilka nycklar som gäller kan släppa in vem som helst, förbi authorized_keys.
+AuthorizedKeysCommand none
 AllowUsers ${OPS_USER}
 AllowAgentForwarding no
 AllowTcpForwarding no
@@ -966,60 +1426,87 @@ EOF
     return 0
   fi
 
+  [[ -f "$SSHD_CONFIG" ]] || avbryt "${SSHD_CONFIG} saknas — det här är ingen sshd-installation skriptet känner igen."
   sakerstall_omaskad ssh.service
-  local andrad=0
-  rm -f "${SSH_DROPIN}.vibesandbox-fore" "${SSHD_CONFIG}.vibesandbox-fore"
+  angra_installera
+  angra_kvarglomt ssh
 
-  if include_ar_forst; then
+  # Tre skäl att göra (om) hela kedjan 'sshd -t' → omladdning → JA-fråga. Det tredje är A2: efter
+  # ett avbrott ligger filerna rätt på disk — och det bevisar INGENTING om ifall ägaren kommer in.
+  local behov=0 dropin_ratt=0
+  include_ar_forst || behov=1
+  if [[ -f "$SSH_DROPIN" ]] && [[ "$(cat "$SSH_DROPIN")" == "$innehall" ]]; then dropin_ratt=1; else behov=1; fi
+  if ! ssh_bekraftad; then
+    if (( ! behov )); then varna "filerna är rätt men har ALDRIG bekräftats av ägaren (avbruten körning, eller ändrade efteråt) — bekräftelsen görs om"; fi
+    behov=1
+  fi
+
+  if (( ! behov )); then
     klart "${SSHD_CONFIG}: Include-raden står före alla direktiv"
+    klart "${SSH_DROPIN} är rätt och bekräftad"
+    sshd_effektivt_ratt || avbryt "våra filer är oförändrade men det EFFEKTIVA läget ('sshd -T') är fel. Dropins som sorteras före vår: '${fore:-inga}'. Root-låsningen görs inte förrän detta är rättat."
   else
-    gor "lägger Include-raden FÖRST i ${SSHD_CONFIG} (första direktivet var: '$(sshd_forsta_direktiv)')"
-    cp -pf "$SSHD_CONFIG" "${SSHD_CONFIG}.vibesandbox-fore"
-    local tmp
-    tmp="$(mktemp)"
-    {
-      echo "# vibesandbox provision.sh: Include måste stå före alla direktiv — sshd tar FÖRSTA förekomsten."
-      echo "$SSH_INCLUDE"
-      echo
+    # FÖRE ändringen: ögonblicksbild av båda filerna, markör, fällor, backstopp (se angra.sh).
+    # Bilderna ligger i 700-katalogen — inte bredvid målen — och förbrukas av ett JA eller ett
+    # ångrande; en gammal bild kan alltså aldrig återställas av en senare körning.
+    angra_forbered ssh
+    angra_bild ssh dropin "$SSH_DROPIN"
+    angra_bild ssh sshd_config "$SSHD_CONFIG"
+    angra_armera ssh
+
+    if include_ar_forst; then
+      klart "${SSHD_CONFIG}: Include-raden står före alla direktiv"
+    else
+      gor "lägger Include-raden FÖRST i ${SSHD_CONFIG} (första direktivet var: '$(sshd_forsta_direktiv)')"
+      local ny_config
       # En Include-rad längre ner kommenteras ut: annars läses varje dropin två gånger, och
       # direktiv som ackumuleras (AllowUsers, AcceptEnv …) dubbleras. Övriga rader rörs inte.
-      sed -E 's|^([[:space:]]*[Ii][Nn][Cc][Ll][Uu][Dd][Ee][[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf[[:space:]]*)$|# flyttad överst av vibesandbox provision.sh: \1|' \
-        "${SSHD_CONFIG}.vibesandbox-fore"
-    } >"$tmp"
-    install -m 0644 -o root -g root "$tmp" "$SSHD_CONFIG"
-    rm -f "$tmp"
-    andrad=1
-  fi
+      ny_config="$(
+        echo "# vibesandbox provision.sh: Include måste stå före alla direktiv — sshd tar FÖRSTA förekomsten."
+        echo "$SSH_INCLUDE"
+        echo
+        sed -E 's|^([[:space:]]*[Ii][Nn][Cc][Ll][Uu][Dd][Ee][[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf[[:space:]]*)$|# flyttad överst av vibesandbox provision.sh: \1|' \
+          "${ANGRA_KATALOG}/ssh/sshd_config.fore"
+      )"
+      # Atomiskt (tempfil + mv): ett strömavbrott får aldrig lämna en tom sshd_config. Kandidaten
+      # kontrolleras med 'sshd -t -f' (den läser då även dropin-katalogen) innan den byts in.
+      skriv_fil "$SSHD_CONFIG" 0644 root:root validera_sshd_fil <<<"$ny_config"
+    fi
 
-  if [[ -f "$SSH_DROPIN" ]] && [[ "$(cat "$SSH_DROPIN")" == "$innehall" ]]; then
-    klart "${SSH_DROPIN} är redan rätt"
-  else
-    [[ -f "$SSH_DROPIN" ]] && cp -pf "$SSH_DROPIN" "${SSH_DROPIN}.vibesandbox-fore"
-    skriv_fil "$SSH_DROPIN" 0600 <<<"$innehall"
-    andrad=1
-  fi
+    if (( dropin_ratt )); then
+      klart "${SSH_DROPIN} är redan rätt (men inte bekräftad)"
+    else
+      # Kandidaten kontrolleras som ensam tempfil ('sshd -t -f') innan den byts in.
+      skriv_fil "$SSH_DROPIN" 0600 root:root validera_sshd_fil <<<"$innehall"
+    fi
 
-  if (( andrad )); then
+    # Helheten — med alla andras dropins på plats — kontrolleras innan sshd får läsa den.
     if ! sshd -t; then
-      angra_ssh >/dev/null 2>&1 || true
+      angra_nu || varna "ångrandet blev inte fullständigt — se ${LOGGFIL}"
       avbryt "'sshd -t' underkände konfigurationen — ändringen är borttagen, sshd är orörd."
     fi
     if ! sshd_effektivt_ratt; then
-      angra_ssh >/dev/null 2>&1 || true
+      angra_nu || varna "ångrandet blev inte fullständigt — se ${LOGGFIL}"
       avbryt "det EFFEKTIVA läget ('sshd -T') blev inte det avsedda. Dropins som sorteras före vår: '${fore:-inga}'. Ändringen är borttagen; flytta eller rätta den filen och kör om."
     fi
     gor "laddar om sshd (befintliga sessioner påverkas inte)"
+    # Flaggan skrivs FÖRE omladdningen: finns den vet ångra-skriptet att sshd kan ha läst den
+    # nya konfigurationen och måste laddas om igen efter återställningen.
+    : >"${ANGRA_KATALOG}/ssh/omladdad"
     ladda_om_sshd
-    SSHD_OMLADDAD=1
-    bekrafta_eller_angra "sshd är omladdad. Öppna en NY terminal: 'ssh ${OPS_USER}@<tailnet-adress>' och sedan 'sudo -v'. Fungerar båda?" angra_ssh
-    rm -f "${SSH_DROPIN}.vibesandbox-fore" "${SSHD_CONFIG}.vibesandbox-fore"
-  elif ! sshd_effektivt_ratt; then
-    avbryt "våra filer är oförändrade men det EFFEKTIVA läget ('sshd -T') är fel. Dropins som sorteras före vår: '${fore:-inga}'. Root-låsningen görs inte förrän detta är rättat."
+    bekrafta_eller_angra ssh "sshd är omladdad. Öppna en NY terminal: 'ssh ${OPS_USER}@<tailnet-adress>' och sedan 'sudo -v'. Fungerar båda?"
+    # Först NU — efter JA — skrivs markören.
+    local summor
+    summor="$(sha256sum "$SSH_DROPIN" "$SSHD_CONFIG")"
+    skriv_fil "$SSH_BEKRAFTAD" 0600 <<<"$summor"
   fi
 
   klart "sshd -T bekräftar: ingen root, inga lösenord, AllowUsers ${OPS_USER}"
 
   if (( LOCK_ROOT_PASSWORD )); then
+    # Root låses BARA i ett bekräftat läge. Hit når koden inte utan markör — men det som låser
+    # den sista vägen in ska inte hänga på att flödet ovan aldrig ändras.
+    ssh_bekraftad || avbryt "internt fel: SSH-läget är inte bekräftat — roots lösenord låses INTE."
     if [[ "$(passwd -S root | awk '{print $2}')" == "L" ]]; then
       klart "roots lösenord är låst"
     else
@@ -1127,9 +1614,21 @@ steg_dockerdisk() {
 
   installera_paket xfsprogs
 
-  if [[ -f "$DOCKER_XFS_IMAGE" ]]; then
-    klart "avbildsfilen ${DOCKER_XFS_IMAGE} finns"
+  # "Filen finns" betyder inte "filen är klar": ett avbrott mellan fallocate och mkfs lämnar en
+  # fil med rätt namn och storlek men utan filsystem, och då misslyckas monteringen för alltid.
+  # Därför byggs avbilden under ett ANNAT namn och får sitt riktiga först när mkfs är klar (mv är
+  # atomiskt) — och en fil som redan bär det riktiga namnet kontrolleras ändå med blkid.
+  local ofardig="${DOCKER_XFS_IMAGE}.ofardig" typ
+  if [[ -e "$DOCKER_XFS_IMAGE" ]]; then
+    typ="$(blkid -p -o value -s TYPE "$DOCKER_XFS_IMAGE" 2>/dev/null || true)"
+    [[ "$typ" == "xfs" ]] || avbryt "${DOCKER_XFS_IMAGE} finns men är inte ett XFS-filsystem (blkid: '${typ:-inget}').
+Troligen ett avbrott mitt i en tidigare körning. Kontrollera att filen inte innehåller något du vill ha kvar, ta bort den och kör om."
+    klart "avbildsfilen ${DOCKER_XFS_IMAGE} finns och är ett XFS-filsystem (blkid)"
   else
+    if [[ -e "$ofardig" ]]; then
+      gor "tar bort en halvfärdig avbild från en avbruten körning (${ofardig})"
+      kor rm -f -- "$ofardig"
+    fi
     # Kräv marginal: en förallokerad fil som fyller roten vore just det fel vi vill undvika.
     local ledigt_gb
     ledigt_gb="$(df -BG --output=avail "$(dirname "$DOCKER_XFS_IMAGE")" | tail -n1 | tr -dc '0-9')"
@@ -1137,23 +1636,23 @@ steg_dockerdisk() {
       || avbryt "för lite ledigt utrymme: ${ledigt_gb} GB ledigt, ${DOCKER_XFS_SIZE_GB} GB + 10 GB marginal krävs."
     gor "förallokerar ${DOCKER_XFS_IMAGE} (${DOCKER_XFS_SIZE_GB} GB) och skapar XFS"
     # fallocate reserverar blocken direkt ⇒ volymen kan aldrig 'växa' och fylla roten senare.
-    kor fallocate -l "${DOCKER_XFS_SIZE_GB}G" "$DOCKER_XFS_IMAGE"
-    kor chmod 0600 "$DOCKER_XFS_IMAGE"
-    kor mkfs.xfs -q -L vsb-docker "$DOCKER_XFS_IMAGE"
+    kor fallocate -l "${DOCKER_XFS_SIZE_GB}G" "$ofardig"
+    kor chmod 0600 "$ofardig"
+    kor mkfs.xfs -q -L vsb-docker "$ofardig"
+    kor mv -f -- "$ofardig" "$DOCKER_XFS_IMAGE"
   fi
+
+  # Monteringspunkten ska finnas innan fstab-kandidaten kontrolleras.
+  kor install -d -m 0711 /var/lib/docker
 
   # nofail: en trasig avbild ska inte stoppa uppstarten (⇒ webbkonsol). I stället vägrar
   # docker.service starta om monteringen saknas — se ExecStartPre i Docker-steget.
   local fstabrad="${DOCKER_XFS_IMAGE} /var/lib/docker xfs loop,pquota,nofail,x-systemd.before=docker.service 0 0"
-  if grep -qF "$fstabrad" /etc/fstab; then
+  if grep -qxF "$fstabrad" /etc/fstab 2>/dev/null; then
     klart "fstab-raden finns"
   else
-    gor "lägger till i /etc/fstab: ${fstabrad}"
-    if (( ! DRY_RUN )); then
-      printf '%s\n' "$fstabrad" >>/etc/fstab
-    fi
+    lagg_till_rad /etc/fstab "$fstabrad" validera_fstab
   fi
-  kor install -d -m 0711 /var/lib/docker
   kor systemctl daemon-reload
   gor "monterar /var/lib/docker"
   kor mount /var/lib/docker
@@ -1187,6 +1686,19 @@ generera_daemon_json() {
 EOF
 }
 
+# Med dockerd på plats: dess egen kontroll. Före den första installationen finns ingen dockerd —
+# då åtminstone att filen är giltig JSON (python3 följer med cloud-init); 'dockerd --validate'
+# körs i så fall på den installerade filen direkt efter paketinstallationen (se nedan).
+validera_daemon_json() {
+  if har_kommando dockerd; then
+    dockerd --validate --config-file "$1" >/dev/null 2>&1
+  elif har_kommando python3; then
+    python3 -m json.tool "$1" >/dev/null 2>&1
+  else
+    return 0
+  fi
+}
+
 steg_docker() {
   rubrik "Steg 9 — Docker från Dockers eget förråd, med userns-remap"
 
@@ -1198,6 +1710,9 @@ steg_docker() {
   elif ! { har_kommando nft && nft_tabell_laddad; }; then
     varna "[dry-run] brandväggstabellen är inte laddad — vid skarp körning vägrar det här steget"
   fi
+
+  # B5: före allt annat i steget — och läsande, så det görs även i --dry-run.
+  kontrollera_subid_overlapp
 
   installera_paket ca-certificates curl gnupg uidmap
 
@@ -1217,10 +1732,7 @@ steg_docker() {
     elif grep -q '^dockremap:' "$f" 2>/dev/null; then
       avbryt "${f} har redan en ANNAN rad för dockremap ($(grep '^dockremap:' "$f")). Ändras den byter all containerdata ägare — rätta för hand."
     else
-      gor "lägger till '${rad}' i ${f}"
-      if (( ! DRY_RUN )); then
-        printf '%s\n' "$rad" >>"$f"
-      fi
+      lagg_till_rad "$f" "$rad"
     fi
   done
 
@@ -1236,8 +1748,12 @@ EOF
   local forrad_andrat=$FIL_ANDRAD
 
   # daemon.json skrivs FÖRE installationen: paketets postinst startar demonen, och den ska
-  # aldrig — inte ens i några sekunder — köra med standardinställningar.
-  generera_daemon_json | skriv_fil /etc/docker/daemon.json 0644
+  # aldrig — inte ens i några sekunder — köra med standardinställningar. Kandidaten kontrolleras
+  # som tempfil innan den byts in (validera_daemon_json), så att en underkänd fil aldrig ersätter
+  # den som gäller. (Inläsning i huvudskalet, inte i en pipeline: FIL_ANDRAD måste överleva.)
+  local daemon_json
+  daemon_json="$(generera_daemon_json)"
+  skriv_fil /etc/docker/daemon.json 0644 root:root validera_daemon_json <<<"$daemon_json"
   local daemon_andrad=$FIL_ANDRAD
 
   # Docker ska inte kunna starta om brandväggen inte laddades vid uppstart (t.ex. efter en
@@ -1307,27 +1823,25 @@ steg_gvisor() {
   fi
   [[ "$GVISOR_RELEASE" =~ ^[0-9]{8}(\.[0-9]+)?$ ]] \
     || avbryt "INSTALL_GVISOR=1 kräver en låst utgåva: GVISOR_RELEASE=ÅÅÅÅMMDD (aldrig 'latest' — körningen ska gå att upprepa)."
+  # En binär som körs som root och ska hålla opålitlig kod instängd installeras inte utan en
+  # kontrollsumma som ägaren själv har låst. Summan från SAMMA server skyddar mot en trasig
+  # hämtning, inte mot en övertagen server — därför finns ingen sådan reserv längre.
+  [[ -n "$GVISOR_SHA512" ]] \
+    || avbryt "INSTALL_GVISOR=1 kräver GVISOR_SHA512 (128 hex-tecken) i provision.env. Hämta runsc för utgåvan på din egen dator, jämför med gVisors publicerade summa och lås den."
+  [[ "$GVISOR_SHA512" =~ ^[0-9a-f]{128}$ ]] || avbryt "GVISOR_SHA512 ska vara 128 hex-tecken (gemener)."
   [[ "$(uname -m)" == "x86_64" ]] || avbryt "gVisor-steget stöder bara x86_64."
 
   local url="https://storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/x86_64/runsc"
   local mal=/usr/local/bin/runsc forvantad="$GVISOR_SHA512"
 
-  if [[ -x "$mal" && -n "$forvantad" && "$(sha512sum "$mal" | awk '{print $1}')" == "$forvantad" ]]; then
+  if [[ -x "$mal" && "$(sha512sum "$mal" | awk '{print $1}')" == "$forvantad" ]]; then
     klart "runsc ${GVISOR_RELEASE} finns med rätt kontrollsumma"
-  elif [[ -x "$mal" && -z "$forvantad" ]] && matchar -F "release-${GVISOR_RELEASE}" -- "$mal" --version; then
-    klart "runsc ${GVISOR_RELEASE} finns"
   elif (( DRY_RUN )); then
     printf '  [dry-run] skulle hämta %s, kontrollera SHA-512 och installera %s\n' "$url" "$mal"
   else
     local tmp
     tmp="$(mktemp -d)"
     curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "${tmp}/runsc" "$url" || avbryt "kunde inte hämta ${url}"
-    if [[ -z "$forvantad" ]]; then
-      # Summan från samma server skyddar mot trasig hämtning, INTE mot en övertagen server.
-      varna "GVISOR_SHA512 är inte satt — kontrollerar bara mot leverantörens egen .sha512. Lås summan i provision.env."
-      curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "${tmp}/runsc.sha512" "${url}.sha512" || avbryt "kunde inte hämta ${url}.sha512"
-      forvantad="$(awk '{print $1}' "${tmp}/runsc.sha512")"
-    fi
     [[ "$(sha512sum "${tmp}/runsc" | awk '{print $1}')" == "$forvantad" ]] \
       || { rm -rf "$tmp"; avbryt "runsc har fel SHA-512 — installerar den INTE."; }
     gor "installerar ${mal} (kontrollsumma kontrollerad)"
@@ -1426,22 +1940,31 @@ EOF
     if matchar -Fx /swapfile -- swapon --show=NAME --noheadings; then
       klart "swapfilen är aktiv"
     else
-      if [[ ! -f /swapfile ]]; then
+      # Samma skäl som för XFS-avbilden: byggs under annat namn, får sitt riktiga först när
+      # mkswap är klar, och en fil som redan heter /swapfile kontrolleras med blkid.
+      local swaptyp
+      if [[ -e /swapfile ]]; then
+        swaptyp="$(blkid -p -o value -s TYPE /swapfile 2>/dev/null || true)"
+        [[ "$swaptyp" == "swap" ]] || avbryt "/swapfile finns men har inget swap-huvud (blkid: '${swaptyp:-inget}').
+Troligen ett avbrott mellan fallocate och mkswap i en tidigare körning. Ta bort filen och kör om."
+      else
+        if [[ -e /swapfile.ofardig ]]; then
+          gor "tar bort en halvfärdig swapfil från en avbruten körning"
+          kor rm -f -- /swapfile.ofardig
+        fi
         gor "skapar /swapfile (${SWAPFILE_SIZE_GB} GB)"
-        kor fallocate -l "${SWAPFILE_SIZE_GB}G" /swapfile
-        kor chmod 0600 /swapfile
-        kor mkswap /swapfile
+        kor fallocate -l "${SWAPFILE_SIZE_GB}G" /swapfile.ofardig
+        kor chmod 0600 /swapfile.ofardig
+        kor mkswap /swapfile.ofardig
+        kor mv -f -- /swapfile.ofardig /swapfile
       fi
       gor "aktiverar /swapfile med prioritet 10"
       kor swapon -p 10 /swapfile
     fi
-    if grep -qE '^/swapfile\s' /etc/fstab; then
+    if grep -qE '^/swapfile\s' /etc/fstab 2>/dev/null; then
       klart "swapfilen finns i fstab"
     else
-      gor "lägger swapfilen i /etc/fstab"
-      if (( ! DRY_RUN )); then
-        printf '/swapfile none swap sw,pri=10 0 0\n' >>/etc/fstab
-      fi
+      lagg_till_rad /etc/fstab '/swapfile none swap sw,pri=10 0 0' validera_fstab
     fi
   else
     klart "ingen swapfil begärd (SWAPFILE_SIZE_GB=0)"
@@ -1519,11 +2042,12 @@ steg_overvakning() {
 
   [[ -f "${SKRIPTKATALOG}/verify.sh" ]] || avbryt "hittar inte ${SKRIPTKATALOG}/verify.sh."
   skriv_fil /usr/local/sbin/vibesandbox-verify 0755 <"${SKRIPTKATALOG}/verify.sh"
+  installera_dokumentation
 
   skriv_fil /etc/systemd/system/vibesandbox-verify.service 0644 <<'EOF'
 [Unit]
 Description=vibesandbox: kontrollera att värdens härdning inte har drivit
-Documentation=https://github.com/ (se infra/README.md i vibesandbox-repot)
+Documentation=file:/usr/local/share/doc/vibesandbox/README.md
 
 [Service]
 Type=oneshot
@@ -1585,10 +2109,17 @@ starta_logg() {
   TEE_PID=$!
 }
 
+# Stäng vår ände av röret och låt tee skriva klart — men vänta aldrig obegränsat: finns en
+# kopia av skrivänden kvar någonstans (se oppna_terminal) får tee aldrig EOF, och ett avslut
+# som hänger är värre än en logg som saknar sista raden. Tee avslutas ändå när vi gör det.
 avsluta_logg() {
+  local i
   if [[ -n "$TEE_PID" ]]; then
     exec >&- 2>&- || true
-    wait "$TEE_PID" 2>/dev/null || true
+    for (( i = 0; i < 50; i++ )); do
+      kill -0 "$TEE_PID" 2>/dev/null || return 0
+      sleep 0.1
+    done
   fi
 }
 
@@ -1611,6 +2142,14 @@ main() {
     shift
   done
 
+  # Varje väg ut går genom vid_avslut: en obekräftad ändring ångras, nyckelfilen i /run raderas.
+  # INT/TERM/QUIT gör inget eget — de avslutar, och avslutet är det som städar. (SIGKILL går inte
+  # att fånga; det är därför backstoppet finns. SIGHUP ignoreras av starta_logg.)
+  trap vid_avslut EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 131' QUIT
+
   kontrollera_root
   kontrollera_os
   las_konfiguration
@@ -1621,7 +2160,6 @@ main() {
   done
 
   starta_logg "$flaggor"
-  trap avsluta_logg EXIT
 
   if (( DRY_RUN )); then
     rubrik "DRY-RUN — ingenting ändras. ${OS_ID} ${OS_VERSION} (${OS_KODNAMN})"

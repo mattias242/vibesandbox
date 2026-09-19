@@ -37,6 +37,33 @@ provision() {
 verifiera() {
   UT="$(PATH="${STUBBAR}:${PATH}" "${INFRA}/verify.sh" "$@" 2>&1)"; KOD=$?
 }
+# provision_pty <handling>… -- <flaggor>: som provision, men med en RIKTIG styrterminal, så att
+# JA-frågan går att besvara — eller avbryta med Ctrl-C, SIGTERM och kill -9. Se pty-kor.py.
+provision_pty() {
+  local h=()
+  while [[ "$1" != "--" ]]; do h+=(--handling "$1"); shift; done
+  shift
+  UT="$(PATH="${STUBBAR}:${PATH}" python3 /infra/test/pty-kor.py --tidsgrans 120 "${h[@]}" -- "${INFRA}/provision.sh" "$@" 2>&1)"; KOD=$?
+}
+# Starta en riktig sshd i containern (ingen systemd här). Läser samma filer som på en värd.
+# shellcheck disable=SC2120  # flaggorna ges från scenarier/verify.sh och i-container-tung.sh
+starta_sshd() { # [extra flaggor till sshd]
+  pkill -x sshd 2>/dev/null
+  for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x sshd >/dev/null || break; sleep 0.2; done
+  ssh-keygen -A >/dev/null 2>&1
+  mkdir -p /run/sshd
+  # Nyare OpenSSH straffar en källadress efter upprepade misslyckade inloggningar — testet gör
+  # många provinloggningar i rad från 127.0.0.1. (Äldre sshd känner inte flaggan.)
+  local straff=()
+  /usr/sbin/sshd -t -o PerSourcePenalties=no "$@" >/dev/null 2>&1 && straff=(-o PerSourcePenalties=no)
+  /usr/sbin/sshd "${straff[@]}" "$@"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    ssh-keyscan -T 1 127.0.0.1 >/dev/null 2>&1 && return 0
+    sleep 0.3
+  done
+  return 1
+}
+
 visa_vid_fel() { if (( KOD != ${1:-0} )); then printf '%s\n' "$UT" | tail -n 25 | sed 's/^/      | /'; fi; }
 
 # Ögonblicksbild av allt skripten får röra: sökväg, läge, ägare, ändringstid och innehåll.
@@ -50,12 +77,16 @@ ogonblicksbild() {
 
 forbered_vard() {
   mkdir -p "$INFRA" "$STUBBAR" "${STUBBKATALOG}/tillstand"/{maskad,aktiverad,aktiv,paket}
-  cp /infra/provision.sh /infra/verify.sh /infra/provision.env.example "$INFRA/"
+  cp /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/vibesandbox-angra-uppstart.service \
+    /infra/README.md /infra/provision.env.example "$INFRA/"
   chmod +x "$INFRA"/*.sh
   local k
-  for k in systemctl apt-get dpkg-query tailscale docker dockerd sysctl swapon fallocate mkswap mount findmnt timedatectl; do
+  for k in systemctl systemd-run journalctl apt-get dpkg-query tailscale docker dockerd sysctl swapon fallocate mkswap mount findmnt timedatectl usermod chpasswd; do
     ln -sf /infra/test/stubbar/stubb "${STUBBAR}/${k}"
   done
+  # Ångra-skriptet har FAST PATH (det körs av en timer, utan vår miljö) och ser därför inte
+  # stubbkatalogen. /usr/local/sbin står först i den fasta sökvägen ⇒ där når stubben det.
+  ln -sf /infra/test/stubbar/stubb /usr/local/sbin/systemctl
 
   # Leverantörens egenheter, så som kartläggningen beskriver dem.
   for k in apt-daily.service apt-daily.timer apt-daily-upgrade.service apt-daily-upgrade.timer unattended-upgrades.service; do
@@ -83,15 +114,21 @@ EOF
   chmod 600 "${INFRA}/provision.env"
 }
 
-# En pågående SSH-session från tailnetet, så som 'ss' skulle visa den.
+# En pågående SSH-session från tailnetet, så som 'ss' skulle visa den — och raden i sshd:s
+# journal som visar att JUST DEN sessionen (samma adress och port) loggade in med NYCKEL som ops.
 lat_tailnet_session_finnas() {
   ln -sf /infra/test/stubbar/stubb "${STUBBAR}/ss"
   echo "0 0 203.0.113.10:22 100.101.102.103:51234" >"${STUBBKATALOG}/ss-etablerade"
-  : >"${STUBBKATALOG}/ss-lyssnare"
+  # sshd själv lyssnar på 22 (verify.sh kräver att den syns bland lyssnarna).
+  printf 'tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=2,fd=3))\n' >"${STUBBKATALOG}/ss-lyssnare"
+  echo "Accepted publickey for ops from 100.101.102.103 port 51234 ssh2: ED25519 SHA256:exempelexempelexempelexempelexempelexempel" >"${STUBBKATALOG}/journal"
 }
 
+# Auth-nyckeln ges som en rootägd 600-fil — aldrig via miljön (B3). Filen raderas av skriptet
+# efter lyckad anslutning; vid en andra körning är värden redan ansluten och filen behövs inte.
 kor_fas1() {
-  TAILSCALE_AUTHKEY="tskey-auth-HEMLIG-TESTNYCKEL" provision
+  ( umask 077; printf 'tskey-auth-HEMLIG-TESTNYCKEL' >/root/ts.nyckel )
+  TAILSCALE_AUTHKEY_FILE=/root/ts.nyckel provision
 }
 
 # ── Scenarier ──────────────────────────────────────────────────────────────────────────────
@@ -100,7 +137,9 @@ scenario_statisk() {
   test_rubrik "Statisk granskning"
   pastar "bash -n provision.sh" bash -n /infra/provision.sh
   pastar "bash -n verify.sh" bash -n /infra/verify.sh
-  if LC_ALL=C.UTF-8 shellcheck -x /infra/provision.sh /infra/verify.sh /infra/test/*.sh /infra/test/stubbar/stubb; then
+  pastar "bash -n angra.sh" bash -n /infra/angra.sh
+  pastar "pty-kor.py går att kompilera" python3 -c 'import ast,sys; ast.parse(open("/infra/test/pty-kor.py").read())'
+  if LC_ALL=C.UTF-8 shellcheck -x /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/test/*.sh /infra/test/scenarier/*.sh /infra/test/stubbar/stubb; then
     godkand "shellcheck utan anmärkningar ($(shellcheck --version | sed -n 's/^version: //p'))"
   else
     underkand "shellcheck har anmärkningar"
@@ -141,7 +180,7 @@ scenario_vagran() {
   provision --okand-flagga
   if (( KOD != 0 )); then godkand "vägrar okänd flagga"; else underkand "okänd flagga accepterades"; fi
   SSH_PORT=abc provision --dry-run
-  if (( KOD != 0 )) && innehaller "$UT" "SSH_PORT"; then godkand "vägrar ogiltig SSH_PORT"; else underkand "ogiltig SSH_PORT accepterades"; fi
+  if (( KOD != 0 )) && innehaller "$UT" "SSH_PORT"; then godkand "vägrar SSH_PORT (inställningen finns inte längre)"; else underkand "SSH_PORT accepterades"; fi
   OPS_USER=root provision --dry-run
   if (( KOD != 0 )); then godkand "vägrar OPS_USER=root"; else underkand "OPS_USER=root accepterades"; fi
   PUBLIC_TCP_PORTS='443; drop' provision --dry-run
@@ -390,11 +429,14 @@ scenario_fas2() {
   if [[ "$fore" == "$efter" ]]; then godkand "inga filer ändrades (läge, ägare, tid, innehåll)"; else underkand "andra körningen ändrade filer:"; diff <(echo "$fore") <(echo "$efter") | head -n 20; fi
   if [[ "$fore_nft" == "$(nft -s list ruleset)" ]]; then godkand "regelverket är oförändrat"; else underkand "regelverket ändrades"; fi
   local andrande
-  andrande="$(grep -vE '^(systemctl (is-enabled|is-active|list-timers|list-unit-files)|sysctl -n|dpkg-query|tailscale ip|swapon --show[^ ]*|findmnt|ss |docker info|dockerd --validate|apt-get (update|-y .*full-upgrade)|passwd -S)' "$ANROP" || true)"
+  andrande="$(grep -vE '^(systemctl (is-enabled|is-active|list-timers|list-unit-files)|sysctl -n|dpkg-query|tailscale ip|swapon --show[^ ]*|findmnt|ss |journalctl |docker info|dockerd --validate|apt-get (update|-y .*full-upgrade)|passwd -S)' "$ANROP" || true)"
   if [[ -z "$andrande" ]]; then godkand "inga ändrande kommandon utöver apt-uppdateringen"; else underkand "andra körningen körde:"; head <<<"$andrande" | sed 's/^/      | /'; fi
   if grep -q '^  → ' <<<"$(grep -v 'apt-get update' <<<"$UT")"; then underkand "utskriften visar åtgärder:"; grep '^  → ' <<<"$UT" | grep -v 'apt-get update' | head | sed 's/^/      | /'; else godkand "utskriften visar bara ✓"; fi
 
   test_rubrik "verify.sh: rätt läge ger 0"
+  # verify.sh provar en inloggning mot den KÖRANDE sshd ⇒ en riktig sshd behövs.
+  # shellcheck disable=SC2119  # inga extra flaggor här
+  if starta_sshd; then godkand "en riktig sshd lyssnar på loopback"; else underkand "sshd startade inte"; fi
   verifiera
   if (( KOD == 0 )); then godkand "verify.sh avslutas med 0"; else underkand "verify.sh gav kod ${KOD}:"; grep -E '✗' <<<"$UT" | sed 's/^/      | /'; fi
   if grep -q '⚠.*gästagenten\|✓ qemu-guest-agent finns inte' <<<"$UT"; then godkand "gästagentens läge redovisas"; else underkand "gästagenten redovisas inte"; fi
@@ -506,10 +548,17 @@ scenario_flaggor() {
   if jq -e '.runtimes.runsc.path=="/usr/local/bin/runsc"' /etc/docker/daemon.json >/dev/null; then godkand "INSTALL_GVISOR=1 lägger runsc i daemon.json (giltig JSON)"; else underkand "runsc saknas i daemon.json"; visa_vid_fel; fi
 }
 
-case "$SCENARIO" in
-  statisk | vagran | dryrun | fas1 | angra | fas2 | flaggor) "scenario_${SCENARIO}" ;;
-  *) echo "okänt scenario: ${SCENARIO}" >&2; exit 2 ;;
-esac
+# Fler scenarier ligger i egna filer under scenarier/ (en funktion scenario_<namn> per fil).
+for f in /infra/test/scenarier/*.sh; do
+  # shellcheck source=/dev/null
+  [[ -e "$f" ]] && source "$f"
+done
+
+if [[ "$SCENARIO" =~ ^[a-z0-9]+$ ]] && declare -F "scenario_${SCENARIO}" >/dev/null; then
+  "scenario_${SCENARIO}"
+else
+  echo "okänt scenario: ${SCENARIO}" >&2; exit 2
+fi
 
 printf '\n   %s: %d godkända, %d underkända\n' "$SCENARIO" "$GODKANDA" "$UNDERKANDA"
 (( UNDERKANDA == 0 ))
