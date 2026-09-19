@@ -76,8 +76,8 @@ export class Webblasare {
   }
 
   /** En sidnavigering, som när man klickar på en länk eller skriver adressen. */
-  oppna(host: string, path = '/'): Promise<Svar> {
-    return this.skicka(host, { path, headers: { Accept: 'text/html', 'Sec-Fetch-Mode': 'navigate' } });
+  oppna(host: string, path = '/', extra: Readonly<Record<string, string>> = {}): Promise<Svar> {
+    return this.skicka(host, { path, headers: { Accept: 'text/html', 'Sec-Fetch-Mode': 'navigate', ...extra } });
   }
 
   /** Ett HTML-formulär som skickas från värdens egen sida (därav `Origin`). */
