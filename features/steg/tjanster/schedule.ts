@@ -132,9 +132,7 @@ Given(
   },
 );
 
-Given(/^att Anna förhandsvisar ett utkast av appen "([^"]+)"$/, async function (this: Varld, app: string) {
-  await this.sattUtkast(app);
-});
+// Utkastet: det gemensamma steget `att appen "X" har ett utkast` (features/steg/tjanster/gemensamt.ts).
 
 // ── När ──────────────────────────────────────────────────────────────────────────
 

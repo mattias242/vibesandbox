@@ -1,5 +1,5 @@
 # language: sv
-@tjanst-notify @tjanst-schedule @pågår
+@tjanst-notify @tjanst-schedule
 Egenskap: Påminnelser som skickas vid en viss tid
   En app körs bara när någon har den öppen. Ska appens medlemmar påminnas om något —
   städdagen på fredag, bokningen i morgon — lämnar appen påminnelsen till plattformen,
@@ -51,7 +51,7 @@ Egenskap: Påminnelser som skickas vid en viss tid
     Och finns Annas påminnelse kvar
 
   Scenario: I förhandsvisningen går påminnelser bara till ägaren
-    Givet att Anna förhandsvisar ett utkast av appen "klubben"
+    Givet att appen "klubben" har ett utkast
     När Anna schemalägger en påminnelse till alla i förhandsvisningen av appen "klubben" om ett ögonblick med ämnet "Prov"
     Så får Anna en påminnelse med ämnet "Prov"
     Och får Bertil ingen påminnelse
