@@ -87,6 +87,15 @@ scenario_verify() {
   aldrig_ok id kataloger 'uid för'
   aldrig_ok python3 leverantor 'sammanslagen'
 
+  test_rubrik "Automatiska uppdateringar: det effektiva värdet, inte vår fil"
+  printf 'APT::Periodic::Unattended-Upgrade "0";\nUnattended-Upgrade::Automatic-Reboot "false";\n' >/etc/apt/apt.conf.d/zzzz-avdrift
+  bara uppdateringar
+  if (( KOD == 1 )) && grep -q "✗ APT::Periodic::Unattended-Upgrade (effektivt" <<<"$UT" && grep -q "✗ Unattended-Upgrade::Automatic-Reboot (effektivt)" <<<"$UT"; then
+    godkand "en senare fil som stänger av uppdateringar och omstart ⇒ ✗ för båda"; else underkand "avstängda uppdateringar gav kod ${KOD}"; visa_vid_fel 1; fi
+  find /etc/apt/apt.conf.d/zzzz-avdrift -delete
+  bara uppdateringar
+  if (( KOD == 0 )) && grep -q "✓ Unattended-Upgrade::Automatic-Reboot (effektivt)" <<<"$UT"; then godkand "utan avdriften ⇒ ✓"; else underkand "utan avdriften gav kod ${KOD}"; visa_vid_fel; fi
+
   test_rubrik "Nodens tagg: utan den räknas servern som ägarens enhet och når hela tailnetet"
   bara tailscale
   if (( KOD == 0 )) && grep -q '✓ noden har taggarna tag:vibesandbox' <<<"$UT"; then godkand "rätt tagg ⇒ ✓"; else underkand "rätt tagg gav kod ${KOD}"; visa_vid_fel; fi
