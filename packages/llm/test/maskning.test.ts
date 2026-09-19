@@ -73,7 +73,7 @@ describe('maskPersonalData: telefonnummer', () => {
   });
 
   it('maskar inte ett postnummer eller ett årtal', () => {
-    const text = 'Adress 431 30 Västerås, byggt 1998.';
+    const text = 'Adress 123 45 Småstad, byggt 1998.';
     expect(maskPersonalData(text).text).toBe(text);
   });
 });

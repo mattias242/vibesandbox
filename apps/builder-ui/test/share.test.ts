@@ -7,7 +7,7 @@ import { SHARE_SUCCESS_MESSAGE, shareErrorMessage, validateEmail } from '../src/
 
 describe('validateEmail', () => {
   it.each([
-    ['kollega@exempel.se', 'kollega@exempel.se'],
+    ['kollega@kommun.se', 'kollega@kommun.se'],
     ['  Anna.Andersson@Example.SE  ', 'anna.andersson@example.se'],
     ['a+b@sub.example.se', 'a+b@sub.example.se'],
   ])('godtar %j som %j', (input, email) => {
@@ -21,16 +21,16 @@ describe('validateEmail', () => {
   it.each([
     'kollega',
     'kollega@',
-    '@exempel.se',
-    'kollega@exempel',
-    'kol lega@exempel.se',
+    '@kommun.se',
+    'kollega@kommun',
+    'kol lega@kommun.se',
     'a@b@c.se',
-    'kollega@exempel..se',
-    'kollega@.exempel.se',
-    'kollega@exempel.se.',
-    'Anna <anna@exempel.se>',
-    'anna@exempel.se\u0000',
-    'anna@exempel.se\nBcc: x@y.se',
+    'kollega@kommun..se',
+    'kollega@.kommun.se',
+    'kollega@kommun.se.',
+    'Anna <anna@kommun.se>',
+    'anna@kommun.se\u0000',
+    'anna@kommun.se\nBcc: x@y.se',
     `${'a'.repeat(250)}@b.se`,
   ])('avvisar %j med ett vänligt meddelande', (input) => {
     const result = validateEmail(input);
