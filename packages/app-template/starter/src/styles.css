@@ -1,0 +1,17 @@
+/* Startfil för en ny app. Vanlig CSS; inga @import, inga externa typsnitt eller bilder. */
+
+:root {
+  color-scheme: light;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+}
