@@ -177,6 +177,18 @@ describe('createOpenAiCompatibleProvider', () => {
     expect((await provider(fn).p.complete(request())).text).toBe('svar');
   });
 
+  it('tar bort flera <think>-block och behåller texten mellan dem', async () => {
+    const { fn } = fakeFetch([sse([delta('<think>a</think>ett <think>b</think>två'), finish('stop')])]);
+    expect((await provider(fn).p.complete(request())).text).toBe('ett två');
+  });
+
+  it('tar bort tankar i linjär tid även när svaret är fullt av ostängda <think>', async () => {
+    const { fn } = fakeFetch([sse([delta(`svar${'<think>'.repeat(40_000)}`), finish('length')])]);
+    const start = performance.now();
+    expect((await provider(fn).p.complete(request())).text).toBe('svar');
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
   it('tar bort en ostängd <think> till slutet', async () => {
     const { fn } = fakeFetch([sse([delta('svar<think>tankar som aldrig tog slut'), finish('length')])]);
     const result = await provider(fn).p.complete(request());

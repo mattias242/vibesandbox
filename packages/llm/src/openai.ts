@@ -67,7 +67,18 @@ function retryDelay(response: Response | undefined, attempt: number): number {
  * `</think>` (när chattmallen själv öppnade taggen) och allt efter en ostängd `<think>`.
  */
 export function stripThinking(text: string): string {
-  let out = text.replace(/<think>[\s\S]*?<\/think>/g, '');
+  // Med indexOf i stället för ett regex: ett svar fullt av ostängda <think> ska inte ta kvadratisk tid.
+  let out = '';
+  let from = 0;
+  for (;;) {
+    const start = text.indexOf('<think>', from);
+    if (start === -1) break;
+    const end = text.indexOf('</think>', start + '<think>'.length);
+    if (end === -1) break;
+    out += text.slice(from, start);
+    from = end + '</think>'.length;
+  }
+  out += text.slice(from);
   const close = out.indexOf('</think>');
   if (close !== -1) out = out.slice(close + '</think>'.length);
   const open = out.indexOf('<think>');
@@ -91,7 +102,9 @@ export function createOpenAiCompatibleProvider(options: OpenAiCompatibleOptions)
   }
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new LlmError('config');
 
-  const url = `${options.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  let baseUrl = options.baseUrl;
+  while (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
+  const url = `${baseUrl}/chat/completions`;
   const fetchFn = options.fetch ?? fetch;
   const sleep = options.sleep ?? defaultSleep;
 
