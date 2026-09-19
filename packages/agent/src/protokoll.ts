@@ -44,9 +44,9 @@ const PLACEHOLDER_START = new RegExp(
 
 /** Texten i en rad som BARA är en kommentar, annars null. */
 function commentBody(trimmed: string): string | null {
-  const block = /^\{?\/\*(.*?)\*\/\}?$/.exec(trimmed);
+  const block = /^\{?\/\*([\s\S]*?)\*\/\}?$/.exec(trimmed);
   if (block !== null) return block[1] ?? '';
-  const html = /^<!--(.*?)-->$/.exec(trimmed);
+  const html = /^<!--([\s\S]*?)--!?>$/.exec(trimmed);
   if (html !== null) return html[1] ?? '';
   if (trimmed.startsWith('//')) return trimmed.slice(2);
   if (trimmed.startsWith('/*')) return trimmed.slice(2);

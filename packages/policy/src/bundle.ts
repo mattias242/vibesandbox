@@ -53,7 +53,7 @@ function checkHtml(file: string, html: string, out: Diagnostic[]): void {
   const inline = (what: string): void => {
     out.push(diagnostic('bundle-inline-script', file, `index.html innehåller ${what}; plattformens CSP tillåter bara skript från egna filer.`));
   };
-  const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
+  const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)];
   if (scripts.length !== (html.match(/<script\b/gi) ?? []).length) inline('en ofullständig <script>-tagg');
   for (const [, attributes = '', body = ''] of scripts) {
     if (!/\bsrc\s*=/.test(attributes) || body.trim() !== '') inline('ett inline-skript');

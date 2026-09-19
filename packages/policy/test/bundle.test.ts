@@ -78,6 +78,11 @@ describe('checkBuiltBundle', () => {
     expect(await rules()).toContain('bundle-inline-script');
   });
 
+  it.each([`</script foo>`, `</script\t\n>`, `</SCRIPT >`])('godtar sluttaggen %j efter ett skript med src', async (end) => {
+    await writeFile(path.join(dir, 'index.html'), HTML.replace('</script>', end));
+    expect(await rules()).not.toContain('bundle-inline-script');
+  });
+
   it.each(['assets/x.map', 'assets/x.svg', 'assets/x.wasm', 'other.html', 'assets/sub/index.html', '.htaccess', 'assets/x.js.gz'])(
     'nekar filtypen %s',
     async (file) => {
