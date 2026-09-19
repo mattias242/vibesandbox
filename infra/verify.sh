@@ -247,6 +247,13 @@ kontroll_sudoers() {
     fel "hittar varken /etc/sudoers eller något i /etc/sudoers.d"
   else
     traffar="$(grep -HnE '^[^#]*(NOPASSWD|!authenticate)' -- "${filer[@]}" 2>/dev/null)" || kod=$?
+    # En rad för exakt användaren root ger inget nytt — root är redan root. cloud-init lägger en
+    # sådan på Debian-avbilder, och den ska inte ge ett falskt ✗. Bara exakt "root" undantas:
+    # "%rootgrupp", "rootish" och alla andra namn räknas fortfarande.
+    if (( kod == 0 )); then
+      traffar="$(grep -vE '^[^:]+:[0-9]+:[[:space:]]*root[[:space:]]' <<<"$traffar" || true)"
+      [[ -n "$traffar" ]] || kod=1
+    fi
     case "$kod" in
       0) fel "lösenordsfri sudo (NOPASSWD / !authenticate): $(tr '\n' ' ' <<<"$traffar")" ;;
       1) ok "inga lösenordsfria sudo-regler i /etc/sudoers och /etc/sudoers.d" ;;
