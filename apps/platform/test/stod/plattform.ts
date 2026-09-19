@@ -1,0 +1,170 @@
+/**
+ * En riktig plattform för ett test: egen temporär datakatalog, ledig port, fejkad språkmodell och
+ * byggkedja. Allt annat — gateway, inloggning, byggverktyg, control, lagring — är det riktiga.
+ */
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { LlmProvider } from '@vibesandbox/contracts';
+import { createFakeProvider } from '@vibesandbox/llm';
+import type { FakeProvider, FakeReply } from '@vibesandbox/llm';
+import type { BuilderConfig, IdentityConfig, PlatformConfig } from '../../src/config.ts';
+import type { PlatformLogEntry } from '../../src/logg.ts';
+import { createPlatform } from '../../src/server.ts';
+import type { Platform } from '../../src/server.ts';
+import { fejkadByggkedja } from './byggkedja.ts';
+import type { FejkadByggkedja } from './byggkedja.ts';
+
+export const DOMAN = 'example.org';
+export const BYGG = `bygg.${DOMAN}`;
+export const BYGG_ORIGIN = `http://${BYGG}`;
+export const TESTHEMLIGHET = 'testinloggningens-hemlighet-bara-i-testerna-0123456789';
+const IDENTITETSHEMLIGHET = 'identitetens-hemlighet-bara-i-plattformstesterna-0123456789';
+
+export interface Testplattform {
+  readonly platform: Platform;
+  readonly port: number;
+  readonly dataDir: string;
+  readonly utkorg: string;
+  readonly modell: FakeProvider;
+  readonly byggkedja: FejkadByggkedja;
+  readonly logg: PlatformLogEntry[];
+  stang(): Promise<void>;
+}
+
+export interface Val {
+  readonly identitet?: 'email-otp' | 'test';
+  readonly modellsvar?: readonly FakeReply[];
+  /** Utan byggverktyg: ingen `LLM_MODEL`. */
+  readonly utanByggverktyg?: boolean;
+  /** Utan byggkedja trots påslaget byggverktyg (för startfelet). */
+  readonly utanByggkedja?: boolean;
+}
+
+export async function startaPlattform(val: Val = {}): Promise<Testplattform> {
+  const arbetskatalog = await mkdtemp(join(tmpdir(), 'vibesandbox-plattformstest-'));
+  const dataDir = join(arbetskatalog, 'data');
+  const utkorg = join(arbetskatalog, 'utkorg');
+  const ui = join(arbetskatalog, 'ui');
+  await mkdir(ui);
+  await writeFile(join(ui, 'index.html'), '<!doctype html><title>Byggverktyget</title><h1>byggverktygets-webbgranssnitt</h1>');
+
+  const identity: IdentityConfig =
+    (val.identitet ?? 'email-otp') === 'email-otp'
+      ? { provider: 'email-otp', secret: IDENTITETSHEMLIGHET, mail: { kind: 'outbox', directory: utkorg } }
+      : { provider: 'test', testSecret: TESTHEMLIGHET };
+  const builder: BuilderConfig = {
+    llm: { baseUrl: 'https://llm.example.org/v1', model: 'fejk/modell', apiKey: 'llm-nyckel-bara-i-testerna' },
+    build: { driver: 'local' },
+    uiDirectory: ui,
+  };
+  const logg: PlatformLogEntry[] = [];
+  const config: PlatformConfig = {
+    baseDomain: DOMAN,
+    appDomain: DOMAN,
+    dataDir,
+    port: 0,
+    listenHost: '127.0.0.1',
+    publicScheme: 'http',
+    identity,
+    ...(val.utanByggverktyg === true ? {} : { builder }),
+    logger: (entry) => logg.push(entry),
+  };
+
+  const modell = createFakeProvider(val.modellsvar ?? []);
+  const byggkedja = fejkadByggkedja();
+  const llmProvider: LlmProvider = modell;
+  let platform: Platform;
+  let port: number;
+  try {
+    platform = createPlatform(config, {
+      ...(val.utanByggkedja === true ? {} : { buildRunner: byggkedja }),
+      llmProvider,
+    });
+  } catch (error) {
+    await rm(arbetskatalog, { recursive: true, force: true });
+    throw error;
+  }
+  try {
+    ({ port } = await platform.listen());
+  } catch (error) {
+    await platform.close();
+    await rm(arbetskatalog, { recursive: true, force: true });
+    throw error;
+  }
+
+  return {
+    platform,
+    port,
+    dataDir,
+    utkorg,
+    modell,
+    byggkedja,
+    logg,
+    async stang() {
+      await platform.close();
+      await rm(arbetskatalog, { recursive: true, force: true });
+    },
+  };
+}
+
+export interface Mejl {
+  readonly till: string;
+  readonly amne: string;
+  readonly text: string;
+}
+
+/** Mejlen i utkorgen, äldst först (filnamnen börjar med tid och löpnummer). */
+export async function lasUtkorg(katalog: string): Promise<Mejl[]> {
+  let namn: string[];
+  try {
+    namn = (await readdir(katalog)).sort();
+  } catch {
+    return [];
+  }
+  const mejl: Mejl[] = [];
+  for (const fil of namn) {
+    const innehall = await readFile(join(katalog, fil), 'utf8');
+    const [huvud = '', ...kropp] = innehall.split('\n\n');
+    const till = /^Till: (.*)$/m.exec(huvud)?.[1] ?? '';
+    const amne = /^Ämne: (.*)$/m.exec(huvud)?.[1] ?? '';
+    mejl.push({ till, amne, text: kropp.join('\n\n') });
+  }
+  return mejl;
+}
+
+/** Väntar på ett mejl till adressen (mejl skickas i bakgrunden, efter svaret). */
+export async function vantaPaMejl(katalog: string, till: string, antalFore = 0): Promise<Mejl> {
+  for (let forsok = 0; forsok < 100; forsok += 1) {
+    const mejl = (await lasUtkorg(katalog)).filter((m) => m.till === till);
+    const nytt = mejl[antalFore];
+    if (nytt !== undefined) return nytt;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Inget mejl kom till ${till}.`);
+}
+
+export function kodUr(mejl: Mejl): string {
+  const kod = /Din kod är: ([0-9]{6})/.exec(mejl.text)?.[1];
+  if (kod === undefined) throw new Error('Mejlet innehöll ingen kod.');
+  return kod;
+}
+
+/**
+ * Loggar in webbläsaren på en värd som en människa gör: formuläret med adressen, koden ur mejlet,
+ * formuläret med koden. Ger svaret på det sista steget (303 med sessionskaka vid lyckad inloggning).
+ */
+export async function loggaInMedKod(
+  webblasare: import('./webblasare.ts').Webblasare,
+  plattform: Testplattform,
+  host: string,
+  epost: string,
+  next = '/',
+): Promise<import('./webblasare.ts').Svar> {
+  const origin = `http://${host}`;
+  const fore = (await lasUtkorg(plattform.utkorg)).filter((m) => m.till === epost).length;
+  const begaran = await webblasare.skickaFormular(host, '/_auth/login', { email: epost, next }, origin);
+  if (begaran.status !== 200) throw new Error(`Begäran om kod gav ${begaran.status}.`);
+  const kod = kodUr(await vantaPaMejl(plattform.utkorg, epost, fore));
+  return webblasare.skickaFormular(host, '/_auth/verify', { code: kod }, origin);
+}

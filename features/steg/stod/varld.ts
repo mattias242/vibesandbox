@@ -105,6 +105,7 @@ export class Varld extends World {
       dataDir: this.dataDir,
       port: 0,
       listenHost: '127.0.0.1',
+      publicScheme: 'http',
       identity: { provider: 'test', testSecret: TESTHEMLIGHET },
       ...(this.kvot === undefined ? {} : { limits: this.kvot }),
     });
