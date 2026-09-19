@@ -145,42 +145,21 @@ steg "Skickar $(git log -1 --format='%h %s') (utan sudo)"
 git archive --format=tar HEAD | ssh "$MAL" "set -e; umask 077; rm -rf ~/${MELLAN}; mkdir ~/${MELLAN} ~/${MELLAN}/app; tar -x -C ~/${MELLAN}/app"
 git rev-parse --short HEAD | ssh "$MAL" "umask 077; cat >~/${MELLAN}/VERSION"
 serverns_env | ssh "$MAL" "umask 077; cat >~/${MELLAN}/env"
-# Root-steget som skript: inga hemligheter i det, bara sökvägar. Bara MAL_KATALOG expanderas
-# här; allt som ska tolkas på värden är skyddat med \.
-# shellcheck disable=SC2087
-ssh "$MAL" "umask 077; cat >~/${MELLAN}/installera.sh" <<EOF
-set -eu
-M="\$1"; FORSTA="\${2:-}"
-K='${MAL_KATALOG}'
-echo "== Lägger ut i \$K/app"
-rm -rf "\$K/app.ny"; mkdir -p "\$K/app.ny"
-cp -R "\$M/app/." "\$K/app.ny/"; cp "\$M/VERSION" "\$K/app.ny/VERSION"
-chown -R 0:0 "\$K/app.ny"
-# Mellanlagringen har umask 077 (för .env), så allt kom hit som 600/700. Koden är inte hemlig,
-# och containrarna läser den som andra användare än root: läsbart för alla, skrivbart bara för
-# root, körbart där det redan var körbart.
-chmod -R u=rwX,go=rX "\$K/app.ny"
-rm -rf "\$K/app.gammal"; if [ -d "\$K/app" ]; then mv "\$K/app" "\$K/app.gammal"; fi
-mv "\$K/app.ny" "\$K/app"
-echo "== Skriver serverns .env (bara root kan läsa den)"
-(umask 077; cp "\$M/env" "\$K/.env.ny"); chown 0:0 "\$K/.env.ny"; chmod 600 "\$K/.env.ny"; mv -f "\$K/.env.ny" "\$K/.env"
-rm -rf "\$M"
-C="docker compose --project-name vibesandbox --project-directory \$K/app/deploy -f \$K/app/deploy/compose.yml --env-file \$K/.env"
-echo "== Bygger och startar stacken (första gången tar det några minuter)"
-\$C up -d --build --remove-orphans --wait --wait-timeout 300
-sleep 5
-\$C ps --format '{{.Service}}: {{.State}}' | sed 's/^/  /'
-if \$C ps --format '{{.State}}' | grep -qv running; then
-  echo "någon tjänst kör inte:"; \$C logs --tail 50; exit 1
+# Root-steget är infra/vibesandbox-driftsatt. Finns det installerat på värden (provision.sh med
+# DEPLOY_UTAN_LOSENORD=1) körs det utan lösenord; annars skickas samma skript hit och körs med
+# sudo i en terminal — lösenordet efterfrågas då en gång. Skriptet tar bara e-postadressen som
+# argument och godtar bara en SSH-session från tailnetet.
+ROTSTEG=/usr/local/sbin/vibesandbox-driftsatt
+EPOST_ARG="$(printf '%q' "$FORSTA_BYGGARE")"
+[ -n "$FORSTA_BYGGARE" ] || EPOST_ARG=""
+if ssh -o BatchMode=yes "$MAL" "sudo -n -l ${ROTSTEG}" >/dev/null 2>&1; then
+  steg "Installerar och startar som root (utan lösenord, bara det här kommandot)"
+  ssh "$MAL" "sudo -n ${ROTSTEG} ${EPOST_ARG}"
+else
+  ssh "$MAL" "umask 077; cat >~/${MELLAN}/rotsteg" <"${REPO}/infra/vibesandbox-driftsatt"
+  steg "Installerar och startar som root (sudo frågar efter ops lösenord EN gång)"
+  ssh -t "$MAL" "sudo bash ~/${MELLAN}/rotsteg ${EPOST_ARG}"
 fi
-if [ -n "\$FORSTA" ]; then
-  echo "== Lägger in första byggaren"
-  \$C exec -T -e DATA_DIR=/data platform node packages/identity/src/cli.ts lagg-till "\$FORSTA" builder
-fi
-EOF
-
-steg "Installerar och startar som root (sudo frågar efter ops lösenord EN gång)"
-ssh -t "$MAL" "sudo sh ~/${MELLAN}/installera.sh ~/${MELLAN} $(printf '%q' "$FORSTA_BYGGARE")"
 trap - EXIT
 
 if [ "${DRIFTSATT_ROKTEST:-1}" = 0 ]; then echo; echo "Klart (röktestet överhoppat)."; exit 0; fi

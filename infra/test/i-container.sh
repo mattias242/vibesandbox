@@ -78,7 +78,7 @@ ogonblicksbild() {
 forbered_vard() {
   mkdir -p "$INFRA" "$STUBBAR" "${STUBBKATALOG}/tillstand"/{maskad,aktiverad,aktiv,paket}
   cp /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/vibesandbox-angra-uppstart.service \
-    /infra/README.md /infra/provision.env.example "$INFRA/"
+    /infra/vibesandbox-driftsatt /infra/README.md /infra/provision.env.example "$INFRA/"
   chmod +x "$INFRA"/*.sh
   local k
   for k in systemctl systemd-run journalctl apt-get dpkg-query tailscale docker dockerd sysctl swapon fallocate mkswap mount findmnt timedatectl usermod chpasswd; do

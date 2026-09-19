@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# vibesandbox-driftsatt — root-steget i deploy/driftsatt.sh.
+#
+# Installeras av provision.sh som /usr/local/sbin/vibesandbox-driftsatt (root, 0755). Driftanvändaren
+# får köra JUST det här kommandot med sudo utan lösenord (DEPLOY_UTAN_LOSENORD=1); allt annat med
+# sudo kräver fortfarande lösenord.
+#
+#   sudo vibesandbox-driftsatt [första byggarens e-postadress]
+#
+# Tar inga sökvägar utifrån: mellanlagringen är alltid ~/.driftsatt hos den som anropade sudo, och
+# den måste vara en egen katalog (ingen länk) med läge 700. Körs bara från en SSH-session vars
+# klient ligger i tailnetet — en inloggning på konsolen, eller från någon annanstans, nekas.
+#
+# Priset (medvetet val): den som har driftanvändarens SSH-nyckel kan lägga ut vad som helst, och
+# en compose-fil kan nå root på värden. Se infra/README.md.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 022
+
+K=/srv/vibesandbox/compose
+# Tillåtna klientadresser (utökat reguljärt uttryck). Tailnetets IPv4 (100.64.0.0/10) och IPv6.
+# En rootägd fil kan ersätta det — testerna gör det, en värd ska inte behöva.
+NATVERKSFIL=/etc/vibesandbox/driftsatt-natverk
+TAILNET='^(100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|fd7a:115c:a1e0:)'
+
+fel() { printf 'vibesandbox-driftsatt: %s\n' "$*" >&2; exit 2; }
+
+(( EUID == 0 )) || fel "körs som root via sudo."
+anv="${SUDO_USER:-}"
+[[ -n "$anv" && "$anv" != root ]] || fel "körs via sudo av driftanvändaren, inte direkt som root."
+
+# ── Bara från tailnetet ────────────────────────────────────────────────────────────────────
+# sudo rensar miljön, så SSH_CONNECTION finns inte här. Den finns däremot i processen som sshd
+# startade: gå uppåt i processträdet tills en förälder har den. Hittas ingen är det ingen
+# SSH-session (t.ex. konsolen) — och då nekas det.
+klient=""
+pid=$PPID
+for _ in $(seq 1 20); do
+  (( pid > 1 )) || break
+  # Kräver CAP_SYS_PTRACE (root på värden har det). En process som inte går att läsa hoppas över.
+  anslutning="$( { tr '\0' '\n' <"/proc/${pid}/environ"; } 2>/dev/null | sed -n 's/^SSH_CONNECTION=//p' | head -n 1 || true)"
+  if [[ -n "$anslutning" ]]; then klient="${anslutning%% *}"; break; fi
+  pid="$(awk '{print $4}' "/proc/${pid}/stat" 2>/dev/null || echo 1)"
+done
+klient="${klient#::ffff:}"
+[[ -n "$klient" ]] || fel "ingen SSH-session hittades — driftsättning görs bara över SSH från tailnetet."
+tillatna="$TAILNET"
+if [[ -f "$NATVERKSFIL" && ! -L "$NATVERKSFIL" && "$(stat -c '%U %a' "$NATVERKSFIL")" == "root 644" ]]; then
+  tillatna="$(head -n 1 "$NATVERKSFIL")"
+fi
+[[ "$klient" =~ $tillatna ]] || fel "klienten ${klient} ligger inte i tailnetet — driftsättning nekas."
+
+# ── Indata ─────────────────────────────────────────────────────────────────────────────────
+FORSTA="${1:-}"
+(( $# <= 1 )) || fel "högst ett argument: första byggarens e-postadress."
+if [[ -n "$FORSTA" ]] && ! [[ "$FORSTA" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+  fel "ogiltig e-postadress."
+fi
+hem="$(getent passwd "$anv" | cut -d: -f6)"
+[[ -n "$hem" ]] || fel "hittar inte hemkatalogen för ${anv}."
+M="${hem}/.driftsatt"
+[[ -d "$M" && ! -L "$M" ]] || fel "mellanlagringen ${M} saknas eller är en länk."
+[[ "$(stat -c '%U %a' "$M")" == "${anv} 700" ]] || fel "mellanlagringen ${M} ska ägas av ${anv} och ha läge 700."
+for f in app env VERSION; do
+  [[ -e "${M}/${f}" && ! -L "${M}/${f}" ]] || fel "${M}/${f} saknas eller är en länk."
+done
+[[ -d "$K" ]] || fel "${K} finns inte — har provision.sh körts?"
+
+# ── Lägg ut ────────────────────────────────────────────────────────────────────────────────
+echo "== Lägger ut i ${K}/app"
+rm -rf "${K}/app.ny"; mkdir -p "${K}/app.ny"
+cp -R "${M}/app/." "${K}/app.ny/"; cp "${M}/VERSION" "${K}/app.ny/VERSION"
+chown -R 0:0 "${K}/app.ny"
+# Mellanlagringen har umask 077 (för .env), så allt kom hit som 600/700. Koden är inte hemlig,
+# och containrarna läser den som andra användare än root: läsbart för alla, skrivbart bara för
+# root, körbart där det redan var körbart.
+chmod -R u=rwX,go=rX "${K}/app.ny"
+rm -rf "${K}/app.gammal"; if [[ -d "${K}/app" ]]; then mv "${K}/app" "${K}/app.gammal"; fi
+mv "${K}/app.ny" "${K}/app"
+
+echo "== Skriver serverns .env (bara root kan läsa den)"
+(umask 077; cp "${M}/env" "${K}/.env.ny"); chown 0:0 "${K}/.env.ny"; chmod 600 "${K}/.env.ny"; mv -f "${K}/.env.ny" "${K}/.env"
+rm -rf "$M"
+
+C=(docker compose --project-name vibesandbox --project-directory "${K}/app/deploy" -f "${K}/app/deploy/compose.yml" --env-file "${K}/.env")
+echo "== Bygger och startar stacken (första gången tar det några minuter)"
+"${C[@]}" up -d --build --remove-orphans --wait --wait-timeout 300
+sleep 5
+"${C[@]}" ps --format '{{.Service}}: {{.State}}' | sed 's/^/  /'
+if "${C[@]}" ps --format '{{.State}}' | grep -qv running; then
+  echo "någon tjänst kör inte:"; "${C[@]}" logs --tail 50; exit 1
+fi
+if [[ -n "$FORSTA" ]]; then
+  echo "== Lägger in första byggaren"
+  "${C[@]}" exec -T -e DATA_DIR=/data platform node packages/identity/src/cli.ts lagg-till "$FORSTA" builder
+fi

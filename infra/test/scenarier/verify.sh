@@ -87,6 +87,37 @@ scenario_verify() {
   aldrig_ok id kataloger 'uid för'
   aldrig_ok python3 leverantor 'sammanslagen'
 
+  test_rubrik "Driftsättning utan lösenord: EN regel, för ETT rootägt kommando (DEPLOY_UTAN_LOSENORD=1)"
+  local regelfil=/etc/sudoers.d/vibesandbox-driftsatt kmd=/usr/local/sbin/vibesandbox-driftsatt
+  if cmp -s /infra/vibesandbox-driftsatt "$kmd" && [[ "$(stat -c '%a %U:%G' "$kmd")" == "755 root:root" ]]; then
+    godkand "rotsteget installerat, rootägt 755, identiskt med infra/vibesandbox-driftsatt"; else underkand "rotsteget saknas eller har fel läge"; fi
+  if [[ "$(cat "$regelfil" 2>/dev/null)" == "ops ALL=(root) NOPASSWD: ${kmd}" && "$(stat -c '%a %U' "$regelfil")" == "440 root" ]] && visudo -cq; then
+    godkand "sudoers-regeln är exakt en rad, 440, och visudo godkänner"; else underkand "sudoers-regeln saknas eller är fel: '$(cat "$regelfil" 2>/dev/null)'"; fi
+  if su ops -c "sudo -n -l ${kmd}" >/dev/null 2>&1 && ! su ops -c 'sudo -n true' >/dev/null 2>&1; then
+    godkand "ops kör rotsteget utan lösenord, allt annat kräver lösenord"; else underkand "sudo-reglerna för ops blev inte som tänkt"; fi
+  bara anvandare
+  if (( KOD == 0 )) && grep -q "✓ lösenordsfri sudo bara för ${kmd}" <<<"$UT"; then godkand "verify godtar just den regeln"; else underkand "verify gav kod ${KOD} med regeln"; visa_vid_fel; fi
+  echo "ops ALL=(ALL) NOPASSWD: ALL" >/etc/sudoers.d/zz-bredare
+  bara anvandare
+  if (( KOD == 1 )) && grep -q '✗ lösenordsfri sudo' <<<"$UT"; then godkand "en bredare NOPASSWD bredvid ⇒ ✗"; else underkand "bredare NOPASSWD gav kod ${KOD}"; fi
+  find /etc/sudoers.d/zz-bredare -delete
+  echo "ops ALL=(root) NOPASSWD: ${kmd}, /bin/sh" >"$regelfil"
+  bara anvandare
+  if (( KOD == 1 )); then godkand "vår fil med ett kommando till ⇒ ✗"; else underkand "utökad regel gav kod ${KOD}"; fi
+  echo "ops ALL=(root) NOPASSWD: ${kmd}" >"$regelfil"
+  chmod 775 "$kmd"
+  bara anvandare
+  if (( KOD == 1 )) && grep -q "✗ ${kmd}" <<<"$UT"; then godkand "rotsteget skrivbart för gruppen ⇒ ✗ (vem som helst i gruppen blir root)"; else underkand "skrivbart rotsteg gav kod ${KOD}"; fi
+  chmod 755 "$kmd"
+  printf 'DEPLOY_UTAN_LOSENORD=0\n' >>"${INFRA}/provision.env"
+  provision --steg kataloger
+  sed -i '/^DEPLOY_UTAN_LOSENORD=/d' "${INFRA}/provision.env"
+  if (( KOD == 0 )) && [[ ! -e "$regelfil" ]]; then godkand "DEPLOY_UTAN_LOSENORD=0 ⇒ regeln tas bort"; else underkand "regeln finns kvar med DEPLOY_UTAN_LOSENORD=0 (kod ${KOD})"; fi
+  bara anvandare
+  if (( KOD == 0 )) && grep -q '✓ inga lösenordsfria sudo-regler' <<<"$UT"; then godkand "verify utan regeln ⇒ ✓ som förut"; else underkand "verify utan regeln gav kod ${KOD}"; visa_vid_fel; fi
+  provision --steg kataloger
+  if (( KOD == 0 )) && [[ -e "$regelfil" ]]; then godkand "tillbaka med standardvärdet ⇒ regeln på plats igen"; else underkand "regeln kom inte tillbaka (kod ${KOD})"; fi
+
   test_rubrik "Automatiska uppdateringar: det effektiva värdet, inte vår fil"
   printf 'APT::Periodic::Unattended-Upgrade "0";\nUnattended-Upgrade::Automatic-Reboot "false";\n' >/etc/apt/apt.conf.d/zzzz-avdrift
   bara uppdateringar

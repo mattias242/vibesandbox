@@ -36,7 +36,7 @@ angra_timrar() { systemctl list-timers --all --no-legend --no-pager 'vibesandbox
 forbered_systemdvard() {
   mkdir -p "$INFRA" "$STUBBAR" "${STUBBKATALOG}/tillstand"/{maskad,aktiverad,aktiv,paket} "$SPARAT"
   cp /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/vibesandbox-angra-uppstart.service \
-    /infra/README.md /infra/provision.env.example "$INFRA/"
+    /infra/vibesandbox-driftsatt /infra/README.md /infra/provision.env.example "$INFRA/"
   chmod +x "$INFRA"/*.sh
   # Bara tailscale-klienten stubbas; 'tailscale ip -4' svarar som om noden vore ansluten.
   ln -sf /infra/test/stubbar/stubb "${STUBBAR}/tailscale"

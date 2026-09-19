@@ -203,7 +203,7 @@ steg körs klart även om SSH-sessionen dör — men JA-frågan kräver en termi
 | `gvisor` | valfri `runsc`; utan låst `GVISOR_SHA512` avbryts steget |
 | `docker` | Dockers förråd, `daemon.json` (validerad som tempfil före bytet), `dockremap` med låsta id:n och kontroll av överlapp i subuid/subgid; vägrar utan laddad brandvägg |
 | `system` | sysctl (egen sist sorterad fil, kontroll med `sysctl -n`, redovisar andra filer som sätter samma nycklar), swapfil (byggd under annat namn, kontrollerad med `blkid`), LLMNR av, tidssynk |
-| `kataloger` | `/srv/vibesandbox/{compose,data,backups}` |
+| `kataloger` | `/srv/vibesandbox/{compose,data,backups}`; driftsättningens rotsteg `/usr/local/sbin/vibesandbox-driftsatt` och — med `DEPLOY_UTAN_LOSENORD=1` — en sudo-regel som låter `ops` köra JUST det utan lösenord (prövad med `visudo` före bytet). Rotsteget godtar bara en SSH-session från tailnetet. Priset: `ops` nyckel räcker för att lägga ut vad som helst, och en compose-fil kan nå root. |
 | `overvakning` | installerar `verify.sh` + timer |
 
 ---
