@@ -1,5 +1,5 @@
 # language: sv
-@tjanst-notify @pågår
+@tjanst-notify
 Egenskap: En app kan skicka aviseringar via mejl till sina medlemmar
   En app kan mejla dem som har tillgång till den — till exempel "mötet är flyttat". Mejlet
   kommer från plattformens betrodda adress, så det får aldrig kunna användas för nätfiske:

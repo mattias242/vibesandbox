@@ -115,8 +115,9 @@ When(/^(Anna) aviserar alla i appen "([^"]+)" med ett ämne som försöker lägg
   await nar(this, () => avisera(this, person, app, { to: 'all', subject: 'Hej\r\nX-Prioritet: hög\r\n\r\nFalsk text', text: 'Hej.' }));
 });
 
-When(/^(Anna) aviserar alla i appen "([^"]+)" med en text på (\d+) (\d+) tecken$/, async function (this: Varld, person: string, app: string, tusental: string, rest: string) {
-  const langd = Number(`${tusental}${rest}`);
+When(/^(Anna) aviserar alla i appen "([^"]+)" med en text på ([\d ]+) tecken$/, async function (this: Varld, person: string, app: string, antal: string) {
+  // Tusentalsavgränsaren är ett mellanslag, som i svensk text: "20 000".
+  const langd = Number(antal.replaceAll(' ', ''));
   await nar(this, () => avisera(this, person, app, { to: 'all', subject: 'Långt', text: 'a'.repeat(langd) }));
 });
 
