@@ -49,6 +49,8 @@ dockerd --config-file /tmp/daemon-test.json >/var/log/dockerd.log 2>&1 &
 if vanta_pa docker info; then godkand "dockerd startar med userns-remap + overlay2 + våra val"; else underkand "dockerd startar inte:"; tail -n 20 /var/log/dockerd.log | sed 's/^/      | /'; fi
 
 test_rubrik "verify.sh mot riktig 'docker info'"
+# verify.sh provar en inloggning mot den KÖRANDE sshd ⇒ den måste vara igång redan här.
+if starta_sshd -o ListenAddress=0.0.0.0 -o 'ListenAddress=[::]'; then godkand "riktig sshd lyssnar (IPv4 och IPv6)"; else underkand "sshd startade inte"; fi
 verifiera --hoppa-over system
 ovantade="$(grep '^  ✗' <<<"$UT" | grep -vE "cgroup-drivrutin|SAKNAS i docker info: apparmor|AppArmor" || true)"
 if [[ -z "$ovantade" ]]; then
@@ -69,8 +71,16 @@ ip addr add 100.64.0.1/24 dev tailscale0 && ip link set tailscale0 up
 ip -n tailnet addr add 100.64.0.2/24 dev eth0 && ip -n tailnet link set eth0 up && ip -n tailnet link set lo up
 ip -n tailnet route add default via 100.64.0.1
 ip -n internet route add default via 198.51.100.1
-
-/usr/sbin/sshd -o ListenAddress=0.0.0.0 -p 22
+# IPv6: dokumentationsnätet som "internet", Tailscales ULA-prefix som "tailnetet".
+ip addr add 2001:db8:1::1/64 dev vsb-ut nodad && ip -n internet addr add 2001:db8:1::2/64 dev eth0 nodad
+ip addr add fd7a:115c:a1e0::1/64 dev tailscale0 nodad && ip -n tailnet addr add fd7a:115c:a1e0::2/64 dev eth0 nodad
+ip -n internet -6 route add default via 2001:db8:1::1 && ip -n tailnet -6 route add default via fd7a:115c:a1e0::1
+# Moln-metadata: 169.254.169.254 "hos leverantören", nåbar från värden som på en riktig VPS.
+ip -n internet addr add 169.254.169.254/32 dev eth0
+ip route add 169.254.169.254/32 via 198.51.100.2
+ip netns exec internet nc -lk 169.254.169.254 80 >/dev/null 2>&1 &
+# Lyssnare på VÄRDEN utöver sshd: en v6-port som inte är öppnad, och UDP 443 / UDP 8443.
+nc -6 -lk 2001:db8:1::1 8022 >/dev/null 2>&1 &
 # Lyssnare ute på "internet" och "tailnetet" som containrar kan försöka nå.
 ip netns exec internet nc -lk 198.51.100.2 8443 >/dev/null 2>&1 &
 ip netns exec internet nc -lk 198.51.100.2 587 >/dev/null 2>&1 &
@@ -94,12 +104,42 @@ pastar      "tailnet → :22 släpps in (gränssnittet heter tailscale0)"       
 pastar_inte "tailnet → :8080 stoppas (tailnetet är ingen bakdörr till fler portar)" fran_tailnet 100.64.0.1 8080
 pastar_inte "internet → tailnetet routas inte genom värden (FORWARD drop)"    fran_internet 100.64.0.2 8443
 
+test_rubrik "IPv6 (tidigare OTESTAT): samma regler som för IPv4"
+fran_internet6() { ip netns exec internet nc -6 -z -w 3 "$@"; }
+fran_tailnet6()  { ip netns exec tailnet nc -6 -z -w 3 "$@"; }
+pastar_inte "internet v6 → :22 stoppas"                                  fran_internet6 2001:db8:1::1 22
+pastar      "tailnet v6 (fd7a:115c:a1e0::/48 på tailscale0) → :22 släpps in" fran_tailnet6 fd7a:115c:a1e0::1 22
+pastar_inte "internet v6 → en port på värden som inte är öppnad (8022) stoppas" fran_internet6 2001:db8:1::1 8022
+echo 1 >/proc/sys/net/ipv6/conf/all/forwarding   # som om leverantören slagit på v6-routning
+ip netns exec tailnet nc -6 -lk fd7a:115c:a1e0::2 8443 >/dev/null 2>&1 &
+sleep 0.5
+pastar_inte "internet v6 → tailnetet routas inte genom värden (forward drop, även med v6-routning på)" fran_internet6 fd7a:115c:a1e0::2 8443
+
+test_rubrik "UDP 443 (tidigare OTESTAT): öppen port släpps in, annan UDP-port stoppas"
+udp_nar_fram() { # <port> — skickar ett datagram från "internet" och ser om det kom fram till värden
+  local port="$1" fil="/tmp/udp-${1}"
+  : >"$fil"
+  timeout 4 nc -u -l 198.51.100.1 "$port" >"$fil" 2>/dev/null &
+  sleep 0.5
+  printf 'prov-%s\n' "$port" | ip netns exec internet nc -u -w 1 198.51.100.1 "$port" >/dev/null 2>&1
+  sleep 1
+  grep -q "prov-${port}" "$fil"
+}
+pastar      "internet → udp/443 når värden"        udp_nar_fram 443
+pastar_inte "internet → udp/8443 stoppas"          udp_nar_fram 8443
+
 test_rubrik "Utgående från containrar"
 pastar      "container → internet :8443 fungerar"                   i_container nc -z -w 3 198.51.100.2 8443
 pastar_inte "container → internet :587 (SMTP) stoppas"              i_container nc -z -w 3 198.51.100.2 587
 pastar_inte "container → tailnetet (100.64.0.0/10) stoppas"         i_container nc -z -w 3 100.64.0.2 8443
 pastar_inte "container → värdens sshd via bryggans gateway stoppas" i_container nc -z -w 3 "$BRYGGA_GW" 22
 pastar_inte "container → värdens sshd via publik adress stoppas"    i_container nc -z -w 3 198.51.100.1 22
+pastar_inte "container → moln-metadata 169.254.169.254 stoppas (tidigare OTESTAT)" i_container nc -z -w 3 169.254.169.254 80
+# Hairpin: en container som ansluter till värdens PUBLIKA adress på en publicerad port. Med Dockers
+# userland-proxy tas anslutningen emot av docker-proxy på värden (input-kedjan), och där släpper
+# vi inte in något från docker0/br-* ⇒ stoppas. Konsekvens: en app når inte plattformen via den
+# publika adressen inifrån en container — den får använda det interna nätet (se README).
+pastar_inte "container → värdens publika adress :443 (hairpin) stoppas (tidigare OTESTAT)" i_container nc -z -w 3 198.51.100.1 443
 docker network create --internal inlast >/dev/null 2>&1
 pastar_inte "container på --internal-nät når inte internet"         docker run --rm --network inlast busybox nc -z -w 3 198.51.100.2 8443
 
@@ -111,6 +151,12 @@ pastar "utan tabellen: container → tailnetet fungerar"    i_container nc -z -w
 pastar "utan tabellen: container → SMTP fungerar"         i_container nc -z -w 3 198.51.100.2 587
 pastar "utan tabellen: container → värdens sshd fungerar" i_container nc -z -w 3 "$BRYGGA_GW" 22
 pastar "utan tabellen: internet → tailnetet routas (leverantörens ip_forward=1 + FORWARD ACCEPT)" fran_internet 100.64.0.2 8443
+pastar "utan tabellen: container → 169.254.169.254 fungerar"   i_container nc -z -w 3 169.254.169.254 80
+pastar "utan tabellen: container → publik adress :443 (hairpin) fungerar" i_container nc -z -w 3 198.51.100.1 443
+pastar "utan tabellen: internet v6 → :22 når sshd"            fran_internet6 2001:db8:1::1 22
+pastar "utan tabellen: internet v6 → :8022 når värden"        fran_internet6 2001:db8:1::1 8022
+pastar "utan tabellen: internet v6 → tailnetet routas"        fran_internet6 fd7a:115c:a1e0::2 8443
+pastar "utan tabellen: internet → udp/8443 når värden"        udp_nar_fram 8443
 
 test_rubrik "Omladdning av vår tabell stör inte Docker"
 nft -f /etc/nftables.conf

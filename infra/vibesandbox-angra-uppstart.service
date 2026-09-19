@@ -1,0 +1,22 @@
+# Installeras av provision.sh som /etc/systemd/system/vibesandbox-angra-uppstart.service och
+# aktiveras INNAN brandväggen eller sshd ändras.
+#
+# Varför: backstoppet bakom JA-frågan är en transient timer, och transienta enheter överlever
+# inte en omstart. Startar värden om medan en ändring är obekräftad (kärnuppdatering,
+# strömavbrott, en otålig ägare i leverantörens panel) finns bara markören kvar på disk — och
+# den här enheten, som ångrar ändringen innan brandväggen laddas och innan sshd startar.
+[Unit]
+Description=vibesandbox: ångra en obekräftad ändring av brandvägg/sshd efter omstart
+Documentation=file:/usr/local/share/doc/vibesandbox/README.md
+DefaultDependencies=no
+After=local-fs.target
+Before=nftables.service ssh.service sshd.service ssh.socket network-pre.target docker.service sysinit.target shutdown.target
+Conflicts=shutdown.target
+ConditionPathExistsGlob=/etc/vibesandbox/angra/*/obekraftad
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vibesandbox-angra --alla --uppstart
+
+[Install]
+WantedBy=sysinit.target
