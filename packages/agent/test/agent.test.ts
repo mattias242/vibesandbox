@@ -127,7 +127,12 @@ describe('agenten: självrättning', () => {
     expect(second).toContain("Cannot find name 'odefinierad'.");
     expect(second).toContain('En lista där vi bokar mötesrum');
 
-    expect(events).toContainEqual({ type: 'check', ok: false, problems: 1 });
+    expect(events).toContainEqual({
+      type: 'check',
+      ok: false,
+      problems: 1,
+      diagnostics: [{ source: 'typecheck', file: 'src/App.tsx', line: 2, message: "Cannot find name 'odefinierad'." }],
+    });
     expect(events).toContainEqual({ type: 'status', message: 'Rättar fel (försök 2 av 4)…' });
   });
 
@@ -169,6 +174,63 @@ describe('agenten: självrättning', () => {
     expect(second).not.toContain('y'.repeat(600));
     expect(second).toContain('byggfel 8');
     expect(second).not.toContain('byggfel 9');
+  });
+
+  it('kontrollhändelsen bär felen — högst 10, viktigast först, trimmade, utan dubbletter — så att de kan visas och sparas', async () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ source: 'build' as const, message: `byggfel ${i}` }));
+    const dubblett = { source: 'typecheck' as const, file: 'src/App.tsx', line: 3, message: `typfel ${'z'.repeat(1000)}` };
+    const { agent } = setup(
+      [reply('a', { 'src/App.tsx': APP_BROKEN }), reply('b', { 'src/App.tsx': APP_FIXED })],
+      [{ ok: false, diagnostics: [...many, dubblett, dubblett] }, { ok: true }],
+    );
+    const { events } = await run(agent);
+    const kontroller = events.filter((e) => e.type === 'check');
+    const forsta = kontroller[0];
+    if (forsta?.type !== 'check') throw new Error('ingen kontroll');
+    expect(forsta.problems).toBe(14);
+    expect(forsta.diagnostics).toHaveLength(10);
+    expect(forsta.diagnostics?.[0]).toMatchObject({ source: 'typecheck', file: 'src/App.tsx', line: 3 });
+    expect(forsta.diagnostics?.[0]?.message.length).toBeLessThanOrEqual(300);
+    // Ett lyckat bygge har inga fel att bära.
+    expect(kontroller[1]).toEqual({ type: 'check', ok: true, problems: 0 });
+  });
+
+  it('i varje rättningsvarv ser modellen också felen från tidigare varv, och ett återkommande fel pekas ut', async () => {
+    const aterkommande = { source: 'typecheck' as const, file: 'src/App.tsx', line: 12, message: "Object is possibly 'undefined'." };
+    const flyttat = { ...aterkommande, line: 40 }; // samma fel på en annan rad räknas som samma fel
+    const engangs = { source: 'typecheck' as const, file: 'src/App.tsx', line: 5, message: "Cannot find name 'rader'." };
+    const { provider, agent } = setup(
+      [1, 2, 3].map((i) => reply(`försök ${i}`, { 'src/App.tsx': APP_BROKEN })).concat(reply('klart', { 'src/App.tsx': APP_FIXED })),
+      [{ ok: false, diagnostics: [aterkommande, engangs] }, { ok: false, diagnostics: [flyttat] }, { ok: false, diagnostics: [aterkommande] }, { ok: true }],
+    );
+    await run(agent);
+
+    const andra = userMessage(provider, 1);
+    expect(andra).not.toContain('Tidigare försök');
+
+    const tredje = userMessage(provider, 2);
+    expect(tredje).toContain('# Tidigare försök i den här omgången');
+    expect(tredje).toContain("Cannot find name 'rader'.");
+    expect(tredje).toMatch(/Object is possibly 'undefined'\..*kommit tillbaka/);
+
+    const fjarde = userMessage(provider, 3);
+    expect(fjarde).toMatch(/Object is possibly 'undefined'\..*kommit tillbaka 3 gånger/);
+    expect(fjarde).toContain('byt angreppssätt');
+  });
+
+  it('ett fel som INTE kommit tillbaka pekas inte ut', async () => {
+    const { provider, agent } = setup(
+      [reply('a', { 'src/App.tsx': APP_BROKEN }), reply('b', { 'src/App.tsx': APP_BROKEN }), reply('c', { 'src/App.tsx': APP_FIXED })],
+      [
+        { ok: false, diagnostics: [{ source: 'typecheck', file: 'src/App.tsx', line: 1, message: 'första felet' }] },
+        { ok: false, diagnostics: [{ source: 'typecheck', file: 'src/App.tsx', line: 1, message: 'andra felet' }] },
+        { ok: true },
+      ],
+    );
+    await run(agent);
+    const tredje = userMessage(provider, 2);
+    expect(tredje).toContain('första felet');
+    expect(tredje).not.toContain('kommit tillbaka');
   });
 
   it('ger upp efter maxRounds med oförändrade filer och klarspråk', async () => {

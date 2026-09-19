@@ -291,6 +291,29 @@ main:focus-visible {
   color: #7a1c20;
 }
 
+/* Tekniska detaljer under ett misslyckat bygge: dolda tills man ber om dem. */
+.job-details {
+  margin: -0.5rem 0 1rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.job-details summary {
+  cursor: pointer;
+  color: var(--blue);
+}
+
+.job-details ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.job-details code {
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .notice-ok {
   background: var(--ok-bg);
   border-left-color: var(--ok);

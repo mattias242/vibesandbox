@@ -492,12 +492,22 @@ export interface BuildRunner {
 
 // ── Agenten ─────────────────────────────────────────────────────────────────────
 
+/** Högst så många fel följer med en kontrollhändelse. */
+export const MAX_EVENT_DIAGNOSTICS = 10;
+/** Ett fels meddelande kortas till så många tecken i en kontrollhändelse. */
+export const MAX_EVENT_DIAGNOSTIC_CHARS = 300;
+
 /** Framsteg under en tur, i klarspråk. Visas för användaren och sparas med jobbet. */
 export type AgentEvent =
   | { readonly type: 'status'; readonly message: string }
   | { readonly type: 'progress'; readonly outputChars: number }
   | { readonly type: 'files'; readonly paths: readonly string[] }
-  | { readonly type: 'check'; readonly ok: boolean; readonly problems: number }
+  /**
+   * `diagnostics` bara när kontrollen underkänner: de viktigaste felen (högst
+   * `MAX_EVENT_DIAGNOSTICS`, meddelandena högst `MAX_EVENT_DIAGNOSTIC_CHARS` tecken). Sparas med
+   * jobbet och visas under "Visa detaljer" — hamnar aldrig i driftloggen.
+   */
+  | { readonly type: 'check'; readonly ok: boolean; readonly problems: number; readonly diagnostics?: readonly Diagnostic[] }
   | { readonly type: 'done'; readonly ok: boolean; readonly message: string };
 
 export interface ConversationEntry {

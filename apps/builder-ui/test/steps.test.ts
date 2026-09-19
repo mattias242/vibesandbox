@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '@vibesandbox/contracts';
-import { summarizeJob, writingProgress } from '../src/steps.ts';
+import { describeDiagnostic, summarizeJob, writingProgress } from '../src/steps.ts';
 
 function view(events: readonly AgentEvent[], status: 'queued' | 'running' | 'done' | 'failed' = 'running') {
   const summary = summarizeJob(events, status);
@@ -117,5 +117,44 @@ describe('framstegsmåttet', () => {
   it('tål konstiga värden', () => {
     expect(writingProgress(-5)).toBe(0);
     expect(writingProgress(Number.NaN)).toBe(0);
+  });
+});
+
+describe('stegvisaren: detaljer när bygget inte gick', () => {
+  const typfel = { source: 'typecheck' as const, file: 'src/App.tsx', line: 12, message: "Object is possibly 'undefined'." };
+  const annat = { source: 'build' as const, message: 'Could not resolve "./saknas"' };
+
+  it('ett misslyckat jobb bär felen från den SISTA kontrollen', () => {
+    const events: AgentEvent[] = [
+      { type: 'files', paths: ['src/App.tsx'] },
+      { type: 'check', ok: false, problems: 2, diagnostics: [annat, typfel] },
+      { type: 'files', paths: ['src/App.tsx'] },
+      { type: 'check', ok: false, problems: 1, diagnostics: [typfel] },
+      { type: 'done', ok: false, message: 'Jag fick inte appen att fungera på 4 försök.' },
+    ];
+    expect(summarizeJob(events, 'failed').diagnostics).toEqual([typfel]);
+  });
+
+  it('ett lyckat jobb har inga detaljer att visa, även om ett tidigare varv hade fel', () => {
+    const events: AgentEvent[] = [
+      { type: 'files', paths: ['src/App.tsx'] },
+      { type: 'check', ok: false, problems: 1, diagnostics: [typfel] },
+      { type: 'files', paths: ['src/App.tsx'] },
+      { type: 'check', ok: true, problems: 0 },
+      { type: 'done', ok: true, message: 'Klart.' },
+    ];
+    expect(summarizeJob(events, 'done').diagnostics).toEqual([]);
+  });
+
+  it('äldre jobb utan sparade fel ger en tom lista', () => {
+    expect(summarizeJob([{ type: 'check', ok: false, problems: 1 }, { type: 'done', ok: false, message: 'Nej.' }], 'failed').diagnostics).toEqual([]);
+  });
+
+  it('ett fel beskrivs med fil, rad, vilken kontroll och meddelandet', () => {
+    expect(describeDiagnostic(typfel)).toBe("src/App.tsx, rad 12 — Object is possibly 'undefined'. (typkontroll)");
+    expect(describeDiagnostic(annat)).toBe('Could not resolve "./saknas" (bygge)');
+    expect(describeDiagnostic({ source: 'policy', rule: 'external-url', file: 'src/App.tsx', message: 'Extern adress' })).toBe(
+      'src/App.tsx — Extern adress (regelkontroll: external-url)',
+    );
   });
 });

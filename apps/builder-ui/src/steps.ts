@@ -2,7 +2,7 @@
  * Översätter agentens händelser till en lugn stegvisare. Användaren ska se VAD som händer i
  * vardagliga ord — inte filnamn, rundor eller tekniska detaljer.
  */
-import type { AgentEvent, BuilderJobStatus } from '@vibesandbox/contracts';
+import type { AgentEvent, BuilderJobStatus, Diagnostic } from '@vibesandbox/contracts';
 
 export type StepKey = 'wait' | 'write' | 'check' | 'fix';
 export type StepState = 'pending' | 'active' | 'done' | 'failed';
@@ -22,6 +22,24 @@ export interface JobSummary {
   readonly statusMessage: string | undefined;
   /** `null` så länge jobbet pågår. */
   readonly finished: { readonly ok: boolean; readonly message: string } | null;
+  /**
+   * Felen från den senaste kontrollen som underkände koden — tomt om den senaste kontrollen gick
+   * igenom. Visas under "Visa detaljer" när bygget inte gick.
+   */
+  readonly diagnostics: readonly Diagnostic[];
+}
+
+const SOURCE_TEXT: Readonly<Record<Diagnostic['source'], string>> = {
+  policy: 'regelkontroll',
+  typecheck: 'typkontroll',
+  build: 'bygge',
+};
+
+/** Ett fel på en rad: var, vad, och vilken kontroll som hittade det. */
+export function describeDiagnostic(d: Diagnostic): string {
+  const where = d.file === undefined ? '' : d.line === undefined ? `${d.file} — ` : `${d.file}, rad ${d.line} — `;
+  const check = d.rule === undefined ? SOURCE_TEXT[d.source] : `${SOURCE_TEXT[d.source]}: ${d.rule}`;
+  return `${where}${d.message} (${check})`;
 }
 
 const LABELS: Readonly<Record<StepKey, string>> = {
@@ -45,6 +63,7 @@ export function summarizeJob(events: readonly AgentEvent[], status: BuilderJobSt
       outputChars: 0,
       statusMessage: undefined,
       finished: null,
+      diagnostics: [],
     };
   }
 
@@ -55,6 +74,7 @@ export function summarizeJob(events: readonly AgentEvent[], status: BuilderJobSt
   let outputChars = 0;
   let statusMessage: string | undefined;
   let finished: JobSummary['finished'] = null;
+  let diagnostics: readonly Diagnostic[] = [];
 
   for (const event of events) {
     switch (event.type) {
@@ -73,6 +93,7 @@ export function summarizeJob(events: readonly AgentEvent[], status: BuilderJobSt
         break;
       case 'check':
         check = 'done';
+        diagnostics = event.ok ? [] : (event.diagnostics ?? []);
         if (event.ok) {
           checkDetail = undefined;
         } else {
@@ -109,7 +130,7 @@ export function summarizeJob(events: readonly AgentEvent[], status: BuilderJobSt
   ];
   if (fix !== undefined) steps.push({ key: 'fix', label: LABELS.fix, state: fix });
 
-  return { steps, outputChars, statusMessage, finished };
+  return { steps, outputChars, statusMessage, finished, diagnostics };
 }
 
 /**

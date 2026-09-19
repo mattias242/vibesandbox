@@ -7,7 +7,8 @@
  * med en förklaring (se `failInterruptedJobs`). Hellre ett tydligt "försök igen" än ett jobb som
  * körs en gång till utan att någon väntar på det.
  */
-import type { AgentEvent, AgentTurnResult, BuildResult, SourceFiles, Agent } from '@vibesandbox/contracts';
+import { MAX_EVENT_DIAGNOSTICS, MAX_EVENT_DIAGNOSTIC_CHARS } from '@vibesandbox/contracts';
+import type { AgentEvent, AgentTurnResult, BuildResult, Diagnostic, SourceFiles, Agent } from '@vibesandbox/contracts';
 import { storedAppId } from './control.ts';
 import type { BuilderControl } from './control.ts';
 import type { JobOutcome, Storage } from './lagring.ts';
@@ -25,6 +26,27 @@ const MAX_SUMMARY_CHARS = 8000;
 const MAX_EVENT_TEXT = 1000;
 const MAX_EVENT_PATHS = 100;
 const MAX_EVENT_PATH_CHARS = 200;
+const MAX_EVENT_RULE_CHARS = 100;
+const DIAGNOSTIC_SOURCES: ReadonlySet<string> = new Set(['policy', 'typecheck', 'build']);
+
+/** Ett fel ur en kontrollhändelse, med bara kontraktets fält — eller `null` om det inte är ett fel. */
+function sanitizeDiagnostic(value: unknown): Diagnostic | null {
+  if (value === null || typeof value !== 'object') return null;
+  const d = value as Record<string, unknown>;
+  const source = d['source'];
+  const message = d['message'];
+  if (typeof source !== 'string' || !DIAGNOSTIC_SOURCES.has(source) || typeof message !== 'string') return null;
+  const rule = d['rule'];
+  const file = d['file'];
+  const line = d['line'];
+  return {
+    source: source as Diagnostic['source'],
+    ...(typeof rule === 'string' ? { rule: truncate(rule, MAX_EVENT_RULE_CHARS) } : {}),
+    ...(typeof file === 'string' ? { file: truncate(file, MAX_EVENT_PATH_CHARS) } : {}),
+    ...(typeof line === 'number' && Number.isInteger(line) && line > 0 ? { line } : {}),
+    message: truncate(message, MAX_EVENT_DIAGNOSTIC_CHARS),
+  };
+}
 
 /** Standard för hur länge en tur får pågå innan kön går vidare. */
 export const DEFAULT_JOB_TIMEOUT_MS = 20 * 60 * 1000;
@@ -91,7 +113,18 @@ export function sanitizeEvent(event: unknown): AgentEvent | null {
     case 'check': {
       const problems = count(e['problems']);
       if (typeof e['ok'] !== 'boolean' || problems === null) return null;
-      return { type: 'check', ok: e['ok'], problems };
+      // Felen följer bara med ett underkänt bygge, och bara de som följer kontraktet.
+      const raw = e['diagnostics'];
+      const diagnostics =
+        e['ok'] || !Array.isArray(raw)
+          ? []
+          : raw
+              .map(sanitizeDiagnostic)
+              .filter((d): d is Diagnostic => d !== null)
+              .slice(0, MAX_EVENT_DIAGNOSTICS);
+      return diagnostics.length === 0
+        ? { type: 'check', ok: e['ok'], problems }
+        : { type: 'check', ok: e['ok'], problems, diagnostics };
     }
     case 'done': {
       const message = text(e['message']);
