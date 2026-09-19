@@ -35,6 +35,8 @@ await schedule.cancel(id);                 // egen; ägaren kan ta bort alla
 - Gräns för antal aktiva påminnelser per person och per app ⇒ `code: 'rate_limited'`; visa
   `error.message` och föreslå att ta bort någon.
 - Någon annans påminnelse ⇒ `code: 'not_found'`.
+- Påminnelsen skickas med samma regler som `notify`: skriv inga webbadresser i texten utom appens
+  egen. En påminnelse som bryter mot det skickas inte när det är dags — och det märks inte i appen.
 
 ### Exempel: påminn alla varje fredag kl 9
 

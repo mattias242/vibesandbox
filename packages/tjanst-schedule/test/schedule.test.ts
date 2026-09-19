@@ -3,6 +3,7 @@
  * som testerna styr och en fejkad notifier.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { DataApiError } from '@vibesandbox/contracts';
 import type { AppServiceResponse } from '@vibesandbox/contracts';
 import { createSchedule, factory } from '../src/index.ts';
 import type { ScheduleInstance } from '../src/index.ts';
@@ -365,6 +366,24 @@ describe('utskick', () => {
     expect(notifier.skickat).toEqual([]);
     expect(loggen.rader.some((r) => r['event'] === 'reminder_failed' && r['level'] === 'warn')).toBe(true);
   });
+
+  it.each(['invalid_request', 'rate_limited'] as const)(
+    'notify nekar en påminnelse (%s): den loggas med felkoden och de andra skickas ändå',
+    async (kod) => {
+      const s = starta();
+      await skapaId(s, ANNA, { subject: 'Nekad', text: 'Se https://example.org' });
+      await skapaId(s, BERTIL, { subject: 'Vanlig', at: '2026-10-01T11:00:01Z' });
+      k.satt('2026-10-01T11:00:01Z');
+      notifier.beteende = async (u) => {
+        if (u.subject === 'Nekad') throw new DataApiError(kod, 'Texten innehåller en webbadress: https://example.org');
+      };
+      await s.tick();
+      expect(notifier.skickat.map((u) => u.subject)).toEqual(['Vanlig']);
+      const rad = loggen.rader.find((r) => r['event'] === 'reminder_failed');
+      expect(rad).toMatchObject({ level: 'warn', error: 'DataApiError', code: kod });
+      expect(JSON.stringify(loggen.rader)).not.toContain('example.org');
+    },
+  );
 
   it('i förhandsvisningen går påminnelsen bara till ägaren, vad appen än angav', async () => {
     const s = starta();

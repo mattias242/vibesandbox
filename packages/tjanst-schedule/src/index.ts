@@ -19,7 +19,7 @@
  * SVC_SCHEDULE_MAX_DAYS_AHEAD, SVC_SCHEDULE_TICK_MS.
  */
 import { randomUUID } from 'node:crypto';
-import { API_ERROR_STATUS } from '@vibesandbox/contracts';
+import { API_ERROR_STATUS, DataApiError } from '@vibesandbox/contracts';
 import type {
   ApiErrorCode,
   AppId,
@@ -240,12 +240,15 @@ export function createSchedule(dependencies: AppServiceDependencies): ScheduleIn
         try {
           await send(reminder, notifier as AppNotifier);
         } catch (error) {
-          // Inget nytt försök (se ovan). Felets namn loggas — aldrig meddelandet, som kan bära ämnet.
+          // Inget nytt försök (se ovan), och ett nekat utskick stoppar inte de andra. Notify nekar
+          // med DataApiError (`invalid_request`, t.ex. en främmande webbadress i texten, eller
+          // `rate_limited`). Felets namn och kod loggas — aldrig meddelandet, som kan citera texten.
           log({
             level: 'warn',
             event: 'reminder_failed',
             app: shortId(reminder.appId),
             error: error instanceof Error ? error.name : 'unknown',
+            ...(error instanceof DataApiError ? { code: error.code } : {}),
           });
         }
       }
