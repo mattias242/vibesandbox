@@ -145,8 +145,11 @@ export function createTranscribeService(
         signal: shutdown.signal,
       });
       const charged = transcript.durationSeconds === undefined ? undefined : Math.max(1, Math.ceil(transcript.durationSeconds));
-      jobs.finish(job.jobId, { text: transcript.text, segments: transcript.segments, chargedSeconds: charged }, now().getTime());
+      // Kopian bort FÖRE jobbet syns som klart: den som ser "done" ska kunna lita på att ljudet
+      // inte ligger kvar. Kraschar vi mellan stegen blir jobbet "failed" vid omstarten — hellre det
+      // än ett ljud som ligger kvar efter att utskriften lämnats ut.
       await audio.remove(job.jobId);
+      jobs.finish(job.jobId, { text: transcript.text, segments: transcript.segments, chargedSeconds: charged }, now().getTime());
       log({ level: 'info', event: 'transcribe_done', app, seconds: charged ?? -1, ms: Date.now() - started });
     } catch (cause) {
       const failure = cause instanceof ProviderError ? cause.failure : 'provider';
@@ -156,8 +159,8 @@ export function createTranscribeService(
         log({ level: 'info', event: 'transcribe_requeued', app });
         return;
       }
-      jobs.fail(job.jobId, failure, now().getTime());
       await audio.remove(job.jobId);
+      jobs.fail(job.jobId, failure, now().getTime());
       const status = cause instanceof ProviderError && cause.status !== undefined ? { status: cause.status } : {};
       log({ level: 'error', event: 'transcribe_failed', app, reason: failure, ...status, ms: Date.now() - started });
     }
