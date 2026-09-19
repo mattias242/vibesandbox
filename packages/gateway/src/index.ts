@@ -15,7 +15,9 @@
  *                                inloggningssidan för en sidnavigering (inloggningssida.ts)
  *   ── byggverktygets värd går härifrån till byggverktyg.ts: strikt CSRF → fråga → kropp → handler.
  *      Den når aldrig register, filer eller lagring, och blir aldrig ett TenantContext.
- *   5. register                — okänd app eller version ⇒ 404; här skapas TenantContext (hyresgast.ts)
+ *   5. register och åtkomst    — okänd app eller version ⇒ 404; saknad roll i appen ⇒ SAMMA 404.
+ *                                Här skapas TenantContext (hyresgast.ts). Gäller allt på appens
+ *                                värdar: filer, SPA-fallback, data-API, whoami — steg 7 nås inte annars.
  *   6. CSRF för skrivande      — 403
  *   7. routning                — sökvägen normaliseras, sedan API eller statiska filer
  *
@@ -253,8 +255,11 @@ async function handle(
     return;
   }
 
-  // 5. Register → TenantContext. Först nu, när vi vet vem som frågar.
-  const tenant = await resolveTenant(host, options.registry);
+  // 5. Register och åtkomst → TenantContext. Först nu, när vi vet vem som frågar. Före CSRF och
+  //    routning: ett 403 eller 400 där skulle annars röja för en obehörig att appen finns.
+  //    Loggposterna därifrån får spårets fält (userId, appens prefix, värdsort) — aldrig e-post.
+  const logWithTrace: GatewayLogger = (entry) => log({ ...trace, ...entry });
+  const tenant = await resolveTenant(host, options.registry, identity.userId, logWithTrace);
 
   // 6. CSRF-skydd för skrivande metoder — före routningen, så att inget skrivande når en rutt utan det.
   if (WRITING_METHODS.has(method)) assertCsrfProtection(request, hostname);

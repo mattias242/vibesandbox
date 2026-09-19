@@ -10,7 +10,14 @@ import type { ApiErrorBody } from '@vibesandbox/contracts';
 import { createGateway } from '../src/index.ts';
 import { anropa, json, startaTestserver } from './hjalp.ts';
 import type { Testserver } from './hjalp.ts';
-import { skapaAppId, skapaGodkannandeIdentityProvider, skapaTestUppsattning, textfil, vardnamnForApp } from './fejkar.ts';
+import {
+  STANDARDANVANDARE,
+  skapaAppId,
+  skapaGodkannandeIdentityProvider,
+  skapaTestUppsattning,
+  textfil,
+  vardnamnForApp,
+} from './fejkar.ts';
 
 describe('registrering av bakgrundsskript (service worker) blockeras', () => {
   let server: Testserver | undefined;
@@ -24,6 +31,7 @@ describe('registrering av bakgrundsskript (service worker) blockeras', () => {
     const appId = skapaAppId('sw-blockering');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     uppsattning.filer.satt(appId, 'published', '/sw.js', textfil('self.addEventListener("fetch",()=>{});', 'text/javascript'));
     server = await startaTestserver(createGateway(uppsattning.options));
 
@@ -42,6 +50,7 @@ describe('registrering av bakgrundsskript (service worker) blockeras', () => {
     const appId = skapaAppId('sw-vanlig-fil');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     uppsattning.filer.satt(appId, 'published', '/sw.js', textfil('console.log("bara en vanlig fil");', 'text/javascript'));
     server = await startaTestserver(createGateway(uppsattning.options));
 

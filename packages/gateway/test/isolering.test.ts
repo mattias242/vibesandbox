@@ -18,6 +18,7 @@ import {
   skapaTestUppsattning,
   vardnamnForApp,
   vardnamnForForhandsvisning,
+  STANDARDANVANDARE,
 } from './fejkar.ts';
 
 describe('hyresgästisolering (ände till ände)', () => {
@@ -45,7 +46,9 @@ describe('hyresgästisolering (ände till ände)', () => {
     const enkat = skapaAppId('iso-enkat-1');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(bokningar, { published: true });
+    uppsattning.register.bevilja(bokningar, STANDARDANVANDARE.userId, 'owner');
     uppsattning.register.registrera(enkat, { published: true });
+    uppsattning.register.bevilja(enkat, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     await sparaDokument(server.port, vardnamnForApp(bokningar), { rum: 'Stora salen' });
@@ -64,7 +67,9 @@ describe('hyresgästisolering (ände till ände)', () => {
     const enkat = skapaAppId('iso-enkat-2');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(bokningar, { published: true });
+    uppsattning.register.bevilja(bokningar, STANDARDANVANDARE.userId, 'owner');
     uppsattning.register.registrera(enkat, { published: true });
+    uppsattning.register.bevilja(enkat, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     await sparaDokument(server.port, vardnamnForApp(bokningar), { rum: 'Stora salen' });
@@ -83,7 +88,9 @@ describe('hyresgästisolering (ände till ände)', () => {
     const enkat = skapaAppId('iso-enkat-3');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(bokningar, { published: true });
+    uppsattning.register.bevilja(bokningar, STANDARDANVANDARE.userId, 'owner');
     uppsattning.register.registrera(enkat, { published: true });
+    uppsattning.register.bevilja(enkat, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     await sparaDokument(server.port, vardnamnForApp(bokningar), { rum: 'Stora salen' });
@@ -103,7 +110,9 @@ describe('hyresgästisolering (ände till ände)', () => {
     const enkat = skapaAppId('iso-enkat-4');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(bokningar, { published: true });
+    uppsattning.register.bevilja(bokningar, STANDARDANVANDARE.userId, 'owner');
     uppsattning.register.registrera(enkat, { published: true });
+    uppsattning.register.bevilja(enkat, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const skapat = await sparaDokument(server.port, vardnamnForApp(bokningar), { rum: 'Stora salen' });
@@ -122,6 +131,7 @@ describe('hyresgästisolering (ände till ände)', () => {
     const appId = skapaAppId('iso-bade-och-5');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true, draft: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     await sparaDokument(server.port, vardnamnForApp(appId), { rum: 'Stora salen' });

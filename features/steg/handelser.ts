@@ -83,8 +83,8 @@ When(
       Buffer.from(JSON.stringify({ ...innehall, ...andring }), 'utf8').toString('base64url');
 
     const forsok = [
-      // Någon annans användar-id, med den äkta signaturen kvar.
-      `Test ${andrad({ userId: 'anv-anna' })}.${signatur}`,
+      // Någon annans användar-id (Annas), med den äkta signaturen kvar.
+      `Test ${andrad({ userId: this.anvandarId('Anna') })}.${signatur}`,
       // Högre behörighet och längre giltighet.
       `Test ${andrad({ roles: ['admin'], exp: 9_999_999_999 })}.${signatur}`,
       // Orörd nyttolast, ändrad signatur.

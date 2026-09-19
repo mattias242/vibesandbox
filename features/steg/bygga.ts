@@ -49,6 +49,9 @@ Given(/^att språkmodellen svarar med en app som avbryts mitt i$/, function (thi
 });
 
 async function byggKlart(varld: Varld, publicera: boolean): Promise<void> {
+  // "Anna har en app som byggts" förutsätter att hon får bygga. Scenarier som redan loggat in
+  // henne (features/bygga/) behåller den inloggningen.
+  if (!varld.personer.has('Anna')) varld.loggaInSomByggare('Anna');
   varld.sattModellsvar([appMedRubrik(FORSTA_VERSIONEN)]);
   const jobb = await varld.bestall('Anna', 'En lista där vi bokar mötesrum');
   assert.equal(jobb.status, 'done', 'Förberedelsen misslyckades: appen byggdes inte.');

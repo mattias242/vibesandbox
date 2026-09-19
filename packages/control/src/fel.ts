@@ -7,6 +7,7 @@ export type ControlErrorCode =
   | 'app_not_found'
   | 'version_not_found'
   | 'import_rejected'
+  | 'access_rejected'
   | 'invalid_tenant'
   | 'closed'
   | 'internal';

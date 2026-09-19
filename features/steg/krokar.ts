@@ -14,8 +14,9 @@ Before(async function (this: Varld, { pickle }) {
   // om en full app känns igen på sitt Givet-steg; alla andra kör med de riktiga standardgränserna.
   if (pickle.steps.some((steg) => steg.text.includes('har nått sin lagringsgräns'))) this.kvot = LITEN_KVOT;
   // Byggverktyget (med inspelad språkmodell och fejkad byggkedja) slås på för scenarierna om att
-  // bygga appar — övriga scenarier kör plattformen som i drift utan byggverktyg.
-  if (pickle.uri.split(/[\\/]/).includes('bygga')) this.byggverktyg = true;
+  // bygga och dela appar — övriga scenarier kör plattformen som i drift utan byggverktyg.
+  const mappar = pickle.uri.split(/[\\/]/);
+  if (mappar.includes('bygga') || mappar.includes('delning')) this.byggverktyg = true;
   try {
     await this.starta();
   } catch (fel) {

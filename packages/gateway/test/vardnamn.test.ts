@@ -16,6 +16,7 @@ import {
   skapaTestUppsattning,
   vardnamnForApp,
   vardnamnForForhandsvisning,
+  STANDARDANVANDARE,
 } from './fejkar.ts';
 
 describe('värdnamn → hyresgäst', () => {
@@ -30,6 +31,7 @@ describe('värdnamn → hyresgäst', () => {
     const appId = skapaAppId('bokningar');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     await anropa({
@@ -47,6 +49,7 @@ describe('värdnamn → hyresgäst', () => {
     const appId = skapaAppId('bokningar-utkast');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { draft: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     await anropa({
@@ -65,7 +68,9 @@ describe('värdnamn → hyresgäst', () => {
     const lockApp = skapaAppId('lock-app');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(målApp, { published: true });
+    uppsattning.register.bevilja(målApp, STANDARDANVANDARE.userId, 'owner');
     uppsattning.register.registrera(lockApp, { published: true });
+    uppsattning.register.bevilja(lockApp, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     await anropa({
@@ -83,7 +88,9 @@ describe('värdnamn → hyresgäst', () => {
     const lockApp = skapaAppId('lock-app-kropp');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(målApp, { published: true });
+    uppsattning.register.bevilja(målApp, STANDARDANVANDARE.userId, 'owner');
     uppsattning.register.registrera(lockApp, { published: true });
+    uppsattning.register.bevilja(lockApp, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     await anropa({
@@ -104,6 +111,7 @@ describe('värdnamn → hyresgäst', () => {
     const lockApp = skapaAppId('lock-app-kollektion');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(målApp, { published: true });
+    uppsattning.register.bevilja(målApp, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     await anropa({
@@ -128,7 +136,9 @@ describe('värdnamn → hyresgäst', () => {
     ])('huvudet %s styr inte routningen', async (huvudnamn, varde) => {
       const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
       uppsattning.register.registrera(rätta, { published: true });
+      uppsattning.register.bevilja(rätta, STANDARDANVANDARE.userId, 'owner');
       uppsattning.register.registrera(forfalskade, { published: true });
+      uppsattning.register.bevilja(forfalskade, STANDARDANVANDARE.userId, 'owner');
       server = await startaTestserver(createGateway(uppsattning.options));
 
       const svar = await anropa({
@@ -219,7 +229,9 @@ describe('värdnamn → hyresgäst', () => {
       const annanApp = skapaAppId('annan-app-dubbel');
       const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
       uppsattning.register.registrera(giltigtId, { published: true });
+      uppsattning.register.bevilja(giltigtId, STANDARDANVANDARE.userId, 'owner');
       uppsattning.register.registrera(annanApp, { published: true });
+      uppsattning.register.bevilja(annanApp, STANDARDANVANDARE.userId, 'owner');
       server = await startaTestserver(createGateway(uppsattning.options));
 
       const svar = await anropaRatt({
@@ -238,6 +250,7 @@ describe('värdnamn → hyresgäst', () => {
     const appId = skapaAppId('app-med-port');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const svar = await anropa({
@@ -279,6 +292,7 @@ describe('värdnamn → hyresgäst', () => {
     const appId = skapaAppId('bara-utkast');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: false, draft: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const svar = await anropa({ port: server.port, path: '/_api/whoami', host: vardnamnForApp(appId) });
@@ -291,6 +305,7 @@ describe('värdnamn → hyresgäst', () => {
     const appId = skapaAppId('bara-publicerad');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true, draft: false });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const svar = await anropa({

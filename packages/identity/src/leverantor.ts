@@ -670,6 +670,8 @@ export function createEmailOtpProvider(options: EmailOtpProviderOptions): EmailO
         record('mail_failed', user.userId, { level: 'error', errorName: error instanceof Error ? error.name : typeof error });
         throw new DataApiError('internal', 'Inbjudan är sparad, men mejlet kunde inte skickas. Försök igen om en stund.');
       }
+      // Samma svar för ny och befintlig adress: rollen och om adressen fanns röjs inte för inbjudaren.
+      return { userId: user.userId, email: user.email };
     },
 
     handoffUrl(identity, targetUrl) {

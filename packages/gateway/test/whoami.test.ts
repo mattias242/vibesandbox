@@ -24,6 +24,7 @@ describe('whoami', () => {
     const identitet = skapaIdentitet({ userId: 'anv-anna', email: epost });
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider(identitet) });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, identitet.userId, 'user');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const svar = await anropa({ port: server.port, path: '/_api/whoami', host: vardnamnForApp(appId) });
@@ -40,6 +41,7 @@ describe('whoami', () => {
     const identitet = skapaIdentitet({ email: epost });
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider(identitet) });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, identitet.userId, 'user');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const svar = await anropa({ port: server.port, path: '/_api/whoami', host: vardnamnForApp(appId) });

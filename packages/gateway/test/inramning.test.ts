@@ -27,6 +27,7 @@ import {
   skapaAppId,
   skapaFejkadBuilderHandler,
   skapaGodkannandeIdentityProvider,
+  STANDARDANVANDARE,
   skapaNekandeIdentityProvider,
   skapaTestUppsattning,
   textfil,
@@ -62,6 +63,7 @@ describe('inramning per värdsort', () => {
       ...(options.medByggverktyg ? { builder: { handler: skapaFejkadBuilderHandler(), origin: BYGG_ORIGIN } } : {}),
     });
     uppsattning.register.registrera(appId, { published: true, draft: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     uppsattning.filer.satt(appId, 'published', '/index.html', textfil('<h1>publicerad</h1>'));
     uppsattning.filer.satt(appId, 'draft', '/index.html', textfil('<h1>utkast</h1>'));
     server = await startaTestserver(createGateway(uppsattning.options));

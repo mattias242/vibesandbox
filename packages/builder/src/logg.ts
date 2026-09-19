@@ -19,6 +19,9 @@ export type BuilderLogEvent =
   | 'app_shared'
   | 'share_failed'
   | 'share_rate_limited'
+  | 'owners_granted_on_startup'
+  | 'owner_grant_failed'
+  | 'access_revoked'
   | 'ui_file_skipped'
   | 'ui_unavailable'
   | 'internal_error';

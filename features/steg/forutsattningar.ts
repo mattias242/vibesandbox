@@ -14,12 +14,16 @@ Given(/^att appen "([^"]+)" är publicerad$/, async function (this: Varld, app: 
   await this.publicera(app);
 });
 
-Given(/^att (Anna|Bertil) är inloggad$/, function (this: Varld, namn: string) {
+// En inloggad person i isoleringsscenarierna har fått de publicerade apparna delade med sig
+// (Anna som ägare) — se `Varld.publicera`.
+Given(/^att (Anna|Bertil) är inloggad$/, async function (this: Varld, namn: string) {
   this.loggaIn(namn);
+  await this.gePubliceradeAppar(namn);
 });
 
-Given(/^att (Anna|Bertil) är inloggad med adressen "([^"]+)"$/, function (this: Varld, namn: string, epost: string) {
+Given(/^att (Anna|Bertil) är inloggad med adressen "([^"]+)"$/, async function (this: Varld, namn: string, epost: string) {
   this.loggaIn(namn, epost);
+  await this.gePubliceradeAppar(namn);
 });
 
 Given(

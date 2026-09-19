@@ -6,12 +6,17 @@
  * oavsett om appen finns — ägarskapskontrollen är sist av det som kan röja något.
  *
  * Gatewayn har redan gjort inloggning och CSRF-kontroll (`Origin` + skyddshuvud) innan något når
- * hit; det här lagret litar på `request.identity` och på inget annat i förfrågan.
+ * hit — för alla skrivande metoder, DELETE inräknat; det här lagret litar på `request.identity`
+ * och på inget annat i förfrågan.
+ *
+ * "Ägare" betyder här den som skapade appen i byggverktyget (byggverktygets databas). Den som fått
+ * appen delad med sig har åtkomst i control men äger inget här: för hen "finns" appen inte (404).
  */
 import { randomBytes } from 'node:crypto';
 import { BUILDER_API_PREFIX, DataApiError, isAppId } from '@vibesandbox/contracts';
 import type {
   BuilderAppDetail,
+  BuilderAppMember,
   BuilderAppSummary,
   BuilderJob,
   BuilderMe,
@@ -20,7 +25,7 @@ import type {
   PlatformRequest,
   PlatformResponse,
 } from '@vibesandbox/contracts';
-import { storedAppId } from './control.ts';
+import { controlErrorCode, storedAppId } from './control.ts';
 import type { BuilderControl } from './control.ts';
 import type { JobRunner } from './ko.ts';
 import type { Storage, StoredApp } from './lagring.ts';
@@ -62,6 +67,13 @@ const NAME_FROM_REQUEST_CHARS = 60;
 /** Högst så många delningar per ägare och timme — varje delning skickar ett mejl. */
 export const MAX_SHARES_PER_HOUR = 20;
 const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Ett medlems-id är ett användar-id: 128 bitar base64url (22 tecken) från identitetspaketet,
+ * `test-<22 tecken>` i testläget. Teckenmängden utesluter allt som kan betyda något i en sökväg
+ * eller en logg (`/`, `.`, `%`, NUL, blanktecken); längden tar höjd för andra leverantörers id.
+ */
+export const MEMBER_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** `after`: ett heltal ≥ 0 utan inledande nollor eller tecken; nio siffror räcker gott (taket är 500). */
 const AFTER_PATTERN = /^(?:0|[1-9][0-9]{0,8})$/;
@@ -105,6 +117,8 @@ type Route =
   | { readonly kind: 'publish'; readonly appId: string }
   | { readonly kind: 'open'; readonly appId: string }
   | { readonly kind: 'share'; readonly appId: string }
+  | { readonly kind: 'members'; readonly appId: string }
+  | { readonly kind: 'member'; readonly appId: string; readonly memberId: string }
   | { readonly kind: 'job'; readonly jobId: string };
 
 const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
@@ -115,17 +129,26 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   publish: ['POST'],
   open: ['GET'],
   share: ['POST'],
+  members: ['GET'],
+  member: ['DELETE'],
   job: ['GET'],
 };
 
-const APP_ACTIONS = new Set(['messages', 'publish', 'open', 'share'] as const);
+const APP_ACTIONS = new Set(['messages', 'publish', 'open', 'share', 'members'] as const);
 
 /** Sökvägen efter prefixet, segment för segment, med exakta jämförelser. Ingen normalisering. */
 function matchRoute(path: string): Route | null {
   if (!path.startsWith(`${BUILDER_API_PREFIX}/`)) return null;
   const segments = path.slice(BUILDER_API_PREFIX.length + 1).split('/');
-  const [first, second, third, ...rest] = segments;
+  const [first, second, third, fourth, ...rest] = segments;
   if (rest.length > 0) return null;
+  if (fourth !== undefined) {
+    // Det enda med fyra segment: apps/:appId/members/:memberId. Ett tomt medlems-id är ingen rutt.
+    if (first === 'apps' && second !== undefined && second.length > 0 && third === 'members' && fourth.length > 0) {
+      return { kind: 'member', appId: second, memberId: fourth };
+    }
+    return null;
+  }
   if (first === 'me' && second === undefined) return { kind: 'me' };
   if (first === 'apps' && second === undefined) return { kind: 'apps' };
   if (first === 'apps' && second !== undefined && second.length > 0) {
@@ -201,6 +224,9 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
       }
     }
     const appId = await control.createApp();
+    // Ägaren ges åtkomst i control FÖRE appen sparas här: misslyckas det finns ingen app i
+    // byggverktyget som ägaren skulle vara utelåst från.
+    await control.grantAccess(appId, request.identity.userId, 'owner', request.identity.email);
     storage.insertApp(appId, request.identity.userId, name, nameIsDefault, iso());
     log({ level: 'info', event: 'app_created', appIdPrefix: appIdPrefix(appId), userId: request.identity.userId });
     return json(201, { appId });
@@ -304,12 +330,14 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
 
     pendingShares.set(userId, pending + 1);
     try {
-      await invitations.invite({
+      const invited = await invitations.invite({
         email,
         role: 'viewer',
         invitedBy: request.identity,
         app: { name: app.name, url: urls.published(app.appId) },
       });
+      // Att dela med sig själv är ofarligt: control nedgraderar aldrig ägaren till användare.
+      await control.grantAccess(storedAppId(app.appId), invited.userId, 'user', invited.email);
       storage.recordShare(app.appId, userId, email, iso());
     } catch (error) {
       if (error instanceof DataApiError && error.code === 'invalid_request') {
@@ -325,6 +353,41 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
     log({ level: 'info', event: 'app_shared', ...base });
     // Samma svar oavsett om adressen redan var inbjuden: det röjer inget om vilka som har konto.
     return json(200, { shared: true });
+  }
+
+  async function listMembers(request: PlatformRequest, appId: string): Promise<PlatformResponse> {
+    const app = ownedApp(appId, request.identity);
+    const entries = await control.listAccess(storedAppId(app.appId));
+    const owner = request.identity;
+    const members: BuilderAppMember[] = [];
+    for (const entry of entries) {
+      if (entry.role === 'owner') {
+        // Appar från före åtkomstlistan har ägaren utan adress i control; ägaren är den som frågar.
+        const email = entry.email ?? (entry.userId === owner.userId ? owner.email : '');
+        members.unshift({ memberId: entry.userId, email, role: 'owner' });
+      } else {
+        members.push({ memberId: entry.userId, email: entry.email ?? '', role: 'user' });
+      }
+    }
+    return json(200, { members });
+  }
+
+  async function removeMember(request: PlatformRequest, appId: string, memberId: string): Promise<PlatformResponse> {
+    if (!MEMBER_ID_PATTERN.test(memberId)) throw invalid('Personen du vill ta bort finns inte i listan.');
+    const app = ownedApp(appId, request.identity);
+    const ownMessage = 'Du äger appen och kan inte ta bort din egen åtkomst.';
+    if (memberId === request.identity.userId) throw invalid(ownMessage);
+    try {
+      await control.revokeAccess(storedAppId(app.appId), memberId);
+    } catch (error) {
+      // Control vägrar ta bort appens ägare — samma sak som ovan, om control och byggverktyget
+      // någon gång skulle vara oense om vem som äger appen.
+      if (controlErrorCode(error) === 'access_rejected') throw invalid(ownMessage);
+      throw error;
+    }
+    log({ level: 'info', event: 'access_revoked', appIdPrefix: appIdPrefix(app.appId), userId: request.identity.userId });
+    // Samma svar oavsett om personen hade åtkomst: borttagningen är idempotent.
+    return json(200, { removed: true });
   }
 
   async function dispatch(request: PlatformRequest): Promise<PlatformResponse> {
@@ -355,6 +418,10 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
         return open(request, route.appId);
       case 'share':
         return share(request, route.appId);
+      case 'members':
+        return listMembers(request, route.appId);
+      case 'member':
+        return removeMember(request, route.appId, route.memberId);
       case 'job':
         return getJob(request, route.jobId);
     }

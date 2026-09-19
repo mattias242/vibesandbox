@@ -260,7 +260,9 @@ describe('omdirigering till inloggningssidan', () => {
 
     it('en inloggad navigering omdirigeras inte', async () => {
       const identitet: Identity = { userId: 'u1', email: 'u1@example.org', roles: ['viewer'] };
-      const { port, appId } = await starta(medInloggningssida(skapaFejkadIdentityProvider(() => identitet)));
+      const leverantor = medInloggningssida(skapaFejkadIdentityProvider(() => identitet));
+      const { port, appId, uppsattning } = await starta(leverantor);
+      uppsattning.register.bevilja(appId, identitet.userId, 'owner');
 
       const svar = await anropa({ port, host: `${appId}.${DOMAN}`, path: '/', headers: NAVIGERING });
 

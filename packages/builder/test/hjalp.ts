@@ -3,6 +3,7 @@
  * data- och UI-katalog, och ett litet anropsverktyg mot `BuilderHandler`. Ingen produktionskod
  * importerar detta.
  */
+import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -12,10 +13,12 @@ import type {
   AgentEvent,
   AgentTurnInput,
   AgentTurnResult,
+  AppAccessRole,
   AppId,
   BuildResult,
   Identity,
   InvitationService,
+  InvitedUser,
   PlatformResponse,
   SourceFiles,
 } from '@vibesandbox/contracts';
@@ -62,8 +65,31 @@ export function slumpatAppId(): AppId {
   return id;
 }
 
+/** Samma form som control-paketets `ControlError`: ett namn och en fast kod. */
+export class FejkControlFel extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(code);
+    this.name = 'ControlError';
+    this.code = code;
+  }
+}
+
+export interface FejkAtkomst {
+  readonly userId: string;
+  role: AppAccessRole;
+  email: string | null;
+}
+
 export interface FejkControl extends BuilderControl {
   readonly anrop: string[];
+  /** Appar som control känner till. */
+  readonly appar: Set<string>;
+  /** Åtkomstlistan per app, i den ordning raderna lades till. Beter sig som control enligt jsdoc:en. */
+  readonly atkomst: Map<string, FejkAtkomst[]>;
+  /** Hur många gånger grantAccess anropats. (Åtkomstanropen hålls utanför `anrop`, som gäller bygg- och publiceringsflödet.) */
+  tilldelningar: number;
   readonly importerade: { appId: string; directory: string; versionId: string }[];
   readonly utkast: Map<string, string>;
   readonly publicerade: Map<string, string>;
@@ -78,10 +104,15 @@ export function fejkControl(): FejkControl {
     importerade: [],
     utkast: new Map(),
     publicerade: new Map(),
+    appar: new Set(),
+    atkomst: new Map(),
+    tilldelningar: 0,
     importFel: null,
     async createApp() {
       control.anrop.push('createApp');
-      return slumpatAppId();
+      const appId = slumpatAppId();
+      control.appar.add(appId);
+      return appId;
     },
     async importVersion(appId, directory) {
       control.anrop.push('importVersion');
@@ -98,6 +129,39 @@ export function fejkControl(): FejkControl {
     async publish(appId, versionId) {
       control.anrop.push('publish');
       control.publicerade.set(appId, versionId);
+    },
+    async grantAccess(appId, userId, role, email) {
+      control.tilldelningar += 1;
+      if (!control.appar.has(appId)) throw new FejkControlFel('app_not_found');
+      const rader = control.atkomst.get(appId) ?? [];
+      const befintlig = rader.find((rad) => rad.userId === userId);
+      const annanAgare = rader.find((rad) => rad.role === 'owner' && rad.userId !== userId);
+      if (role === 'owner' && annanAgare !== undefined) throw new FejkControlFel('access_rejected');
+      if (befintlig === undefined) {
+        rader.push({ userId, role, email });
+      } else {
+        // En ägare nedgraderas aldrig; en adress fylls i om den saknades.
+        if (role === 'owner') befintlig.role = 'owner';
+        if (befintlig.email === null) befintlig.email = email;
+      }
+      control.atkomst.set(appId, rader);
+    },
+    async revokeAccess(appId, userId) {
+      if (!control.appar.has(appId)) throw new FejkControlFel('app_not_found');
+      const rader = control.atkomst.get(appId) ?? [];
+      const rad = rader.find((kandidat) => kandidat.userId === userId);
+      if (rad === undefined) return;
+      if (rad.role === 'owner') throw new FejkControlFel('access_rejected');
+      control.atkomst.set(
+        appId,
+        rader.filter((kandidat) => kandidat !== rad),
+      );
+    },
+    async listAccess(appId) {
+      if (!control.appar.has(appId)) throw new FejkControlFel('app_not_found');
+      const rader = control.atkomst.get(appId) ?? [];
+      const ordnade = [...rader.filter((rad) => rad.role === 'owner'), ...rader.filter((rad) => rad.role !== 'owner')];
+      return ordnade.map((rad) => ({ ...rad, addedAt: '2026-09-19T08:00:00.000Z' }));
     },
   };
   return control;
@@ -211,19 +275,28 @@ export function fejkAgent(): FejkAgent {
 export interface FejkInbjudningar extends InvitationService {
   readonly inbjudna: Parameters<InvitationService['invite']>[0][];
   readonly kanda: Set<string>;
+  /** Adress → användar-id. Personerna ovan finns från början; nya adresser får ett slumpat id som identitetspaketets. */
+  readonly anvandare: Map<string, string>;
 }
 
 export function fejkInbjudningar(): FejkInbjudningar {
   const tjanst: FejkInbjudningar = {
     inbjudna: [],
     kanda: new Set(),
-    async invite(request) {
+    anvandare: new Map([ANNA, BERTIL, ADAM, VERA].map((person) => [person.email, person.userId])),
+    async invite(request): Promise<InvitedUser> {
       const adress = request.email.trim().toLowerCase();
       if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(adress)) {
         throw new DataApiError('invalid_request', 'Ogiltig adress.');
       }
       tjanst.inbjudna.push(request);
       tjanst.kanda.add(adress);
+      let userId = tjanst.anvandare.get(adress);
+      if (userId === undefined) {
+        userId = randomBytes(16).toString('base64url');
+        tjanst.anvandare.set(adress, userId);
+      }
+      return { userId, email: adress };
     },
   };
   return tjanst;

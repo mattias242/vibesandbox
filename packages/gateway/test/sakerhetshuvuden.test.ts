@@ -16,6 +16,7 @@ import {
   skapaTestUppsattning,
   textfil,
   vardnamnForApp,
+  STANDARDANVANDARE,
 } from './fejkar.ts';
 
 function forvantaSakerhetshuvuden(svar: AnropSvar) {
@@ -39,6 +40,7 @@ describe('säkerhetshuvuden på alla svar', () => {
     const appId = skapaAppId('sakerhet-200-api');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const svar = await anropa({ port: server.port, path: '/_api/whoami', host: vardnamnForApp(appId) });
@@ -52,6 +54,7 @@ describe('säkerhetshuvuden på alla svar', () => {
     const appId = skapaAppId('sakerhet-401');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaNekandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const svar = await anropa({ port: server.port, path: '/_api/whoami', host: vardnamnForApp(appId) });
@@ -85,6 +88,7 @@ describe('säkerhetshuvuden på alla svar', () => {
     const appId = skapaAppId('sakerhet-200-statisk');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     uppsattning.filer.satt(appId, 'published', '/index.html', textfil('<html>hej</html>'));
     server = await startaTestserver(createGateway(uppsattning.options));
 
@@ -98,6 +102,7 @@ describe('säkerhetshuvuden på alla svar', () => {
     const appId = skapaAppId('sakerhet-404-statisk');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     uppsattning.filer.satt(appId, 'published', '/index.html', textfil('<html>hej</html>'));
     server = await startaTestserver(createGateway(uppsattning.options));
 
@@ -111,6 +116,7 @@ describe('säkerhetshuvuden på alla svar', () => {
     const appId = skapaAppId('sakerhet-meta-tagg');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     uppsattning.filer.satt(
       appId,
       'published',

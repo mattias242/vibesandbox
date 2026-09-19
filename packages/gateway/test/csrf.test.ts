@@ -10,7 +10,13 @@ import type { ApiErrorBody } from '@vibesandbox/contracts';
 import { createGateway } from '../src/index.ts';
 import { anropa, json, startaTestserver } from './hjalp.ts';
 import type { Testserver } from './hjalp.ts';
-import { skapaAppId, skapaGodkannandeIdentityProvider, skapaTestUppsattning, vardnamnForApp } from './fejkar.ts';
+import {
+  STANDARDANVANDARE,
+  skapaAppId,
+  skapaGodkannandeIdentityProvider,
+  skapaTestUppsattning,
+  vardnamnForApp,
+} from './fejkar.ts';
 
 describe('CSRF-skydd på skrivande anrop', () => {
   let server: Testserver | undefined;
@@ -24,6 +30,7 @@ describe('CSRF-skydd på skrivande anrop', () => {
     const appId = skapaAppId(`csrf-${metod.toLowerCase()}`);
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const vag = metod === 'POST' ? '/_api/collections/poster/docs' : '/_api/collections/poster/docs/dok-1';
@@ -44,6 +51,7 @@ describe('CSRF-skydd på skrivande anrop', () => {
     const appId = skapaAppId('csrf-post-giltig');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const svar = await anropa({
@@ -63,6 +71,7 @@ describe('CSRF-skydd på skrivande anrop', () => {
     const appId = skapaAppId('csrf-get');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const svar = await anropa({

@@ -97,6 +97,10 @@ export function createStorage(db: BuilderDatabase) {
       return db.all(sql.LIST_OWNED_APPS, { owner }).map(toApp);
     },
 
+    listAppOwners(): { appId: string; owner: string }[] {
+      return db.all(sql.LIST_APP_OWNERS, {}).map((row) => ({ appId: text(row, 'app_id'), owner: text(row, 'owner_user_id') }));
+    },
+
     markPublished(appId: string, versionId: string, now: string): void {
       db.run(sql.SET_PUBLISHED, { appId, versionId, now });
     },

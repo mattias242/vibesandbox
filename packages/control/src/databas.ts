@@ -15,7 +15,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { StatementSync } from 'node:sqlite';
 
 /** Höjs vid varje schemaändring, tillsammans med ett nytt steg i `MIGRATIONS`. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** CLI:t får köras bredvid en server som är igång; så länge väntar vi på den andras lås. */
 const BUSY_TIMEOUT_MS = 5000;
@@ -25,7 +25,7 @@ const DATABASE_FILE = 'control.sqlite';
 
 /**
  * Steg N tar databasen från schemaversion N till N+1. Nya steg läggs SIST; ett steg som har
- * körts i drift ändras aldrig. Användare, delningar och granskningskö kommer som senare steg.
+ * körts i drift ändras aldrig. Granskningskö m.m. kommer som senare steg.
  *
  * `STRICT` gör att SQLite vägrar fel datatyp i stället för att tyst omvandla den.
  * `published_version`/`draft_version` är två skilda pekare: utkastet är ogranskad kod och får
@@ -58,6 +58,28 @@ const MIGRATIONS: readonly string[] = [
   ) STRICT, WITHOUT ROWID;
 
   CREATE INDEX version_files_by_hash ON version_files (hash);
+  `,
+
+  // Steg 1 → 2: vem som får använda en app. En rad per (app, användare). `owner` är den som
+  // byggde appen och når både utkast och publicerat; `user` har fått appen delad med sig och når
+  // bara det publicerade. Plattformens roller finns medvetet inte här — de ger ingen genväg.
+  //
+  // ON DELETE CASCADE: en borttagen app får inte lämna kvar åtkomst som skulle gälla om samma id
+  // någonsin återkom. `email` är till för ägarens åtkomstlista och får aldrig loggas.
+  //
+  // Det partiella unika indexet gör "högst en ägare per app" till en egenskap hos databasen och
+  // inte bara hos koden: två samtidiga processer (servern och CLI:t) kan inte båda lyckas.
+  `
+  CREATE TABLE app_access (
+    app_id   TEXT NOT NULL REFERENCES apps (app_id) ON DELETE CASCADE,
+    user_id  TEXT NOT NULL,
+    role     TEXT NOT NULL CHECK (role IN ('owner', 'user')),
+    email    TEXT,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (app_id, user_id)
+  ) STRICT;
+
+  CREATE UNIQUE INDEX app_access_one_owner ON app_access (app_id) WHERE role = 'owner';
   `,
 ];
 

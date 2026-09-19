@@ -388,6 +388,44 @@ describe('byggverktygets värd', () => {
       expect(ratt.status).toBe(200);
     });
 
+    describe('att ta bort någons åtkomst till en app (DELETE …/members/:memberId)', () => {
+      // Ett förfalskat anrop hit tar bort en persons åtkomst, eller — om det lyckades mot ägaren —
+      // låser ute någon. Samma stränga CSRF som övriga skrivningar, prövat på just den här rutten.
+      const appId = skapaAppId('delad-app');
+      const vag = `/_api/builder/apps/${appId}/members/anv-bertil`;
+      const taBort = (port: number, headers: Record<string, string>) =>
+        anropa({ port, method: 'DELETE', host: BYGG, path: vag, headers });
+
+      it('utan skyddshuvud ⇒ 403, handlern nås aldrig', async () => {
+        const { port, handler } = await starta();
+        forvantaNeka(await taBort(port, { Origin: BYGG_ORIGIN }), 403, handler);
+      });
+
+      it.each([
+        ['appens egen publicerade värd', `https://${appId}.${DOMAN}`],
+        ['appens egen förhandsvisning', `https://p-${appId}.${DOMAN}`],
+        ['en annan webbplats', 'https://evil.test'],
+        ['null', 'null'],
+      ])('med Origin från %s ⇒ 403, handlern nås aldrig', async (_beskrivning, origin) => {
+        const { port, handler } = await starta();
+        forvantaNeka(await taBort(port, { [CSRF_HEADER]: '1', Origin: origin }), 403, handler);
+      });
+
+      it('utan Origin ⇒ 403, handlern nås aldrig', async () => {
+        const { port, handler } = await starta();
+        forvantaNeka(await taBort(port, { [CSRF_HEADER]: '1' }), 403, handler);
+      });
+
+      it('med skyddshuvud och exakt Origin ⇒ handlern nås med rätt metod och sökväg', async () => {
+        const { port, handler } = await starta();
+        const svar = await taBort(port, { [CSRF_HEADER]: '1', Origin: BYGG_ORIGIN });
+        expect(svar.status).toBe(200);
+        expect(handler.anrop).toHaveLength(1);
+        expect(handler.anrop[0]?.method).toBe('DELETE');
+        expect(handler.anrop[0]?.path).toBe(vag);
+      });
+    });
+
     it('dubbla Origin-huvuden ⇒ 400, även om ett av dem är rätt', async () => {
       const { port, handler } = await starta();
 

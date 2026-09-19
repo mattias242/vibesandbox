@@ -15,6 +15,7 @@ import { resolve } from 'node:path';
 import { API_PREFIX } from '@vibesandbox/contracts';
 import type { Agent, BuilderHandler, Identity, InvitationService, PlatformRequest, SourceFiles } from '@vibesandbox/contracts';
 import { createApi } from './api.ts';
+import { grantOwnersOnStartup } from './atkomst.ts';
 import type { BuilderUrls } from './api.ts';
 import type { BuilderControl } from './control.ts';
 import { openBuilderDatabase } from './databas.ts';
@@ -27,7 +28,7 @@ import { internal, notFound, problemResponse } from './svar.ts';
 
 export type { BuilderUrls } from './api.ts';
 export { MAX_SHARES_PER_HOUR } from './api.ts';
-export type { BuilderControl } from './control.ts';
+export type { BuilderAccessEntry, BuilderControl } from './control.ts';
 export type { BuilderLogEntry, BuilderLogEvent, BuilderLogger } from './logg.ts';
 
 export interface BuilderOptions {
@@ -96,6 +97,9 @@ export function createBuilder(options: BuilderOptions): Builder {
     now,
   });
   const site = createStaticSite(options.ui.directory, log);
+  // Körs i bakgrunden från start; API-anropen väntar in den (den avvisar aldrig — se atkomst.ts),
+  // så att ingen åtkomstlista läses eller ändras innan ägarna finns i control.
+  const ownersGranted = grantOwnersOnStartup(storage, options.control, log);
 
   let closed = false;
   let closing: Promise<void> | null = null;
@@ -104,13 +108,17 @@ export function createBuilder(options: BuilderOptions): Builder {
     async handle(request: PlatformRequest) {
       if (closed || closing !== null) return problemResponse(internal());
       const path = request.path;
-      if (path === API_PREFIX || path.startsWith(`${API_PREFIX}/`)) return api.handle(request);
+      if (path === API_PREFIX || path.startsWith(`${API_PREFIX}/`)) {
+        await ownersGranted;
+        return api.handle(request);
+      }
       if (path.startsWith('/_api')) return problemResponse(notFound());
       return site.handle(request.method, path);
     },
 
     close() {
       closing ??= (async () => {
+        await ownersGranted;
         await runner.close();
         closed = true;
         db.close();

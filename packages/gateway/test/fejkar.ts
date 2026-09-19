@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import type {
   AppFile,
   AppFiles,
+  AppAccessRole,
   AppId,
   AppRegistry,
   AuthRequest,
@@ -134,24 +135,58 @@ export function skapaKrashandeIdentityProvider(
   });
 }
 
+/**
+ * Den som `skapaGodkannandeIdentityProvider()` loggar in när testet inte anger någon. Att vara
+ * inloggad ger ingen åtkomst till en app: testet ger den uttryckligen med
+ * `register.bevilja(appId, STANDARDANVANDARE.userId, 'owner')`.
+ */
+export const STANDARDANVANDARE: Identity = Object.freeze(
+  skapaIdentitet({ userId: 'anv-standard', email: 'standard.anvandare@exempel.se' }),
+);
+
 /** Leverantör som alltid loggar in samma identitet, oavsett förfrågan. */
-export function skapaGodkannandeIdentityProvider(identitet: Identity = skapaIdentitet()): FejkadIdentityProvider {
+export function skapaGodkannandeIdentityProvider(identitet: Identity = STANDARDANVANDARE): FejkadIdentityProvider {
   return skapaFejkadIdentityProvider(() => identitet);
 }
 
 // ── AppRegistry ──────────────────────────────────────────────────────────────────
 
+export interface InspelatAtkomstAnrop {
+  readonly appId: AppId;
+  readonly userId: string;
+}
+
 export interface FejkatRegister extends AppRegistry {
-  /** Varje app-id gatewayn frågade efter, i ordning. */
+  /** Varje app-id gatewayn frågade efter med `find`, i ordning. */
   readonly anrop: AppId[];
+  /** Varje `accessFor`-anrop, i ordning — så att tester kan bevisa VILKA värden som frågades om. */
+  readonly atkomstAnrop: InspelatAtkomstAnrop[];
   registrera(appId: string, app: { readonly published?: boolean; readonly draft?: boolean }): void;
+  /**
+   * Ger `userId` rollen i appen. Utan en sådan rad har ingen åtkomst — inte ens den som är
+   * inloggad eller admin. Testerna ger därför åtkomst UTTRYCKLIGEN; fejken har ingen genväg.
+   */
+  bevilja(appId: string, userId: string, roll: AppAccessRole): void;
+  /** Tar bort raden. Gäller från och med nästa `accessFor`, precis som i det riktiga registret. */
+  aterkalla(appId: string, userId: string): void;
+  /**
+   * Styr `accessFor` helt: kastar ett fel eller returnerar vad som helst (även sådant som inte är
+   * en `AppAccessRole` — ett trasigt register följer inte typerna). `null` återställer.
+   */
+  styrAtkomst(beteende: ((appId: AppId, userId: string) => unknown) | null): void;
 }
 
 export function skapaFejkatRegister(): FejkatRegister {
   const appar = new Map<string, RegisteredApp>();
+  const roller = new Map<string, AppAccessRole>();
   const anrop: AppId[] = [];
+  const atkomstAnrop: InspelatAtkomstAnrop[] = [];
+  let styrning: ((appId: AppId, userId: string) => unknown) | null = null;
+  // Nyckeln kan inte krocka: app-id består bara av base32-tecken, aldrig NUL.
+  const nyckel = (appId: string, userId: string) => `${appId}\u0000${userId}`;
   return {
     anrop,
+    atkomstAnrop,
     registrera(appId, app) {
       appar.set(appId, {
         appId: appId as AppId,
@@ -159,9 +194,25 @@ export function skapaFejkatRegister(): FejkatRegister {
         draft: app.draft ?? false,
       });
     },
+    bevilja(appId, userId, roll) {
+      roller.set(nyckel(appId, userId), roll);
+    },
+    aterkalla(appId, userId) {
+      roller.delete(nyckel(appId, userId));
+    },
+    styrAtkomst(beteende) {
+      styrning = beteende;
+    },
     async find(appId) {
       anrop.push(appId);
       return appar.get(appId) ?? null;
+    },
+    async accessFor(appId, userId) {
+      atkomstAnrop.push({ appId, userId });
+      if (styrning !== null) return (await styrning(appId, userId)) as AppAccessRole | null;
+      // Som kontraktet: en app som inte finns ger ingen roll, oavsett rader.
+      if (!appar.has(appId)) return null;
+      return roller.get(nyckel(appId, userId)) ?? null;
     },
   };
 }

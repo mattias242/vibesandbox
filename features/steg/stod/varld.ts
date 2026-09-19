@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { World, setWorldConstructor } from '@cucumber/cucumber';
 import { BUILDER_API_PREFIX, CSRF_HEADER, DEFAULT_TENANT_LIMITS } from '@vibesandbox/contracts';
-import type { AgentEvent, AppId, BuilderJob, ChatMessage, Identity, JsonObject, LlmProvider, TenantLimits } from '@vibesandbox/contracts';
+import type { AgentEvent, AppId, BuilderJob, ChatMessage, Identity, JsonObject, LlmProvider, Role, TenantLimits } from '@vibesandbox/contracts';
 import { createControl } from '@vibesandbox/control';
 import type { Control } from '@vibesandbox/control';
 import { signTestIdentity, testLoginPath } from '@vibesandbox/gateway';
@@ -64,6 +64,11 @@ export interface AnropTillApp {
   readonly app: string;
   /** Förhandsvisningen (utkastet) i stället för den publicerade appen. */
   readonly forhandsvisning?: boolean;
+  /**
+   * Ett annat app-id än appens eget — för att jämföra med svaret för en app som INTE finns,
+   * med exakt samma anrop i övrigt.
+   */
+  readonly appId?: AppId;
   /** Vem som anropar. Utelämnas det skickas ingen inloggning alls. */
   readonly person?: string;
   readonly metod?: string;
@@ -102,6 +107,11 @@ export class Varld extends World {
 
   /** Svaren från det senaste När-steget. Ett steg som prövar flera varianter lägger alla här. */
   svar: Svar[] = [];
+  /**
+   * Anropen bakom `svar`, i samma ordning — sätts av de När-steg vars utfall jämförs med "samma
+   * svar som för en app som inte finns", så att jämförelsen kan göra exakt samma anrop igen.
+   */
+  appanrop: AnropTillApp[] = [];
   senastInloggad: string | undefined;
   okantAppId: AppId | undefined;
   /** Sökvägen till "den sidan" i scenariot om egna skyddsregler. */
@@ -113,6 +123,15 @@ export class Varld extends World {
   readonly senastSparat = new Map<string, SparatDokument>();
   /** Id:n på dokument som skapats i en app, i ordning — för "raderar ett dokument". */
   readonly dokumentIApp = new Map<string, string[]>();
+  /**
+   * Användar-id som plattformen gav en person när en app delades med hen. Loggar personen in
+   * senare i scenariot är det med just det id:t — annars vore det en annan användare.
+   */
+  readonly anvandarIdn = new Map<string, string>();
+  /** Appar som scenariot publicerat direkt i control (`publicera`), utan byggverktyget. */
+  readonly #direktPublicerade = new Set<string>();
+  /** Personer som fått de direkt publicerade apparna — se `publicera`. */
+  readonly #delasMed = new Set<string>();
 
   // ── Byggverktyget (bara i scenarierna under features/bygga/) ──────────────────
   /** Sätts av kroken innan plattformen startar. */
@@ -229,9 +248,32 @@ export class Varld extends World {
     return this.control.importVersion(this.appId(namn), katalog);
   }
 
+  /**
+   * "Appen X är publicerad" (isoleringsscenarierna): appen skapas och publiceras direkt i control,
+   * som CLI:t gör, utan byggverktyget. Scenarierna handlar om isolering av DATA mellan appar och
+   * användare — inte om vem som fått appen delad med sig — så appen är publicerad FÖR personerna
+   * i scenariot: Anna är dess ägare och övriga inloggade (Bertil) har fått den delad med sig.
+   * Åtkomsten ges vid inloggningen (`gePubliceradeAppar`) eller här, om personen redan loggat in.
+   * Den som bara dyker upp i ett När-steg (t.ex. en manipulerad inloggning) får ingen åtkomst.
+   */
   async publicera(namn: string, val: FixturVal = {}): Promise<void> {
-    if (!this.appar.has(namn)) this.appar.set(namn, await this.control.createApp());
+    if (!this.appar.has(namn)) {
+      this.appar.set(namn, await this.control.createApp());
+      this.#direktPublicerade.add(namn);
+      for (const person of this.#delasMed) await this.#geAtkomst(namn, person);
+    }
     await this.control.publish(this.appId(namn), await this.importeraFixtur(namn, val));
+  }
+
+  /** Ger en inloggad person åtkomst till alla appar som scenariot publicerat direkt — se `publicera`. */
+  async gePubliceradeAppar(namn: string): Promise<void> {
+    this.#delasMed.add(namn);
+    for (const app of this.#direktPublicerade) await this.#geAtkomst(app, namn);
+  }
+
+  async #geAtkomst(app: string, namn: string): Promise<void> {
+    const { userId, email } = this.person(namn).identitet;
+    await this.control.grantAccess(this.appId(app), userId, namn === 'Anna' ? 'owner' : 'user', email);
   }
 
   async sattUtkast(namn: string): Promise<void> {
@@ -239,14 +281,24 @@ export class Varld extends World {
   }
 
   /** Adressen som den står i webbläsaren, med port: `<app-id>.appar.test:<port>`. */
-  adress(namn: string, forhandsvisning = false): string {
-    return `${forhandsvisning ? 'p-' : ''}${this.appId(namn)}.${DOMAN}:${this.port}`;
+  adress(namn: string, forhandsvisning = false, appId: AppId = this.appId(namn)): string {
+    return `${forhandsvisning ? 'p-' : ''}${appId}.${DOMAN}:${this.port}`;
   }
 
   // ── Personer ─────────────────────────────────────────────────────────────────
 
-  loggaIn(namn: string, epost = `${namn.toLowerCase()}@example.org`): Person {
-    const identitet: Identity = { userId: `anv-${namn.toLowerCase()}`, email: epost, roles: ['viewer'] };
+  /** Adressen en person har i scenariot — även innan hen loggat in (t.ex. när någon delar med hen). */
+  epost(namn: string): string {
+    return this.personer.get(namn)?.identitet.email ?? `${namn.toLowerCase()}@example.org`;
+  }
+
+  /** Personens användar-id: det plattformen gav hen vid en delning, annars ett eget för scenariot. */
+  anvandarId(namn: string): string {
+    return this.anvandarIdn.get(namn) ?? `anv-${namn.toLowerCase()}`;
+  }
+
+  loggaIn(namn: string, epost = this.epost(namn), roller: readonly Role[] = ['viewer']): Person {
+    const identitet: Identity = { userId: this.anvandarId(namn), email: epost, roles: roller };
     const person: Person = { namn, identitet, inloggning: signTestIdentity(identitet, TESTHEMLIGHET) };
     this.personer.set(namn, person);
     this.senastInloggad = namn;
@@ -270,7 +322,7 @@ export class Varld extends World {
       port: this.port,
       metod,
       sokvag: anrop.sokvag ?? '/',
-      host: this.adress(anrop.app, anrop.forhandsvisning === true),
+      host: this.adress(anrop.app, anrop.forhandsvisning === true, anrop.appId),
       huvuden: { ...huvuden, ...anrop.huvuden },
       ...(anrop.json === undefined ? {} : { json: anrop.json }),
     });
@@ -302,7 +354,7 @@ export class Varld extends World {
   }
 
   loggaInSomByggare(namn: string): Person {
-    const identitet: Identity = { userId: `anv-${namn.toLowerCase()}`, email: `${namn.toLowerCase()}@example.org`, roles: ['builder'] };
+    const identitet: Identity = { userId: this.anvandarId(namn), email: this.epost(namn), roles: ['builder'] };
     const person: Person = { namn, identitet, inloggning: signTestIdentity(identitet, TESTHEMLIGHET) };
     this.personer.set(namn, person);
     this.senastInloggad = namn;

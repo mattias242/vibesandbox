@@ -10,7 +10,13 @@ import type { ApiErrorBody, ApiErrorCode } from '@vibesandbox/contracts';
 import { createGateway } from '../src/index.ts';
 import { anropa, anropaRatt, json, startaTestserver } from './hjalp.ts';
 import type { Testserver } from './hjalp.ts';
-import { skapaAppId, skapaGodkannandeIdentityProvider, skapaTestUppsattning, vardnamnForApp } from './fejkar.ts';
+import {
+  STANDARDANVANDARE,
+  skapaAppId,
+  skapaGodkannandeIdentityProvider,
+  skapaTestUppsattning,
+  vardnamnForApp,
+} from './fejkar.ts';
 import type { TestUppsattning } from './fejkar.ts';
 
 let raknare = 0;
@@ -23,6 +29,7 @@ function nyUppsattning(): { appId: string; uppsattning: TestUppsattning } {
   const appId = nastaAppId();
   const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
   uppsattning.register.registrera(appId, { published: true });
+  uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
   return { appId, uppsattning };
 }
 

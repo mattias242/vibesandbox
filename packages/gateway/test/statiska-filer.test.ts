@@ -15,6 +15,7 @@ import {
   skapaTestUppsattning,
   textfil,
   vardnamnForApp,
+  STANDARDANVANDARE,
 } from './fejkar.ts';
 import type { FejkadeFiler } from './fejkar.ts';
 
@@ -40,6 +41,7 @@ describe('statiska filer', () => {
     const appId = skapaAppId('statisk-index');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     uppsattning.filer.satt(appId, 'published', '/index.html', textfil('<html>startsidan</html>'));
     server = await startaTestserver(createGateway(uppsattning.options));
 
@@ -53,6 +55,7 @@ describe('statiska filer', () => {
     const appId = skapaAppId('statisk-spa');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     uppsattning.filer.satt(appId, 'published', '/index.html', textfil('<html>startsidan</html>'));
     server = await startaTestserver(createGateway(uppsattning.options));
 
@@ -66,6 +69,7 @@ describe('statiska filer', () => {
     const appId = skapaAppId('statisk-404-andelse');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     uppsattning.filer.satt(appId, 'published', '/index.html', textfil('<html>startsidan</html>'));
     server = await startaTestserver(createGateway(uppsattning.options));
 
@@ -78,6 +82,7 @@ describe('statiska filer', () => {
     const appId = skapaAppId('statisk-content-type');
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     uppsattning.filer.satt(appId, 'published', '/index.html', textfil('<html></html>'));
     uppsattning.filer.satt(
       appId,
@@ -108,6 +113,7 @@ describe('statiska filer', () => {
       const appId = skapaAppId('statisk-traversering');
       const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider() });
       uppsattning.register.registrera(appId, { published: true });
+      uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
       uppsattning.filer.satt(appId, 'published', '/index.html', textfil('<html>startsidan</html>'));
       server = await startaTestserver(createGateway(uppsattning.options));
 

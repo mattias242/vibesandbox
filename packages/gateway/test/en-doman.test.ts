@@ -14,7 +14,7 @@ import { createGateway } from '../src/index.ts';
 import { createHostParser, parseHost } from '../src/vardnamn.ts';
 import { anropa, json, startaTestserver } from './hjalp.ts';
 import type { Testserver } from './hjalp.ts';
-import { skapaAppId, skapaGodkannandeIdentityProvider, skapaTestUppsattning } from './fejkar.ts';
+import { STANDARDANVANDARE, skapaAppId, skapaGodkannandeIdentityProvider, skapaTestUppsattning } from './fejkar.ts';
 
 const DOMAN = 'plattform.test';
 const ENA_DOMANEN = { appDomain: DOMAN, previewDomain: DOMAN };
@@ -112,6 +112,7 @@ describe('gatewayn med en enda domän', () => {
     const appId = skapaAppId('en-doman-bada');
     const uppsattning = nyUppsattning();
     uppsattning.register.registrera(appId, { published: true, draft: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     await anropa({ port: server.port, path: '/_api/collections/poster/docs', host: `${appId}.${DOMAN}` });
@@ -127,6 +128,7 @@ describe('gatewayn med en enda domän', () => {
     const appId = skapaAppId('en-doman-isolering');
     const uppsattning = nyUppsattning();
     uppsattning.register.registrera(appId, { published: true, draft: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     await anropa({
@@ -153,7 +155,9 @@ describe('gatewayn med en enda domän', () => {
     const baraPublicerad = skapaAppId('en-doman-bara-publicerad');
     const uppsattning = nyUppsattning();
     uppsattning.register.registrera(baraUtkast, { draft: true });
+    uppsattning.register.bevilja(baraUtkast, STANDARDANVANDARE.userId, 'owner');
     uppsattning.register.registrera(baraPublicerad, { published: true });
+    uppsattning.register.bevilja(baraPublicerad, STANDARDANVANDARE.userId, 'owner');
     server = await startaTestserver(createGateway(uppsattning.options));
 
     const publiceradAdress = await anropa({ port: server.port, path: '/_api/whoami', host: `${baraUtkast}.${DOMAN}` });
@@ -179,6 +183,7 @@ describe('gatewayn med en enda domän', () => {
       const uppsattning = nyUppsattning();
       // Appen FINNS — nekandet ska bero på värdnamnet, inte på att registret är tomt.
       uppsattning.register.registrera(id, { published: true, draft: true });
+      uppsattning.register.bevilja(id, STANDARDANVANDARE.userId, 'owner');
       server = await startaTestserver(createGateway(uppsattning.options));
 
       for (const path of ['/_api/whoami', '/']) {

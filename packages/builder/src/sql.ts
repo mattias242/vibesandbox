@@ -133,6 +133,9 @@ export const LIST_OWNED_APPS = `
   ORDER BY a.updated_at DESC, a.rowid DESC
 `;
 
+/** Alla appar och deras ägare — bara för att ge ägarna åtkomst i control när byggverktyget startar. */
+export const LIST_APP_OWNERS = `SELECT app_id, owner_user_id FROM apps ORDER BY rowid`;
+
 export const TOUCH_APP = `UPDATE apps SET updated_at = :now WHERE app_id = :appId`;
 
 export const RENAME_DEFAULT_APP = `

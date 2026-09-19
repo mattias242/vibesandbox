@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isAppId } from '@vibesandbox/contracts';
 import type { AppId } from '@vibesandbox/contracts';
+import { SCHEMA_VERSION } from '../src/databas.ts';
 import { ControlError, createControl } from '../src/index.ts';
 import type { Control } from '../src/index.ts';
 import { MINSTA_APP, skapaTempKatalog, skrivTrad } from './hjalp.ts';
@@ -141,7 +142,8 @@ describe('Appregistret', () => {
     expect(existsSync(fil)).toBe(true);
     const db = new DatabaseSync(fil, { readOnly: true });
     try {
-      expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 1 });
+      expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: SCHEMA_VERSION });
+      expect(SCHEMA_VERSION).toBe(2);
     } finally {
       db.close();
     }

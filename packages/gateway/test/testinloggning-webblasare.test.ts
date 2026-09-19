@@ -124,8 +124,9 @@ describe('testinloggning via kaka', () => {
     });
 
     it('hela flödet: logga in, öppna appen och fråga vem man är — utan Authorization', async () => {
-      const { port, host } = await starta();
+      const { port, host, appId, uppsattning } = await starta();
       const identitet = skapaIdentitet({ userId: 'anv-webblasare', email: 'vera@example.org' });
+      uppsattning.register.bevilja(appId, identitet.userId, 'owner');
 
       const inloggning = await anropa({ port, host, path: testLoginPath(identitet, HEMLIGHET) });
       const kakan = (enHuvud(inloggning, 'set-cookie') ?? '').split(';')[0] ?? '';
@@ -230,8 +231,9 @@ describe('testinloggning via kaka', () => {
 
   describe('kakan som inloggning', () => {
     it('giltig kaka bland okända kakor ⇒ inloggad', async () => {
-      const { port, host } = await starta();
+      const { port, host, appId, uppsattning } = await starta();
       const identitet = skapaIdentitet({ userId: 'anv-kaka' });
+      uppsattning.register.bevilja(appId, identitet.userId, 'owner');
 
       const svar = await anropa({
         port,
@@ -283,8 +285,9 @@ describe('testinloggning via kaka', () => {
     });
 
     it('två Cookie-huvuden där bara det ena bär vår kaka ⇒ inloggad', async () => {
-      const { port, host } = await starta();
+      const { port, host, appId, uppsattning } = await starta();
       const token = tokenFor(skapaIdentitet({ userId: 'anv-tva-huvuden' }));
+      uppsattning.register.bevilja(appId, 'anv-tva-huvuden', 'owner');
 
       const svar = await anropa({ port, host, path: '/_api/whoami', headers: { Cookie: ['tema=mork', kaka(token)] } });
 
@@ -330,9 +333,12 @@ describe('testinloggning via kaka', () => {
     });
 
     it('Authorization vinner över kakan', async () => {
-      const { port, host } = await starta();
+      const { port, host, appId, uppsattning } = await starta();
       const viaHuvud = skapaIdentitet({ userId: 'via-authorization' });
       const viaKaka = skapaIdentitet({ userId: 'via-kaka' });
+      // Båda har åtkomst, så att det är inloggningskällan och inte åtkomsten som avgör svaret.
+      uppsattning.register.bevilja(appId, viaHuvud.userId, 'owner');
+      uppsattning.register.bevilja(appId, viaKaka.userId, 'owner');
 
       const svar = await anropa({
         port,
@@ -358,8 +364,9 @@ describe('testinloggning via kaka', () => {
     });
 
     it('Authorization gäller även när kakan är tvetydig', async () => {
-      const { port, host } = await starta();
+      const { port, host, appId, uppsattning } = await starta();
       const identitet = skapaIdentitet({ userId: 'via-authorization' });
+      uppsattning.register.bevilja(appId, identitet.userId, 'owner');
 
       const svar = await anropa({
         port,
@@ -375,6 +382,8 @@ describe('testinloggning via kaka', () => {
   describe('CSRF blir skarpt med kakor', () => {
     async function inloggad(): Promise<Startad & { readonly kakan: string }> {
       const startad = await starta();
+      // Åtkomst till appen, så att det är CSRF-skyddet — inte åtkomsten — som prövas här.
+      startad.uppsattning.register.bevilja(startad.appId, 'anv-csrf', 'owner');
       return { ...startad, kakan: kaka(tokenFor(skapaIdentitet({ userId: 'anv-csrf' }))) };
     }
 
@@ -459,8 +468,9 @@ describe('testinloggning via kaka', () => {
 
   describe('loggen', () => {
     it('innehåller aldrig token, kakvärde eller frågesträng', async () => {
-      const { port, host, poster } = await starta();
+      const { port, host, poster, appId, uppsattning } = await starta();
       const identitet = skapaIdentitet({ userId: 'anv-logg', email: 'loggad.person@example.org' });
+      uppsattning.register.bevilja(appId, identitet.userId, 'owner');
       const token = tokenFor(identitet);
       const utgangen = tokenFor(identitet, HEMLIGHET, -1);
 

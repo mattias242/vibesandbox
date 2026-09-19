@@ -7,6 +7,7 @@
  *   - adressen "öppna" ger: i testläge en testinloggningsadress på målvärden; med e-postinloggning
  *     en engångslänk på målvärden (en minut, same-site) som loggar in där utan ny kod
  */
+import { createHmac } from 'node:crypto';
 import { DataApiError } from '@vibesandbox/contracts';
 import type { Identity, IdentityProvider, InvitationService, Role } from '@vibesandbox/contracts';
 import { createTestIdentityProvider, testLoginPath } from '@vibesandbox/gateway';
@@ -23,6 +24,25 @@ import type { PlatformLogger } from './logg.ts';
 
 /** En testinloggningsadress är en inloggning i sig; den ska inte leva längre än en arbetsstund. */
 const TEST_OPEN_LIFETIME_SECONDS = 15 * 60;
+
+/** Binder id-härledningen till just det här ändamålet (samma hemlighet signerar testinloggningar). */
+const TEST_USER_ID_CONTEXT = 'vibesandbox-test-user-id.v1.';
+
+/**
+ * Användar-id:t för en adress i testläge. Testinloggningen har inget användarregister — id:t i en
+ * testinloggning är vad den som signerar skriver dit — så inbjudan HÄRLEDER ett id i stället:
+ * `test-` + HMAC-SHA256(testhemligheten, adressen), 128 bitar i base64url. Samma adress (efter
+ * normalisering) och hemlighet ger alltid samma id; utan hemligheten går det inte att räkna fram
+ * ur adressen (samma princip som den riktiga tjänstens slumpade id). Den som vill logga in som
+ * den inbjudna i testläge signerar en testidentitet med just detta id.
+ * KASTAR `DataApiError('invalid_request')` för en ogiltig adress.
+ */
+export function testUserIdFor(email: string, testSecret: string): string {
+  const normalized = normalizeEmail(email);
+  if (normalized === null) throw new DataApiError('invalid_request', 'E-postadressen är ogiltig.');
+  const digest = createHmac('sha256', testSecret).update(`${TEST_USER_ID_CONTEXT}${normalized}`).digest();
+  return `test-${digest.subarray(0, 16).toString('base64url')}`;
+}
 
 export interface PlatformIdentity {
   readonly provider: IdentityProvider;
@@ -47,9 +67,11 @@ export function createPlatformIdentity(config: PlatformConfig, log: PlatformLogg
       invitations: {
         async invite(request) {
           // Samma krav på adressen som den riktiga tjänsten, så att byggverktyget beter sig likadant.
-          if (normalizeEmail(request.email) === null) throw new DataApiError('invalid_request', 'E-postadressen är ogiltig.');
+          const email = normalizeEmail(request.email);
+          if (email === null) throw new DataApiError('invalid_request', 'E-postadressen är ogiltig.');
           // Det finns ingen mejltjänst i testläge. Inbjudan noteras — utan adressen.
           log({ source: 'platform', level: 'info', event: 'invitation_noted', userId: request.invitedBy.userId, role: request.role });
+          return { userId: testUserIdFor(email, secret), email };
         },
       },
       openUrl: (who, targetUrl) =>

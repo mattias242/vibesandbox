@@ -105,6 +105,8 @@ describe('Plattformen som en riktig server', () => {
     try {
       appId = await control.createApp();
       await control.publish(appId, await control.importVersion(appId, bygge));
+      // Utan en rad i åtkomstlistan når ingen appen — inte ens en inloggad användare.
+      await control.grantAccess(appId, 'anv-anna', 'owner', null);
     } finally {
       await control.close();
     }
@@ -180,6 +182,16 @@ describe('Plattformen som en riktig server', () => {
     expect(fel.status).toBe(400);
   });
 
+  it('en inloggad användare utan åtkomst får samma svar som för en app som inte finns', async () => {
+    await starta();
+    const bertil = signTestIdentity({ userId: 'anv-bertil', email: 'bertil@example.org', roles: ['admin'] }, HEMLIGHET);
+    const nekad = await anropa(port, { host: `${appId}.appar.test`, headers: { Authorization: bertil } });
+    const saknas = await anropa(port, { host: `${'a'.repeat(appId.length)}.appar.test`, headers: { Authorization: bertil } });
+    expect(nekad.status).toBe(404);
+    expect(nekad.body).toBe(saknas.body);
+    expect(nekad.body).not.toContain('Publicerad app');
+  });
+
   it('en app som skapas medan servern är igång går att nå utan omstart', async () => {
     await starta();
     const control = createControl({ dataDir });
@@ -187,6 +199,7 @@ describe('Plattformen som en riktig server', () => {
     try {
       ny = await control.createApp();
       await control.publish(ny, await control.importVersion(ny, bygge));
+      await control.grantAccess(ny, 'anv-anna', 'owner', null);
     } finally {
       await control.close();
     }

@@ -1,11 +1,13 @@
 /**
  * @vibesandbox/control — appregistret och apparnas byggda filer. Första, minimala versionen:
- * appar, versioner, utkast och publicering. Användare, delningar, registeruppgifter och
- * granskningskö kommer i en senare skiva (nya migreringssteg i databas.ts).
+ * appar, versioner, utkast, publicering och vem som har åtkomst till varje app (ägare och
+ * användare). Registeruppgifter och granskningskö kommer i en senare skiva (nya migreringssteg i
+ * databas.ts).
  *
  * Paketet implementerar kontraktets två gränssnitt mot gatewayn:
  *
  *   - `AppRegistry.find`  — finns appen, och har den en publicerad version respektive ett utkast?
+ *   - `AppRegistry.accessFor` — användarens roll i appen (`owner`/`user`), eller `null`.
  *   - `AppFiles.read`     — slår upp sökvägen som en EXAKT nyckel i versionens manifest och läser
  *                           sedan filen via dess innehållshash. Sökvägen blir aldrig en del av en
  *                           disksökväg och normaliseras aldrig (se kontraktet och lager.ts).
@@ -16,7 +18,7 @@
  */
 import { resolve } from 'node:path';
 import { APP_ID_PATTERN, isAppId } from '@vibesandbox/contracts';
-import type { AppFile, AppFiles, AppId, AppRegistry, RegisteredApp, TenantContext } from '@vibesandbox/contracts';
+import type { AppAccessRole, AppFile, AppFiles, AppId, AppRegistry, RegisteredApp, TenantContext } from '@vibesandbox/contracts';
 import { openControlDatabase } from './databas.ts';
 import { ControlError } from './fel.ts';
 import { VERSION_ID_PATTERN, newAppId, newVersionId } from './id.ts';
@@ -28,6 +30,7 @@ export { ControlError } from './fel.ts';
 export type { ControlErrorCode } from './fel.ts';
 export { DEFAULT_IMPORT_LIMITS } from './import.ts';
 export type { ImportLimits } from './import.ts';
+export type { AppAccessRole } from '@vibesandbox/contracts';
 
 export interface ControlOptions {
   /** Plattformens datakatalog. Control använder `control/` och `versions/` under den. */
@@ -37,6 +40,14 @@ export interface ControlOptions {
 
 export interface AppSummary extends RegisteredApp {
   readonly createdAt: string;
+}
+
+/** En rad i appens åtkomstlista. `email` saknas för en ägare som lagts in utan adress. */
+export interface AppMember {
+  readonly userId: string;
+  readonly role: AppAccessRole;
+  readonly email: string | null;
+  readonly addedAt: string;
 }
 
 export interface Control {
@@ -55,6 +66,16 @@ export interface Control {
   unpublish(appId: AppId): Promise<void>;
   /** Tar bort appen ur registret tillsammans med dess versioner och filer. Rör inte appens DATA. */
   deleteApp(appId: AppId): Promise<void>;
+  /**
+   * Ger en användare åtkomst till appen. Idempotent. En ägare nedgraderas aldrig till användare;
+   * en app har högst en ägare (en andra ägare ⇒ `ControlError('access_rejected')`). Okänd app ⇒
+   * `ControlError('app_not_found')`. `email` sparas för åtkomstlistan och loggas aldrig.
+   */
+  grantAccess(appId: AppId, userId: string, role: AppAccessRole, email: string | null): Promise<void>;
+  /** Tar bort en användares åtkomst. Ägarens åtkomst går inte att ta bort (`ControlError('access_rejected')`). Okänd rad ⇒ inget händer. */
+  revokeAccess(appId: AppId, userId: string): Promise<void>;
+  /** Appens åtkomstlista: ägaren först, sedan användarna i den ordning de lades till. */
+  listAccess(appId: AppId): Promise<readonly AppMember[]>;
   /** Stänger databasen. Går att anropa flera gånger. */
   close(): Promise<void>;
 }
@@ -83,6 +104,29 @@ const FILE_LOOKUP_SQL: ReadonlyMap<unknown, string> = new Map([
 ]);
 
 const POINTER_COLUMNS = { published: 'published_version', draft: 'draft_version' } as const;
+
+/** Samma gräns som data-api sätter för användar-id. Id:t är ogenomskinligt och jämförs ordagrant. */
+const MAX_USER_ID_LENGTH = 256;
+/** RFC 5321 tillåter högst 320 tecken i en adress; allt längre är inte en adress. */
+const MAX_EMAIL_LENGTH = 320;
+/** Rollerna som en Map, så att `constructor` eller `__proto__` aldrig ger träff via prototypen. */
+const ACCESS_ROLES: ReadonlyMap<unknown, AppAccessRole> = new Map([
+  ['owner', 'owner'],
+  ['user', 'user'],
+]);
+
+function isUserId(value: unknown): value is string {
+  // NUL avvisas: ett id som skiljer sig från ett annat bara efter en NUL är ett förfalskningsförsök.
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_USER_ID_LENGTH && !value.includes('\0');
+}
+
+/**
+ * Meddelandena i felen nämner varken adress eller id: ett ControlError kan hamna i en logg, och
+ * driftloggar får aldrig innehålla e-postadresser.
+ */
+function rejectAccess(message: string): never {
+  throw new ControlError('access_rejected', message);
+}
 type Pointer = keyof typeof POINTER_COLUMNS;
 
 export function createControl(options: ControlOptions): Control {
@@ -190,6 +234,15 @@ export function createControl(options: ControlOptions): Control {
         .get(appId);
       if (row === undefined || row['app_id'] !== appId) return null;
       return { appId, published: row['published_version'] !== null, draft: row['draft_version'] !== null };
+    },
+
+    async accessFor(appId, userId) {
+      assertOpen();
+      // Allt som inte är ett giltigt id är ett "ingen åtkomst" — aldrig ett fel, aldrig en träff.
+      if (typeof appId !== 'string' || !isAppId(appId) || !isUserId(userId)) return null;
+      // Frågan går mot databasen varje gång: en borttagen åtkomst ska gälla direkt.
+      const row = db.statement('SELECT role FROM app_access WHERE app_id = ? AND user_id = ?').get(appId, userId);
+      return ACCESS_ROLES.get(row?.['role']) ?? null;
     },
   };
 
@@ -317,10 +370,87 @@ export function createControl(options: ControlOptions): Control {
           'SELECT f.hash AS hash FROM version_files f JOIN versions v ON v.version_id = f.version_id WHERE v.app_id = ?',
           appId,
         );
-        // Versioner och manifest följer med genom ON DELETE CASCADE.
+        // Versioner, manifest och åtkomstlistan följer med genom ON DELETE CASCADE.
         db.statement('DELETE FROM apps WHERE app_id = ?').run(appId);
         await removeUnreferencedBlobs(hashes);
       });
+    },
+
+    grantAccess(appId, userId, role, email) {
+      return exclusive(async () => {
+        assertAppExists(appId);
+        if (!isUserId(userId)) rejectAccess('Användaren är ogiltig.');
+        const wanted = ACCESS_ROLES.get(role);
+        if (wanted === undefined) rejectAccess('Rollen finns inte.');
+        if (
+          email !== null &&
+          (typeof email !== 'string' || email.length === 0 || email.length > MAX_EMAIL_LENGTH || email.includes('\0'))
+        ) {
+          rejectAccess('Adressen är ogiltig.');
+        }
+
+        db.transaction(() => {
+          const existing = ACCESS_ROLES.get(
+            db.statement('SELECT role FROM app_access WHERE app_id = ? AND user_id = ?').get(appId, userId)?.['role'],
+          );
+          if (wanted === 'owner' && existing !== 'owner') {
+            // Högst en ägare. Indexet i databasen stoppar det också, men då som ett allmänt fel.
+            const owner = db.statement("SELECT 1 AS found FROM app_access WHERE app_id = ? AND role = 'owner'").get(appId);
+            if (owner !== undefined) rejectAccess('Appen har redan en ägare.');
+          }
+
+          if (existing === undefined) {
+            db.statement('INSERT INTO app_access (app_id, user_id, role, email, added_at) VALUES (?, ?, ?, ?, ?)').run(
+              appId,
+              userId,
+              wanted,
+              email,
+              new Date().toISOString(),
+            );
+            return;
+          }
+          // Idempotent. En ägare nedgraderas aldrig; en användare kan bli ägare om appen saknar en.
+          // En ny adress ersätter den gamla, men ett anrop utan adress suddar inte ut en känd.
+          const role: AppAccessRole = existing === 'owner' ? 'owner' : wanted;
+          db.statement(
+            'UPDATE app_access SET role = ?, email = COALESCE(?, email) WHERE app_id = ? AND user_id = ?',
+          ).run(role, email, appId, userId);
+        });
+      });
+    },
+
+    revokeAccess(appId, userId) {
+      return exclusive(async () => {
+        assertAppExists(appId);
+        if (!isUserId(userId)) rejectAccess('Användaren är ogiltig.');
+        const row = db.statement('SELECT role FROM app_access WHERE app_id = ? AND user_id = ?').get(appId, userId);
+        // Utan ägare skulle ingen kunna förvalta appen längre.
+        if (row?.['role'] === 'owner') rejectAccess('Ägarens åtkomst går inte att ta bort.');
+        db.statement("DELETE FROM app_access WHERE app_id = ? AND user_id = ? AND role = 'user'").run(appId, userId);
+      });
+    },
+
+    async listAccess(appId) {
+      assertOpen();
+      assertAppExists(appId);
+      const rows = db
+        .statement(
+          `SELECT user_id, role, email, added_at FROM app_access
+            WHERE app_id = ?
+            ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, added_at, rowid`,
+        )
+        .all(appId);
+      const members: AppMember[] = [];
+      for (const row of rows) {
+        const userId = row['user_id'];
+        const role = ACCESS_ROLES.get(row['role']);
+        const email = row['email'];
+        const addedAt = row['added_at'];
+        if (typeof userId !== 'string' || role === undefined || typeof addedAt !== 'string') continue;
+        if (email !== null && typeof email !== 'string') continue;
+        members.push({ userId, role, email, addedAt });
+      }
+      return members;
     },
 
     async close() {

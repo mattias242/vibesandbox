@@ -26,6 +26,7 @@ import {
   skapaAppId,
   skapaFejkadIdentityProvider,
   skapaGodkannandeIdentityProvider,
+  STANDARDANVANDARE,
   skapaIdentitet,
   skapaNekandeIdentityProvider,
   skapaTestUppsattning,
@@ -65,6 +66,7 @@ describe('hårda fall', () => {
     const appId = skapaAppId(`harda-fall-${Math.random()}`);
     const uppsattning = skapaTestUppsattning({ identityProvider: skapaGodkannandeIdentityProvider(), ...overrides });
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
     uppsattning.filer.satt(appId, 'published', '/index.html', textfil('<html>startsidan</html>'));
     server = await startaTestserver(createGateway(uppsattning.options));
     return { appId, uppsattning, port: server.port, host: vardnamnForApp(appId) };
@@ -85,8 +87,12 @@ describe('hårda fall', () => {
     });
 
     it('samma inloggning med tid kvar godtas (kontrollen ovan beror alltså på tiden)', async () => {
-      const { port, host } = await starta({ identityProvider: createTestIdentityProvider({ secret: HEMLIGHET }) });
-      const giltig = signTestIdentity(skapaIdentitet(), HEMLIGHET, { expiresInSeconds: 60 });
+      const { appId, uppsattning, port, host } = await starta({
+        identityProvider: createTestIdentityProvider({ secret: HEMLIGHET }),
+      });
+      const vem = skapaIdentitet();
+      uppsattning.register.bevilja(appId, vem.userId, 'owner');
+      const giltig = signTestIdentity(vem, HEMLIGHET, { expiresInSeconds: 60 });
 
       const svar = await anropa({ port, host, path: '/_api/whoami', headers: { Authorization: giltig } });
 
@@ -366,6 +372,7 @@ describe('hårda fall', () => {
         identityProvider: createTestIdentityProvider({ secret: HEMLIGHET }),
         logger: (post) => poster.push(post),
       });
+      uppsattning.register.bevilja(appId, identitet.userId, 'owner');
       const token = signTestIdentity(identitet, HEMLIGHET);
       const auth = { Authorization: token };
       const kroppsmarkor = 'KANSLIGT-DOKUMENTINNEHALL';
@@ -527,6 +534,7 @@ describe('serverinställningar och clientError-hanteraren', () => {
     const { port, uppsattning } = await startaRiktigServer();
     const appId = skapaAppId('riktig-server-ok');
     uppsattning.register.registrera(appId, { published: true });
+    uppsattning.register.bevilja(appId, STANDARDANVANDARE.userId, 'owner');
 
     const svar = await anropa({ port, host: vardnamnForApp(appId), path: '/_api/whoami' });
 

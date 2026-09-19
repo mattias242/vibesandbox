@@ -10,7 +10,17 @@ import type { AppId, TenantKind } from '@vibesandbox/contracts';
 
 export interface GatewayLogEntry {
   readonly level: 'info' | 'warn' | 'error';
-  readonly event: 'request' | 'identity_provider_failed' | 'internal_error';
+  /**
+   * `app_access_denied`: inloggad, appen finns, men användaren saknar roll för versionen. Svaret är
+   * detsamma som för en app som inte finns — det är bara här i driftloggen skillnaden syns.
+   * `app_registry_failed`: registret kunde inte svara på en åtkomstfråga (och förfrågan nekades).
+   */
+  readonly event:
+    | 'request'
+    | 'identity_provider_failed'
+    | 'internal_error'
+    | 'app_access_denied'
+    | 'app_registry_failed';
   readonly method?: string;
   /** Vilken sorts rutt, aldrig den faktiska sökvägen. */
   readonly route?: 'api' | 'static' | 'auth' | 'builder';

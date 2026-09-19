@@ -86,6 +86,27 @@ describe('inbjudningar', () => {
     expect(vem?.roles).toEqual(['viewer']);
   });
 
+  it('svarar med den inbjudna användarens id och normaliserade adress — samma id som vid inloggning', async () => {
+    const inbjuden = await u.leverantor.invite({ email: ' Vannen@Example.org ', role: 'viewer', invitedBy: BYGGARE, app: APP });
+    expect(inbjuden).toEqual({ userId: expect.any(String), email: 'vannen@example.org' });
+    const w = new Webblasare(u.leverantor);
+    await loggaIn(w, u.utkorg, VARD_A, 'vannen@example.org');
+    expect((await w.vem(VARD_A))?.userId).toBe(inbjuden.userId);
+  });
+
+  it('svarar likadant för en befintlig adress: samma userId, oavsett skiftläge', async () => {
+    const befintlig = await u.leverantor.addUser('anna@example.org', 'builder');
+    const inbjuden = await u.leverantor.invite({ email: 'ANNA@example.org', role: 'viewer', invitedBy: BYGGARE, app: APP });
+    expect(inbjuden).toEqual({ userId: befintlig.userId, email: 'anna@example.org' });
+    const igen = await u.leverantor.invite({ email: 'anna@example.org', role: 'viewer', invitedBy: BYGGARE });
+    expect(igen).toEqual(inbjuden);
+  });
+
+  it('svarar bara med id och adress — rollen och om adressen var ny röjs inte', async () => {
+    const inbjuden = await u.leverantor.invite({ email: 'vannen@example.org', role: 'viewer', invitedBy: BYGGARE });
+    expect(Object.keys(inbjuden).sort()).toEqual(['email', 'userId']);
+  });
+
   it('mejlar appens namn, länk och hur man loggar in', async () => {
     await u.leverantor.invite({ email: 'vannen@example.org', role: 'viewer', invitedBy: BYGGARE, app: APP });
     expect(u.utkorg.messages).toHaveLength(1);

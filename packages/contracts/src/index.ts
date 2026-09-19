@@ -367,9 +367,22 @@ export interface RegisteredApp {
   readonly draft: boolean;
 }
 
+/**
+ * Vad en användare får göra med en app. Ägaren (den som byggde appen) når både utkast och
+ * publicerad version; en användare (den som fått appen delad med sig) bara den publicerade.
+ * Plattformens roller (`Role`) ger ingen åtkomst till någon app — inte heller `admin`.
+ */
+export type AppAccessRole = 'owner' | 'user';
+
 /** Implementeras av control-modulen. Okänt app-id ⇒ `null` ⇒ gatewayn svarar 404. */
 export interface AppRegistry {
   find(appId: AppId): Promise<RegisteredApp | null>;
+  /**
+   * Användarens roll i appen, eller `null` om hen saknar åtkomst (eller appen inte finns).
+   * Gatewayn frågar vid VARJE förfrågan: en borttagen åtkomst gäller direkt, även för en
+   * pågående session. Saknad åtkomst ger samma svar som en app som inte finns.
+   */
+  accessFor(appId: AppId, userId: string): Promise<AppAccessRole | null>;
 }
 
 export interface AppFile {
@@ -613,6 +626,13 @@ export function builderContentSecurityPolicy(previewFrameSource: string): string
 //   POST /_api/builder/apps/:appId/share { email }  → { shared: true }  (409 om appen inte är publicerad)
 //        Bjuder in adressen (rollen `viewer`) och mejlar länken till den publicerade appen. Svaret är
 //        detsamma oavsett om adressen redan var inbjuden — det röjer inget om vilka som har konto.
+//        Adressen får samtidigt åtkomst till appen (`AppAccessRole` `user`).
+//   GET  /_api/builder/apps/:appId/members         → { members: BuilderAppMember[] }  (ägaren först)
+//   DELETE /_api/builder/apps/:appId/members/:memberId → { removed: true }
+//        Upphör direkt. Okänd medlem ⇒ samma svar (idempotent). Ägarens egen rad ⇒ 400 `invalid_request`.
+//
+// Bara appens ÄGARE når dessa rutter; för alla andra "finns" appen inte (404) — även för den som
+// fått appen delad med sig.
 //
 // Övriga sökvägar på byggverktygets värd serverar byggverktygets egna statiska filer (SPA).
 
@@ -635,6 +655,13 @@ export interface BuilderMessage {
   readonly role: 'user' | 'assistant';
   readonly text: string;
   readonly createdAt: string;
+}
+
+/** En rad i åtkomstlistan. `memberId` är användar-id:t; ägarens `email` är ägarens egen adress. */
+export interface BuilderAppMember {
+  readonly memberId: string;
+  readonly email: string;
+  readonly role: AppAccessRole;
 }
 
 export type BuilderJobStatus = 'queued' | 'running' | 'done' | 'failed';
@@ -670,5 +697,12 @@ export interface InvitationService {
     readonly invitedBy: Identity;
     /** Mejlet innehåller länken och appens namn. Ingen länk ⇒ en allmän inbjudan. */
     readonly app?: { readonly name: string; readonly url: string };
-  }): Promise<void>;
+  }): Promise<InvitedUser>;
+}
+
+/** Den inbjudna adressens användare — ny eller befintlig. Samma svar i båda fallen. */
+export interface InvitedUser {
+  readonly userId: string;
+  /** Normaliserad adress (gemener, utan blanktecken). */
+  readonly email: string;
 }
