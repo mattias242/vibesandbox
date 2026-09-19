@@ -49,8 +49,13 @@ readonly ANGRA_SKRIPT="/usr/local/sbin/vibesandbox-angra"
 readonly ANGRA_ENHET="vibesandbox-angra-uppstart.service"
 readonly ANGRA_KATALOG="${TILLSTANDSKATALOG}/angra"
 readonly SSH_BEKRAFTAD="${TILLSTANDSKATALOG}/ssh.bekraftad"
+# Finns den här filen skrevs ssh.bekraftad med --ingen-bekraftelse: ingen människa har svarat JA.
+# Då låses root inte, och nästa körning UTAN flaggan ställer frågan på nytt (B-2).
+readonly SSH_OBEVAKAD="${TILLSTANDSKATALOG}/ssh.obevakad"
 readonly NFT_BEKRAFTAD="${TILLSTANDSKATALOG}/brandvagg.bekraftad"
-readonly BEKRAFTELSE_SEKUNDER=180
+# Tidsgränsen för JA-frågan. Går att ändra (BEKRAFTELSE_SEKUNDER, 5–600) — testerna kortar den
+# för att pröva tidsgränsen på riktigt. Valideras i las_konfiguration.
+BEKRAFTELSE_SEKUNDER="${BEKRAFTELSE_SEKUNDER:-180}"
 # Backstoppets timer löper ut en stund EFTER skriptets egen tidsgräns, så att de två inte
 # tävlar i normalfallet. (Tävlar de ändå serialiseras de av ett lås, och markören avgör.)
 readonly BACKSTOPP_MARGINAL=60
@@ -92,8 +97,9 @@ Användning: provision.sh [flaggor]
   --bekrafta-tailscale-ssh        Intyga att du har loggat in med SSH över tailnet.
                                   Krävs för brandvägg, SSH-härdning och allt därefter.
   --ingen-bekraftelse             Hoppa över "död mans grepp" (JA-frågan) efter brandvägg
-                                  och SSH — då finns heller inget backstopp. Bara för
-                                  obevakad körning där leverantörens webbkonsol är nödvägen.
+                                  och SSH — då finns heller inget backstopp, och roots
+                                  lösenord låses ALDRIG. Bara för testmiljöer: använd den
+                                  aldrig mot en riktig server.
   --hoppa-over-sessionskontroll   Kräv varken en pågående SSH-session från tailnet eller
                                   journalens bevis på nyckelinloggning (t.ex. vid körning
                                   från leverantörens webbkonsol). JA-frågan ställs ändå.
@@ -435,9 +441,13 @@ las_konfiguration() {
   fi
 
   local v p
-  for v in DOCKER_XFS_SIZE_GB SWAPFILE_SIZE_GB VM_SWAPPINESS DOCKREMAP_SUBID_BASE PLATFORM_CONTAINER_UID; do
+  for v in DOCKER_XFS_SIZE_GB SWAPFILE_SIZE_GB VM_SWAPPINESS DOCKREMAP_SUBID_BASE PLATFORM_CONTAINER_UID BEKRAFTELSE_SEKUNDER; do
     [[ "${!v}" =~ ^[0-9]+$ ]] || avbryt "${v} måste vara ett heltal (är '${!v}')."
   done
+  (( 10#$BEKRAFTELSE_SEKUNDER >= 5 && 10#$BEKRAFTELSE_SEKUNDER <= 600 )) \
+    || avbryt "BEKRAFTELSE_SEKUNDER måste vara 5–600 (är '${BEKRAFTELSE_SEKUNDER}')."
+  BEKRAFTELSE_SEKUNDER=$(( 10#$BEKRAFTELSE_SEKUNDER ))
+  readonly BEKRAFTELSE_SEKUNDER
   for v in OPEN_TAILSCALE_UDP AUTO_REBOOT AUTO_UPGRADE_DOCKER LOCK_ROOT_PASSWORD HARDEN_GUEST_AGENT INSTALL_GVISOR DOCKER_XFS_LOOP; do
     [[ "${!v}" =~ ^[01]$ ]] || avbryt "${v} måste vara 0 eller 1 (är '${!v}')."
   done
@@ -603,6 +613,9 @@ angra_nu() {
   local steg="$ANGRA_STEG"
   [[ -n "$steg" ]] || return 0
   ANGRA_STEG=""
+  # Kom en signal medan angra_bekrafta höll låset på fd 8, är fd 8 fortfarande öppen och låst.
+  # Ärvs den av ångra-skriptet väntar det på sitt eget lås i 300 s (C-1). Klamrar: se stang_terminal.
+  { exec 8>&-; } 2>/dev/null || true
   "$ANGRA_SKRIPT" "$steg" >/dev/null 2>&1
 }
 
@@ -624,13 +637,21 @@ angra_forbered() {
 
 # angra_bild <steg> <namn> <fil> — hur såg filen ut FÖRE? Finns den: en kopia. Finns den inte:
 # en anteckning om det, så att ångrandet tar bort den nya. (Varken eller ⇒ "rördes aldrig".)
+#
+# Bilden synkas till disk INNAN markören skrivs (angra_armera kommer efter). Annars kan ett
+# strömavbrott lämna markören men en bild på 0 byte (ext4 skjuter upp allokeringen), och då
+# kopierade uppstartsenheten en tom fil över nftables.conf eller sshd_config (B-3). angra.sh
+# vägrar dessutom en tom eller saknad bild — därför får originalet inte vara tomt.
 angra_bild() {
   local k="${ANGRA_KATALOG}/$1" namn="$2" fil="$3"
   if [[ -f "$fil" ]]; then
+    [[ -s "$fil" ]] || avbryt "${fil} är TOM. En tom ögonblicksbild går inte att skilja från en som förlorats vid ett strömavbrott, och ångra-skriptet vägrar den. Lägg innehåll i filen (eller ta bort den) och kör om. Ingenting har ändrats."
     cp -p -- "$fil" "${k}/${namn}.fore"
   else
     : >"${k}/${namn}.saknades"
   fi
+  sync -- "${k}/${namn}".* "$k" \
+    || avbryt "ögonblicksbilden i ${k} gick inte att skriva till disk (sync) — utan den finns inget att ångra till. Ingenting har ändrats."
 }
 
 angra_armera() {
@@ -687,7 +708,11 @@ angra_bekrafta() {
 oppna_terminal() {
   { exec 7<>/dev/tty; } 2>/dev/null
 }
-stang_terminal() { exec 7>&- 2>/dev/null || true; }
+# OBS klamrarna: 'exec 7>&- 2>/dev/null' UTAN klamrar är ett exec utan kommando, och då blir
+# ALLA dess omdirigeringar permanenta — fd 2 pekade på /dev/null resten av körningen, och
+# "ÅNGRAD"-beskedet och varje senare varning och avbrott försvann (B-1). Här gäller 2>/dev/null
+# bara gruppen.
+stang_terminal() { { exec 7>&-; } 2>/dev/null || true; }
 
 bekrafta_eller_angra() {
   local steg="$1" fraga="$2" svar=""
@@ -717,7 +742,7 @@ vid_avslut() {
     if angra_nu; then
       printf '\n✗ Ingen bekräftelse — ändringen i steget "%s" är ÅNGRAD. Se %s\n' "$steg" "$LOGGFIL" >&2 || true
     else
-      printf '\n✗ Ändringen i steget "%s" gick INTE att ångra fullständigt. Backstoppet (timern, och uppstartsenheten vid omstart) försöker igen.\n  Se %s och nödvägen i README.\n' "$steg" "$LOGGFIL" >&2 || true
+      printf '\n✗ KRITISKT: ändringen i steget "%s" gick INTE att ångra fullständigt. Ångra-skriptet har larmat\n  (journalen, wall) och armerat en ny timer som försöker igen — men beror felet på något som\n  inte går över av sig självt hjälper bara du. Se %s,\n  "journalctl -p crit -t vibesandbox-angra" och nödvägen i README.\n' "$steg" "$LOGGFIL" >&2 || true
     fi
     (( kod == 0 )) && kod=1
   fi
@@ -1439,6 +1464,10 @@ EOF
   if ! ssh_bekraftad; then
     if (( ! behov )); then varna "filerna är rätt men har ALDRIG bekräftats av ägaren (avbruten körning, eller ändrade efteråt) — bekräftelsen görs om"; fi
     behov=1
+  elif (( ! INGEN_BEKRAFTELSE )) && [[ -e "$SSH_OBEVAKAD" ]]; then
+    # B-2: "bekräftelsen" gjordes med --ingen-bekraftelse. Den räknas inte när en människa finns.
+    if (( ! behov )); then varna "SSH-läget bekräftades senast med --ingen-bekraftelse — ingen har svarat JA. Frågan ställs nu."; fi
+    behov=1
   fi
 
   if (( ! behov )); then
@@ -1499,6 +1528,11 @@ EOF
     local summor
     summor="$(sha256sum "$SSH_DROPIN" "$SSHD_CONFIG")"
     skriv_fil "$SSH_BEKRAFTAD" 0600 <<<"$summor"
+    if (( INGEN_BEKRAFTELSE )); then
+      : >"$SSH_OBEVAKAD"
+    else
+      rm -f -- "$SSH_OBEVAKAD"
+    fi
   fi
 
   klart "sshd -T bekräftar: ingen root, inga lösenord, AllowUsers ${OPS_USER}"
@@ -1509,6 +1543,11 @@ EOF
     ssh_bekraftad || avbryt "internt fel: SSH-läget är inte bekräftat — roots lösenord låses INTE."
     if [[ "$(passwd -S root | awk '{print $2}')" == "L" ]]; then
       klart "roots lösenord är låst"
+    elif (( INGEN_BEKRAFTELSE )) || [[ -e "$SSH_OBEVAKAD" ]]; then
+      # B-2: utan JA-fråga finns inget backstopp och inget bevis på att ops kommer in. Att då låsa
+      # roots lösenord vore att stänga den sista vägen in på en gissning.
+      varna "roots lösenord låses INTE: med --ingen-bekraftelse har ingen människa bekräftat att 'ssh ${OPS_USER}@…' och 'sudo -v' fungerar.
+    Kör  ./provision.sh --steg ssh --bekrafta-tailscale-ssh  UTAN flaggan och svara JA — då låses det."
     else
       # Ett root-lösenord som avbilden eller leverantören har genererat ska ses som förbrukat.
       # Nödvägen via webbkonsolen är ops + sudo.

@@ -116,6 +116,16 @@ sudo -v                      # 2. lösenordet ska fungera
 
 3. **Logga in som `ops` med lösenordet i leverantörens WEBBKONSOL.** Det är den vägen du har kvar
    om allt annat går fel — pröva den nu, inte då.
+4. **Se att journalen har beviset** — i tailnet-sessionen från punkt 1, på servern:
+
+   ```sh
+   sudo journalctl -t sshd -t sshd-session _UID=0 | grep Accepted
+   ```
+
+   Här ska en rad `Accepted publickey for ops from 100.… port …` stå för din session. Det är
+   just den raden fas 2 kräver innan brandväggen rörs. Skriptets tolkning av journalen är
+   bara prövad mot en efterbildning (se *OTESTAT*) — syns ingen rad här vägrar fas 2, och då
+   vet du varför innan du börjar. (Äldre OpenSSH loggar under `sshd`, nyare under `sshd-session`.)
 
 ### 4. Fas 2 — i `tmux`, från tailnet-sessionen
 
@@ -137,7 +147,11 @@ efter att sshd laddats om frågar skriptet efter `JA`. Då:
   när det har fungerat;
 - **tryck aldrig Ctrl-C vid frågan** för att "prova igen" — det ångrar ändringen (med flit), och
   du får köra om steget;
-- använd aldrig `--ingen-bekraftelse` på en riktig värd.
+- använd **aldrig** `--ingen-bekraftelse` mot en riktig server. Flaggan tar bort både frågan
+  och backstoppet, och därför låser skriptet aldrig roots lösenord med den: ingen människa
+  har då visat att `ops` kommer in. En senare körning utan flaggan litar inte heller på den
+  "bekräftelsen" — den ställer frågan igen, och först efter ett riktigt `JA` låses root.
+  Flaggan finns för testerna.
 
 Svarar du inte inom 3 minuter, eller dör sessionen, ångras ändringen — och roots lösenord låses
 aldrig förrän SSH-steget är bekräftat.
@@ -221,9 +235,39 @@ Efter `JA` skrivs **bekräftelsemarkörer** — sha256 över filerna så som äg
 (`/etc/vibesandbox/brandvagg.bekraftad`, `/etc/vibesandbox/ssh.bekraftad`). Saknas en markör eller
 stämmer den inte med filerna på disk (avbruten körning, eller någon har ändrat efteråt) görs hela
 kedjan om — `sshd -t`, omladdning, fråga — hur rätt `sshd -T` än ser ut. `passwd -l root` körs
-bara i bekräftat läge. En ögonblicksbild förbrukas av ett `JA` eller ett ångrande och kan aldrig
-återställas av en senare körning; ett ångrat brandväggssteg lägger tillbaka den senast
-*bekräftade* regeluppsättningen, eller tar bort både filen och tabellen om ingen fanns.
+bara i bekräftat läge, och aldrig med `--ingen-bekraftelse`. En ögonblicksbild förbrukas av
+ett `JA` eller ett ångrande och kan aldrig återställas av en senare körning.
+
+Ett ångrat brandväggssteg lägger tillbaka `/etc/nftables.conf` **så som den såg ut före
+steget** — efter en tidigare bekräftelse är det den senast bekräftade regeluppsättningen, men
+**första gången är det paketets standardfil** (den med `flush ruleset`), och fanns ingen fil tas
+den nya bort. I kärnan laddas ögonblicksbilden bara om den innehåller vår tabell; annars tas
+tabellen bort (hellre öppet än utelåst). Värden står då utan brandvägg tills steget körs igen.
+
+**Ögonblicksbilden synkas till disk innan markören skrivs.** Utan det kan ett strömavbrott
+lämna markören men en bild på 0 byte, som uppstartsenheten då skulle kopiera över
+`nftables.conf` eller `sshd_config`. Ångra-skriptet vägrar dessutom en tom eller saknad bild
+(och en tom originalfil stoppar steget innan något ändras).
+
+**Om ångrandet självt misslyckas** (en bild som inte går att använda, `sshd -t` som underkänner
+den återställda konfigurationen, en omladdning som inte går): markören ligger kvar, händelsen
+loggas med prioritet `crit` i journalen och skickas med `wall` till alla terminaler, och
+ångra-skriptet armerar en **ny** timer som försöker igen var 120:e sekund. Vid uppstart kör det
+`sshd -t` (efter att ha skapat `/run/sshd`) och avslutas med fel om den underkänner — enheten
+blir då `failed` och har en tidsgräns (`TimeoutStartSec=120`), så att uppstarten aldrig hänger på
+den. Se efter med:
+
+```sh
+sudo journalctl -p crit -t vibesandbox-angra
+systemctl --failed
+```
+
+**Timerns klocka startar när den armeras, inte när frågan ställs.** Hänger själva ändringen
+(t.ex. `nft -f` eller omladdningen av sshd) längre än tidsgränsen plus marginalen (240 s) kan
+timern lösa ut mitt i den och ångra medan skriptet fortfarande arbetar. Skriptet kan då ladda
+den *återställda* filen i stället för den nya (första gången: paketets standardfil, med
+`flush ruleset`). Markören avgör ändå — ett senare `JA` får beskedet att ändringen redan var
+ångrad och steget avbryts — men kontrollera läget med `vibesandbox-verify` och kör om steget.
 
 `vibesandbox-angra` läser ingen konfiguration och ingen miljö, har hårdkodade målsökvägar och
 vägrar använda ett underlag som inte ligger i rootägda kataloger med läge 700.
@@ -237,14 +281,26 @@ vägrar använda ett underlag som inte ligger i rootägda kataloger med läge 70
 3. Beroende på vad som gått fel:
 
    ```sh
+   sudo journalctl -p crit -t vibesandbox-angra          # har ett ångrande misslyckats?
    sudo vibesandbox-angra --alla                          # ångra det som INTE är bekräftat
    sudo tailscale status                                  # är tailnetet uppe?
-   sudo nft delete table inet vibesandbox                 # brandväggen bort TILLFÄLLIGT
    sudo mv /etc/ssh/sshd_config.d/0-0-vibesandbox.conf /root/ && sudo systemctl reload ssh
    ```
 
-   Stoppa Docker (`sudo systemctl stop docker docker.socket`) **innan** du tar bort
-   brandväggen — utan den står publicerade portar öppna.
+   Brandväggen bort **tillfälligt** — i den här ordningen:
+
+   ```sh
+   sudo docker ps -q | xargs -r sudo docker stop          # 1. stoppa CONTAINRARNA
+   sudo systemctl stop docker.service docker.socket       # 2. sedan demonen
+   sudo nft delete table inet vibesandbox                 # 3. först nu tabellen
+   ```
+
+   Utan vår tabell finns ingen INPUT-drop och ingen spärr framför Dockers kedjor, så
+   publicerade containerportar står öppna mot internet. Att bara stoppa demonen räcker inte:
+   med `live-restore` lever containrarna vidare när `dockerd` stoppas. `vibesandbox-angra
+   --alla` stoppar **inte** Docker. Tar den själv bort tabellen (första brandväggssteget, eller
+   när den tidigare regeluppsättningen inte går att ladda) medan Docker kör larmar den med
+   `crit` — gör då punkt 1–2 ovan, eller ladda en fungerande `/etc/nftables.conf` med `nft -f`.
 4. Rätta felet och kör om steget från konsolen. Där finns ingen SSH-session att hitta, så
    båda flaggorna behövs:
 
@@ -484,13 +540,15 @@ det behöver inte finnas på din dator.
 | `angra` | död mans grepp utan terminal ångrar brandvägg och SSH (även `sshd_config`, byte för byte); en främmande dropin som vinner över vår ⇒ ingen härdning; trasig konfiguration laddas aldrig |
 | `avbrott` | **A1–A3:** Ctrl-C, SIGTERM och `kill -9` VID frågan (riktig pty); backstoppet körs som timern kör det — tom miljö, `provision.sh` borta, två gånger; uppstartsläget; underlag med fel rättigheter vägras; utan backstopp ingen ändring; JA stoppar timern; en gammal ögonblicksbild återställs aldrig; omkörning efter avbrott ställer frågan igen och låser inte root; ändrad fil efter bekräftelse ⇒ ny bekräftelse |
 | `fas2ja` | hela fas 2 med riktiga JA på båda frågorna: två backstopp armeras och stoppas, markörerna skrivs, andra körningen frågar inget |
+| `besked` | "ÅNGRAD" och senare varningar/avbrott syns efter tidsgräns (riktig, kortad till 5 s), fel svar, utan terminal och efter ett första JA; `--ingen-bekraftelse` låser aldrig root, och en senare körning utan flaggan frågar igen |
+| `angrafel` | ögonblicksbilden synkas före markören (ordningen i anropen); tom eller saknad bild vägras, också vid uppstart; misslyckat ångrande ⇒ `crit` + `wall` + ny timer, som sedan lyckas och stoppas; `sshd -t` i uppstartsläget (skapar `/run/sshd`); låset på fd 8 släpps före ångrandet; `TimeoutStartSec` |
 | `inloggning` | **B1–B3:** exempelnyckel och exempelhash avvisas, trasiga hashar avvisas; `ops` lösenord stängs över SSH *före* lösenordet (riktig `sshd -T`, Match-blockets avgränsning); beviset kräver `Accepted publickey for ops` för just den sessionen; nyckeln aldrig ur miljön, aldrig i någon `/proc/*/cmdline`, aldrig kvar i `/run` — inte heller efter SIGTERM/Ctrl-C mitt i `tailscale up` |
 | `filer` | **B4–B6, C:** radbrytning/säkerhetskopia/`findmnt --verify` vid tillägg i fstab/subuid/subgid; överlapp mot dockremap; `SSH_PORT` och 22 bland publika portar avvisas; env-filens ägare; `PLATFORM_ROOT`-injektion; halvfärdig XFS-avbild/swapfil; `daemon.json` valideras före bytet; gVisor utan kontrollsumma |
 | `verify` | **B7:** varje kontroll med sitt kommando i tre fellägen — tyst, saknas, och *rätt utdata men felkod* — ger aldrig `✓`; provinloggning mot en riktig sshd (en demon som startats med annan konfiguration än filerna fångas); sshd bland lyssnarna; `AuthorizedKeysCommand`; NOPASSWD; 20 körningar i rad med `pipefail` |
 | `fas2` | riktigt laddade nft-regler, riktig `sshd -T` med leverantörens dropins, riktig cloud-init-sammanslagning; **hela körningen två gånger**; `verify.sh` fångar 14 sorters avdrift |
 | `flaggor` | `HARDEN_GUEST_AGENT`, `DOCKER_XFS_LOOP` (riktig `mkfs.xfs`), extra/tomma portlistor, gVisor |
 | `tung-docker.sh` (docker) | Docker installerat av skriptet; `dockerd` med vår `daemon.json`; paket genom reglerna från ett låtsat internet och tailnet, IPv4 **och IPv6**, TCP och **UDP/443**, **169.254.169.254**, **hairpin mot :443** — med kontrollkörning utan tabellen |
-| `tung-docker.sh` (systemd) | systemd som PID 1: den transienta timern armeras och stoppas vid JA; efter `kill -9` löper den ut och ångrar; **omstart** med två obekräftade ändringar ⇒ uppstartsenheten ångrar båda, klart före `nftables.service` och `ssh.service` |
+| `tung-docker.sh` (systemd) | systemd som PID 1: den transienta timern armeras och stoppas vid JA; efter `kill -9` löper den ut och ångrar; **omstart** med två obekräftade ändringar ⇒ uppstartsenheten ångrar båda, kör `sshd -t` och är klar före `nftables.service` och `ssh.service`; tidsgränsen 120 s |
 
 ### Vad som fortfarande är OTESTAT
 
@@ -506,6 +564,17 @@ körordningen ovan (ögonblicksbild först):
 - **Ubuntu 24.04 med socketaktiverad sshd** (`ssh.socket`): omladdning och lyssnarkontrollen är
   skrivna för det, men prövade bara mot `ssh.service`.
 - **SIGHUP och `/dev/tty` under `sudo` med `use_pty`** när anslutningen dör — därför `tmux`.
+- **Journalbeviset** (`Accepted publickey for ops …` för just den sessionen) är bara prövat mot en
+  efterbildning av journalen — därför kontrollen i körordningens steg 3.4.
+- **SSH-ångrandet via timern med riktig `systemctl reload`**: med riktig systemd prövas bara
+  brandväggens timer och SSH-ångrandet vid *uppstart*; timerns SSH-väg (omladdning av en körande
+  sshd) är prövad mot en stubb.
+- **Ett misslyckat ångrande med riktig systemd**: `systemd-cat -p crit`, `wall` och den nya timern
+  (`systemd-run --no-block`, också tidigt i uppstarten) är prövade mot stubbar. Att enheten blir
+  `failed` och att tidsgränsen är 120 s är prövat med riktig systemd; ett riktigt misslyckande vid
+  uppstart är det inte.
+- **Ett riktigt strömavbrott**: att ögonblicksbilden synkas *före* markören är prövat som ordningen
+  i anropen, inte med en avbruten disk.
 - `sysctl`, swap, `mount` av XFS-avbilden, cgroup-drivrutinen `systemd`, AppArmor, en riktig
   `qemu-guest-agent`, och en verklig leverantörs filer (testerna använder neutrala efterbildningar
   under `test/fixturer/`).

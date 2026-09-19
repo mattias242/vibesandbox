@@ -208,6 +208,13 @@ case "$NAMN" in
     [[ -e "${STUBBKATALOG}/journalctl-misslyckas" ]] && exit 1
     cat "${STUBBKATALOG}/journal" 2>/dev/null ;;
 
+  # Larmvägarna för ett ångrande som misslyckas: vad som skickades, och med vilken prioritet.
+  systemd-cat) printf '%s | %s\n' "$*" "$(cat)" >>"${STUBBKATALOG}/journal-krit" ;;
+  wall) cat >>"${STUBBKATALOG}/wall" ;;
+
+  # Bara loggning: ordningen mellan sync-anropen ska gå att granska (ögonblicksbild före markör).
+  sync) riktig "$@" ;;
+
   mount) touch "$T/docker-monterad" ;;
 
   findmnt)

@@ -17,6 +17,11 @@ ConditionPathExistsGlob=/etc/vibesandbox/angra/*/obekraftad
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/vibesandbox-angra --alla --uppstart
+# Enheten ligger före sysinit.target: hänger den, hänger hela uppstarten. Skriptet väntar som
+# längst 300 s på sitt lås; ingen annan håller det vid uppstart, så 120 s är gott om tid.
+# Ett misslyckat ångrande (slutkod ≠ 0) gör enheten 'failed' (systemctl --failed) och larmas
+# av skriptet självt med prioritet crit i journalen och med wall.
+TimeoutStartSec=120
 
 [Install]
 WantedBy=sysinit.target
