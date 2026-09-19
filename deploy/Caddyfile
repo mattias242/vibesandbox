@@ -1,0 +1,43 @@
+# Omvänd proxy framför plattformen. Kraven kommer från gatewayn (se infra/README.md,
+# "Kommer i skiva 6"): gatewayn avgör vilken app en förfrågan hör till ENBART ur Host, så
+# proxyn får inte ge den något annat att gå på.
+{
+	email {$ACME_EMAIL}
+	# Ingen administrations-API — inget ska kunna konfigurera om proxyn inifrån nätet.
+	admin off
+	servers {
+		# Host måste stämma med SNI: annars kan en förfrågan förhandla TLS för en värd och
+		# fråga efter en annan.
+		strict_sni_host on
+		protocols h1 h2
+	}
+}
+
+{$BASE_DOMAIN}, *.{$BASE_DOMAIN} {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+
+	# Absolut mål-URL i förfrågningsraden (GET https://annan/ HTTP/1.1) kan aldrig ge rad och
+	# Host olika innebörd här: Go låter URL:ens värd ERSÄTTA Host, och strict_sni_host kräver att
+	# den värden är TLS-namnet. En sådan förfrågan är alltså likvärdig med en vanlig till samma
+	# värd — eller nekas med 421. (En egen matcher går inte att skriva: Caddys platshållare visar
+	# bara sökvägen, aldrig den råa raden. Bevisat i deploy/test/prova-lokalt.sh.)
+
+	reverse_proxy platform:8787 {
+		# Host skickas oförändrat (Caddys standard). Vidarebefordringshuvuden som gatewayn ändå
+		# ignorerar tas bort, så att ingen del av kedjan frestas att lita på dem.
+		header_up -X-Forwarded-Host
+		header_up -Forwarded
+		transport http {
+			# Kortare än plattformens 5 s, så att proxyn aldrig återanvänder en anslutning som
+			# plattformen just stänger.
+			keepalive 4s
+		}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

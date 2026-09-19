@@ -14,11 +14,14 @@ import type {
   AuthRequest,
   AuthRouteRequest,
   AuthRouteResponse,
+  BuilderHandler,
   CollectionScope,
   DocumentPage,
   Identity,
   IdentityProvider,
   JsonObject,
+  PlatformRequest,
+  PlatformResponse,
   RegisteredApp,
   StoredDocument,
   TenantContext,
@@ -382,14 +385,46 @@ export function spelaInIdentityProvider(inre: IdentityProvider): FejkadIdentityP
       return inre.authenticate(request);
     },
   };
-  // Kroken förs vidare BARA om den inre leverantören har den — annars skulle inpackningen få en
-  // leverantör utan inloggningsrutter att se ut att ha dem.
-  if (inre.handleAuthRoute === undefined) return inspelad;
+  // Kroken och inloggningssidan förs vidare BARA om den inre leverantören har dem — annars skulle
+  // inpackningen få en leverantör utan inloggningsrutter att se ut att ha dem.
+  const medSida: FejkadIdentityProvider =
+    inre.loginPath === undefined ? inspelad : { ...inspelad, loginPath: inre.loginPath };
+  if (inre.handleAuthRoute === undefined) return medSida;
   return {
-    ...inspelad,
+    ...medSida,
     async handleAuthRoute(request) {
       authRouteAnrop.push(request);
       return inre.handleAuthRoute?.(request) ?? null;
+    },
+  };
+}
+
+// ── BuilderHandler ─────────────────────────────────────────────────────────────────
+
+export interface FejkadBuilderHandler extends BuilderHandler {
+  /** Varje förfrågan gatewayn lämnade vidare, i ordning. Tom = handlern nåddes aldrig. */
+  readonly anrop: PlatformRequest[];
+}
+
+export const BYGGVERKTYGETS_SIDA = '<h1>Byggverktyget</h1>';
+
+/**
+ * Byggverktygets handler som spelar in anrop. Svaret styrs av testet och är medvetet otypat:
+ * gatewayn ska tåla vad som helst från handlern utan att släppa igenom det.
+ */
+export function skapaFejkadBuilderHandler(
+  svar: (request: PlatformRequest) => unknown = () => ({
+    status: 200,
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    body: BYGGVERKTYGETS_SIDA,
+  }),
+): FejkadBuilderHandler {
+  const anrop: PlatformRequest[] = [];
+  return {
+    anrop,
+    async handle(request) {
+      anrop.push(request);
+      return (await svar(request)) as PlatformResponse;
     },
   };
 }

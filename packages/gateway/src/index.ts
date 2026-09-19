@@ -4,12 +4,17 @@
  *
  * Hanteraren är en rak följd av steg, och ordningen ÄR säkerhetsmodellen (fail-closed):
  *
- *   0. säkerhetshuvuden        — först av allt, så att även 400/401/404/500 bär dem
+ *   0. säkerhetshuvuden        — först av allt, så att även 400/401/404/500 bär dem. Värdnamnet
+ *                                tolkas (rent, utan I/O) BARA för att välja värdsortens CSP; det
+ *                                nekas inte förrän i steg 2. Okänd värd ⇒ strängaste varianten.
  *   1. förfrågans form         — metod ur en allowlist, inga dubbletter av beslutsgrundande huvuden
  *   2. värdnamn                — ren funktion, ingen I/O; ogiltigt ⇒ 400 (vardnamn.ts)
  *   3. service worker-spärr    — 403
  *   3½. inloggningsrutter      — `/_auth/…` lämnas till identitetsleverantören och SLUTAR här
- *   4. autentisering           — ingen eller osäker identitet ⇒ 401
+ *   4. autentisering           — ingen eller osäker identitet ⇒ 401, eller 303 till
+ *                                inloggningssidan för en sidnavigering (inloggningssida.ts)
+ *   ── byggverktygets värd går härifrån till byggverktyg.ts: strikt CSRF → fråga → kropp → handler.
+ *      Den når aldrig register, filer eller lagring, och blir aldrig ett TenantContext.
  *   5. register                — okänd app eller version ⇒ 404; här skapas TenantContext (hyresgast.ts)
  *   6. CSRF för skrivande      — 403
  *   7. routning                — sökvägen normaliseras, sedan API eller statiska filer
@@ -35,9 +40,19 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { API_PREFIX, CSRF_HEADER } from '@vibesandbox/contracts';
 import type { AppFiles, AppRegistry, Identity, IdentityProvider, TenantStore } from '@vibesandbox/contracts';
 import { handleApi } from './api.ts';
+import { createBuilderConfig, handleBuilderRequest } from './byggverktyg.ts';
+import type { BuilderConfig, BuilderOptions } from './byggverktyg.ts';
 import { forbidden, invalidHost, invalidRequest, methodNotAllowed, toFailure, unauthenticated } from './fel.ts';
-import { applySecurityHeaders, hasDuplicateOfSingleValueHeader, toAuthHeaders } from './huvuden.ts';
+import {
+  NO_FRAMING,
+  appContentSecurityPolicy,
+  applySecurityHeaders,
+  hasDuplicateOfSingleValueHeader,
+  toAuthHeaders,
+} from './huvuden.ts';
 import { resolveTenant } from './hyresgast.ts';
+import { createLoginRedirect } from './inloggningssida.ts';
+import type { LoginRedirect } from './inloggningssida.ts';
 import { AUTH_SEGMENT, handleAuthRoute } from './inloggningsrutt.ts';
 import { appIdPrefix, describeError, safeLogger, silentLogger } from './logg.ts';
 import type { GatewayLogEntry, GatewayLogger } from './logg.ts';
@@ -45,10 +60,12 @@ import { normalizeTarget } from './sokvag.ts';
 import { handleStatic } from './statiskt.ts';
 import { sendFailure } from './svar.ts';
 import { createHostParser } from './vardnamn.ts';
+import type { BuilderHost, ParsedHost } from './vardnamn.ts';
 
 export { createTestIdentityProvider, signTestIdentity, testLoginPath } from './testidentitet.ts';
 export type { SignTestIdentityOptions, TestIdentityProviderOptions } from './testidentitet.ts';
 export type { GatewayLogEntry, GatewayLogger } from './logg.ts';
+export type { BuilderOptions } from './byggverktyg.ts';
 export { RECOMMENDED_SERVER_OPTIONS, handleClientError } from './server.ts';
 
 export interface GatewayOptions {
@@ -62,6 +79,11 @@ export interface GatewayOptions {
   readonly store: TenantStore;
   /** Driftlogg. Standard: tyst. Får aldrig e-postadresser, huvudvärden, kroppar eller kakor (se logg.ts). */
   readonly logger?: GatewayLogger;
+  /**
+   * Byggverktyget på `bygg.<previewDomain>`. Saknas det är den värden ett okänt värdnamn (400),
+   * och förhandsvisningar får inte ramas in av någon.
+   */
+  readonly builder?: BuilderOptions;
 }
 
 export type RequestHandler = (request: IncomingMessage, response: ServerResponse) => void;
@@ -73,21 +95,38 @@ const API_SEGMENT = API_PREFIX.slice(1);
 /** Fält som fylls i allteftersom stegen passeras, så att loggposten säger hur långt förfrågan kom. */
 type RequestTrace = { -readonly [K in Exclude<keyof GatewayLogEntry, 'level' | 'event'>]?: GatewayLogEntry[K] };
 
+/**
+ * Klientens adress för leverantörens hastighetsbegränsning: TCP-anslutningens motpart. ALDRIG
+ * `X-Forwarded-For`, `Forwarded` eller liknande — de skriver klienten själv. Bakom en omvänd proxy
+ * blir det proxyns adress; att lita på ett huvud därifrån kräver att proxyn är känd, och det
+ * beslutet hör inte hemma i en förfrågningshanterare.
+ */
+function clientAddressOf(request: IncomingMessage): string | undefined {
+  const address = request.socket.remoteAddress;
+  return typeof address === 'string' && address.length > 0 ? address : undefined;
+}
+
 function isIdentity(value: unknown): value is Identity {
   if (typeof value !== 'object' || value === null) return false;
   const { userId, email, roles } = value as Record<string, unknown>;
   return typeof userId === 'string' && userId.length > 0 && typeof email === 'string' && Array.isArray(roles);
 }
 
+/** `null` = inte inloggad (anroparen avgör om det blir 401 eller 303). Kastar 401 om leverantören kraschar. */
 async function authenticate(
   provider: IdentityProvider,
   request: IncomingMessage,
   hostname: string,
   log: GatewayLogger,
-): Promise<Identity> {
+): Promise<Identity | null> {
   let identity: Identity | null;
   try {
-    identity = await provider.authenticate({ host: hostname, headers: toAuthHeaders(request.headers) });
+    const clientAddress = clientAddressOf(request);
+    identity = await provider.authenticate({
+      host: hostname,
+      headers: toAuthHeaders(request.headers),
+      ...(clientAddress === undefined ? {} : { clientAddress }),
+    });
   } catch (error) {
     // 401 och inte 500: för den som anropar är läget "din inloggning kunde inte bekräftas", och
     // rätt åtgärd är att logga in igen. 500 skulle dessutom berätta för en angripare exakt vilka
@@ -97,8 +136,24 @@ async function authenticate(
   }
   // `null` betyder "inte inloggad". Ett svar som inte ser ut som en identitet behandlas likadant:
   // osäkerhet ⇒ neka, aldrig ett gissat standardvärde.
-  if (!isIdentity(identity)) throw unauthenticated();
-  return identity;
+  return isIdentity(identity) ? identity : null;
+}
+
+/** Det som räknas fram en gång vid start och delas av alla förfrågningar. */
+interface Gateway {
+  readonly options: GatewayOptions;
+  readonly parseHost: ReturnType<typeof createHostParser>;
+  readonly log: GatewayLogger;
+  readonly builder: BuilderConfig | undefined;
+  readonly loginRedirect: LoginRedirect | undefined;
+}
+
+/** 303 och inte 302: webbläsaren ska alltid göra en GET mot inloggningssidan. Ingen kropp. */
+function sendLoginRedirect(response: ServerResponse, location: string): void {
+  response.statusCode = 303;
+  response.setHeader('Location', location);
+  response.setHeader('Content-Length', 0);
+  response.end();
 }
 
 /**
@@ -121,13 +176,14 @@ function assertCsrfProtection(request: IncomingMessage, hostname: string): void 
 }
 
 async function handle(
-  options: GatewayOptions,
-  parseHost: ReturnType<typeof createHostParser>,
-  log: GatewayLogger,
+  gateway: Gateway,
+  host: ParsedHost | BuilderHost | 'ogiltigt',
   request: IncomingMessage,
   response: ServerResponse,
   trace: RequestTrace,
 ): Promise<void> {
+  const { options, log } = gateway;
+
   // 1. Förfrågans form — rena kontroller utan I/O.
   const method = request.method ?? '';
   if (!ALLOWED_METHODS.includes(method)) throw methodNotAllowed(ALLOWED_METHODS);
@@ -136,12 +192,16 @@ async function handle(
     throw invalidRequest('Förfrågan innehåller samma huvud flera gånger.');
   }
 
-  // 2. Värdnamnet — det enda som avgör vilken app det gäller. Ren tolkning, inget uppslag.
-  const host = parseHost(request.headers.host);
+  // 2. Värdnamnet — det enda som avgör vilken app det gäller. Ren tolkning, inget uppslag (gjord
+  //    redan i steg 0, av samma funktion, på samma huvud).
   if (host === 'ogiltigt') throw invalidHost();
   const hostname = host.hostname;
-  trace.appIdPrefix = appIdPrefix(host.appId);
-  trace.kind = host.kind;
+  if (host.kind === 'builder') {
+    trace.route = 'builder';
+  } else {
+    trace.appIdPrefix = appIdPrefix(host.appId);
+    trace.kind = host.kind;
+  }
 
   // 3. Webbläsaren sätter `Service-Worker` när den hämtar ett skript för registrering som
   //    bakgrundsskript. Ett sådant överlever sidan och kan avlyssna all appens trafik, så det
@@ -159,6 +219,7 @@ async function handle(
   if (target !== 'ogiltig' && target.segments[0] === AUTH_SEGMENT) {
     trace.route = 'auth';
     await handleAuthRoute({
+      request,
       response,
       provider: options.identityProvider,
       log,
@@ -167,13 +228,30 @@ async function handle(
       segments: target.segments,
       rawQuery: target.query,
       headers: toAuthHeaders(request.headers),
+      clientAddress: clientAddressOf(request),
     });
     return;
   }
 
   // 4. Autentisering. Gäller ALLT ANNAT, även statiska filer: länken ensam räcker inte.
   const identity = await authenticate(options.identityProvider, request, hostname, log);
+  if (identity === null) {
+    // En människa i en webbläsare skickas till inloggningssidan; allt annat får 401. Före
+    // registret, så att svaret är detsamma oavsett om appen finns.
+    const location = gateway.loginRedirect?.(method, request.headers, target, API_SEGMENT) ?? null;
+    if (location === null) throw unauthenticated();
+    sendLoginRedirect(response, location);
+    return;
+  }
   trace.userId = identity.userId;
+
+  // Byggverktyget: egen väg härifrån, utan register och utan TenantContext.
+  if (host.kind === 'builder') {
+    // `builder` finns alltid här: utan den känner värdnamnstolken inte igen värden (steg 2).
+    if (gateway.builder === undefined) throw invalidHost();
+    await handleBuilderRequest({ request, response, method, target, identity, builder: gateway.builder, log });
+    return;
+  }
 
   // 5. Register → TenantContext. Först nu, när vi vet vem som frågar.
   const tenant = await resolveTenant(host, options.registry);
@@ -205,16 +283,36 @@ async function handle(
 
 /** Hela gatewayn som en vanlig `node:http`-hanterare. Kastar direkt om domänerna är felkonfigurerade. */
 export function createGateway(options: GatewayOptions): RequestHandler {
-  const parseHost = createHostParser({ appDomain: options.appDomain, previewDomain: options.previewDomain });
-  const log = safeLogger(options.logger ?? silentLogger);
+  const builder = options.builder === undefined ? undefined : createBuilderConfig(options.builder, options.previewDomain);
+  const parseHost = createHostParser({
+    appDomain: options.appDomain,
+    previewDomain: options.previewDomain,
+    builder: builder !== undefined,
+  });
+  const gateway: Gateway = {
+    options,
+    parseHost,
+    log: safeLogger(options.logger ?? silentLogger),
+    builder,
+    loginRedirect: createLoginRedirect(options.identityProvider),
+  };
+  const log = gateway.log;
+
+  // CSP per värdsort (huvuden.ts). Förhandsvisningar ramas in av byggverktyget — och bara av det.
+  const cspFor: Readonly<Record<'published' | 'draft' | 'builder', string>> = {
+    published: appContentSecurityPolicy(NO_FRAMING),
+    draft: appContentSecurityPolicy(builder?.origin ?? NO_FRAMING),
+    builder: builder?.contentSecurityPolicy ?? appContentSecurityPolicy(NO_FRAMING),
+  };
 
   return (request, response) => {
     const trace: RequestTrace = {};
 
-    // 0. Säkerhetshuvudena FÖRST, innan något kan gå fel.
-    applySecurityHeaders(response);
+    // 0. Säkerhetshuvudena FÖRST, innan något kan gå fel — med värdsortens CSP.
+    const host = parseHost(request.headers.host);
+    applySecurityHeaders(response, host === 'ogiltigt' ? undefined : cspFor[host.kind]);
 
-    handle(options, parseHost, log, request, response, trace)
+    handle(gateway, host, request, response, trace)
       .catch((error: unknown) => {
         const failure = toFailure(error);
         if (failure.unexpected) log({ level: 'error', event: 'internal_error', ...trace, ...describeError(error) });
