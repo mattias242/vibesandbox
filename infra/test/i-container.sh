@@ -99,6 +99,7 @@ forbered_vard() {
   cp /infra/test/fixturer/ssh/*.conf /etc/ssh/sshd_config.d/
   cp /infra/test/fixturer/sysctl/*.conf /etc/sysctl.d/
   mkdir -p /etc/cloud/cloud.cfg.d && cp /infra/test/fixturer/cloud/*.cfg /etc/cloud/cloud.cfg.d/
+  cp /infra/test/fixturer/apt/* /etc/apt/apt.conf.d/
   # Ubuntus containeravbild har en standardanvändare 'ubuntu' i sudo. verify.sh flaggar den
   # (med rätta) som avdrift; en riktig Ubuntu-värd ska inte ha den kvar. Se README.
   if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu >/dev/null 2>&1; fi
@@ -283,6 +284,14 @@ scenario_fas1() {
   # shellcheck disable=SC2016  # ${distro_codename} ska matchas ordagrant
   if apt-config dump | grep -qE 'Unattended-Upgrade::Origins-Pattern:: "origin=(Debian,codename|Ubuntu,archive)=\$\{distro_codename\}-security'; then
     godkand "säkerhetsarkivet finns i Origins-Pattern (effektivt)"; else underkand "säkerhetsarkivet saknas i Origins-Pattern"; fi
+  # Leverantörens avbild har en SENARE sorterad fil som stänger av allt (sett på en riktig värd):
+  # det som gäller är det effektiva värdet, inte vad vår egen fil säger.
+  local ac
+  ac="$(apt-config dump)"
+  for nyckel in 'APT::Periodic::Update-Package-Lists "1"' 'APT::Periodic::Unattended-Upgrade "1"' 'APT::Periodic::Enable "1"' \
+    'Unattended-Upgrade::Automatic-Reboot "true"' 'Unattended-Upgrade::Automatic-Reboot-Time "04:00"'; do
+    if grep -qxF "${nyckel};" <<<"$ac"; then godkand "effektivt: ${nyckel}"; else underkand "effektivt INTE ${nyckel} (är: $(grep -F "${nyckel%% *} " <<<"$ac" | tail -n 1))"; fi
+  done
 
   pastar "ops finns" id ops
   if id -nG ops | grep -qw sudo; then godkand "ops är med i sudo"; else underkand "ops är inte med i sudo"; fi

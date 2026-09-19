@@ -502,7 +502,7 @@ skriv_tillstand() {
     printf '# Skriven av provision.sh — läses av verify.sh. Innehåller inga hemligheter.\n'
     for v in OPS_USER PUBLIC_TCP_PORTS PUBLIC_UDP_PORTS OPEN_TAILSCALE_UDP LOCK_ROOT_PASSWORD \
       HARDEN_GUEST_AGENT INSTALL_GVISOR DOCKER_XFS_LOOP SWAPFILE_SIZE_GB VM_SWAPPINESS \
-      PLATFORM_ROOT DATA_USER DATA_UID DOCKREMAP_SUBID_BASE TAILSCALE_TAGS; do
+      PLATFORM_ROOT DATA_USER DATA_UID DOCKREMAP_SUBID_BASE TAILSCALE_TAGS AUTO_REBOOT AUTO_REBOOT_TIME; do
       printf '%s=%q\n' "$v" "${!v}"
     done
   )"
@@ -840,9 +840,29 @@ ${ursprung}
 };
 Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
+EOF
+
+  # Enkla värden (inte listor) gäller från den fil som läses SIST. Leverantörers avbilder kan ha
+  # en egen 99-fil som stänger av allt — den lämnas orörd, men vår fil sorteras efter den
+  # ('z' > '9'). Kontrolleras mot det effektiva värdet nedan, inte mot filen.
+  skriv_fil /etc/apt/apt.conf.d/zz-vibesandbox-auto-upgrades 0644 <<EOF
+// Skriven av vibesandbox provision.sh — sorteras sist med flit, så att den vinner över andra filer.
+APT::Periodic::Enable "1";
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
 Unattended-Upgrade::Automatic-Reboot "${omstart}";
 Unattended-Upgrade::Automatic-Reboot-Time "${AUTO_REBOOT_TIME}";
 EOF
+  if (( ! DRY_RUN )); then
+    local effektivt
+    effektivt="$(apt-config dump 2>/dev/null || true)"
+    grep -qxF 'APT::Periodic::Unattended-Upgrade "1";' <<<"$effektivt" \
+      || avbryt "automatiska uppdateringar är fortfarande avstängda enligt 'apt-config dump' — någon annan fil i /etc/apt/apt.conf.d vinner över zz-vibesandbox-auto-upgrades."
+    grep -qxF "Unattended-Upgrade::Automatic-Reboot \"${omstart}\";" <<<"$effektivt" \
+      || avbryt "Unattended-Upgrade::Automatic-Reboot är inte '${omstart}' enligt 'apt-config dump' — en annan fil vinner."
+    klart "automatiska uppdateringar gäller effektivt (apt-config dump), omstart ${omstart}"
+  fi
 
   for enhet in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; do
     if [[ "$(systemctl is-enabled "$enhet" 2>/dev/null || true)" == "enabled" ]] \

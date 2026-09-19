@@ -120,6 +120,8 @@ las_tillstand() {
   DATA_UID="${DATA_UID:-110001}"
   DOCKREMAP_SUBID_BASE="${DOCKREMAP_SUBID_BASE:-100000}"
   TAILSCALE_TAGS="${TAILSCALE_TAGS:-tag:vibesandbox}"
+  AUTO_REBOOT="${AUTO_REBOOT:-1}"
+  AUTO_REBOOT_TIME="${AUTO_REBOOT_TIME:-04:00}"
 }
 
 # ── Kontroller ─────────────────────────────────────────────────────────────────────────────
@@ -167,6 +169,16 @@ kontroll_uppdateringar() {
     if fanga dump apt-config dump; then
       v="$(grep -E '^APT::Periodic::Unattended-Upgrade ' <<<"$dump" | tr -dc '0-9' || true)"
       forvanta "APT::Periodic::Unattended-Upgrade (effektivt, apt-config dump)" "${v:-0}" "1"
+      # Enkla värden gäller från den fil som läses sist — en leverantörs senare fil kan stänga av
+      # allt utan att vår egen fil ändras. Därför det effektiva värdet, inte filen.
+      v="$(grep -E '^APT::Periodic::Update-Package-Lists ' <<<"$dump" | tr -dc '0-9' || true)"
+      forvanta "APT::Periodic::Update-Package-Lists (effektivt)" "${v:-0}" "1"
+      v="$(grep -E '^Unattended-Upgrade::Automatic-Reboot ' <<<"$dump" | sed -E 's/.*"(.*)".*/\1/' || true)"
+      forvanta "Unattended-Upgrade::Automatic-Reboot (effektivt)" "${v:-false}" "$( (( AUTO_REBOOT )) && echo true || echo false)"
+      if (( AUTO_REBOOT )); then
+        v="$(grep -E '^Unattended-Upgrade::Automatic-Reboot-Time ' <<<"$dump" | sed -E 's/.*"(.*)".*/\1/' || true)"
+        forvanta "Unattended-Upgrade::Automatic-Reboot-Time (effektivt)" "${v:-‹saknas›}" "$AUTO_REBOOT_TIME"
+      fi
     else
       fel "'apt-config dump' misslyckades (kod ${FANGAD_KOD})"
     fi
