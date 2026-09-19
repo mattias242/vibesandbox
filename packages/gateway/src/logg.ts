@@ -13,7 +13,7 @@ export interface GatewayLogEntry {
   readonly event: 'request' | 'identity_provider_failed' | 'internal_error';
   readonly method?: string;
   /** Vilken sorts rutt, aldrig den faktiska sökvägen. */
-  readonly route?: 'api' | 'static' | 'auth';
+  readonly route?: 'api' | 'static' | 'auth' | 'builder';
   readonly status?: number;
   readonly code?: string;
   /** De första 8 tecknen. Hela app-id:t är den hemliga delningslänken och hör inte hemma i en logg. */
