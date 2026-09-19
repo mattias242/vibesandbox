@@ -98,11 +98,11 @@ function v6Groups(ip: string): number[] | null {
   let text = ip.toLowerCase();
   const zone = text.indexOf('%');
   if (zone >= 0) return null; // zonindex = länklokalt
-  const v4Tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(text);
-  if (v4Tail !== null) {
-    const v4 = v4ToNumber(v4Tail[1] ?? '');
+  const v4Tail = text.slice(text.lastIndexOf(':') + 1);
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(v4Tail)) {
+    const v4 = v4ToNumber(v4Tail);
     if (v4 === null) return null;
-    text = text.slice(0, -(v4Tail[1] ?? '').length) + ((v4 >>> 16) & 0xffff).toString(16) + ':' + (v4 & 0xffff).toString(16);
+    text = text.slice(0, -v4Tail.length) + ((v4 >>> 16) & 0xffff).toString(16) + ':' + (v4 & 0xffff).toString(16);
   }
   const halves = text.split('::');
   if (halves.length > 2) return null;
