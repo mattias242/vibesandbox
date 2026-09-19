@@ -161,25 +161,25 @@ describe('checkSourceFiles: storlek och innehåll', () => {
 
 describe('checkSourceFiles: importer', () => {
   it.each([
-    [`import fs from 'node:fs';`, 'import-not-allowed'],
-    [`import { readFile } from "fs";`, 'import-not-allowed'],
-    [`import _ from 'lodash';`, 'import-not-allowed'],
-    [`import 'some-polyfill';`, 'import-not-allowed'],
-    [`export * from 'scheduler';`, 'import-not-allowed'],
-    [`import { x } from 'react-dom/server';`, 'import-not-allowed'],
-    [`import { jsxDEV } from 'react/jsx-dev-runtime';`, 'import-not-allowed'],
-    [`import { c } from '@vibesandbox/contracts';`, 'import-not-allowed'],
-    [`import v from 'vite';`, 'import-not-allowed'],
-    [`import x from '/src/lib/helper.ts';`, 'import-not-allowed'],
-    [`import x from '../vite.config.ts';`, 'import-not-allowed'],
-    [`import x from '../../../../etc/passwd';`, 'import-not-allowed'],
-    [`import x from './styles.css?inline';`, 'import-not-allowed'],
-    [`import x from './App.tsx?raw';`, 'import-not-allowed'],
-    [`import W from './w.ts?worker';`, 'import-not-allowed'],
-    [`import x from 'data:text/javascript,alert(1)';`, 'import-not-allowed'],
-    [`import x from 'https://esm.sh/lodash';`, 'import-not-allowed'],
-    [`import {\n  a,\n  b,\n} from 'lodash';`, 'import-not-allowed'],
-    [`import type { Plugin } from 'vite';`, 'import-not-allowed'],
+    [`import fs from 'node:fs';`, 'forbidden-import'],
+    [`import { readFile } from "fs";`, 'forbidden-import'],
+    [`import _ from 'lodash';`, 'forbidden-import'],
+    [`import 'some-polyfill';`, 'forbidden-import'],
+    [`export * from 'scheduler';`, 'forbidden-import'],
+    [`import { x } from 'react-dom/server';`, 'forbidden-import'],
+    [`import { jsxDEV } from 'react/jsx-dev-runtime';`, 'forbidden-import'],
+    [`import { c } from '@vibesandbox/contracts';`, 'forbidden-import'],
+    [`import v from 'vite';`, 'forbidden-import'],
+    [`import x from '/src/lib/helper.ts';`, 'forbidden-import'],
+    [`import x from '../vite.config.ts';`, 'forbidden-import'],
+    [`import x from '../../../../etc/passwd';`, 'forbidden-import'],
+    [`import x from './styles.css?inline';`, 'forbidden-import'],
+    [`import x from './App.tsx?raw';`, 'forbidden-import'],
+    [`import W from './w.ts?worker';`, 'forbidden-import'],
+    [`import x from 'data:text/javascript,alert(1)';`, 'forbidden-import'],
+    [`import x from 'https://esm.sh/lodash';`, 'forbidden-import'],
+    [`import {\n  a,\n  b,\n} from 'lodash';`, 'forbidden-import'],
+    [`import type { Plugin } from 'vite';`, 'forbidden-import'],
     [`import x = require('fs');`, 'require'],
     [`const fs = require('fs');`, 'require'],
     [`const m = await import('lodash');`, 'dynamic-import'],
@@ -195,13 +195,13 @@ describe('checkSourceFiles: importer', () => {
   });
 
   it('pekar ut node: särskilt, med vad som gäller i stället', () => {
-    const diagnostic = withLine(`import fs from 'node:fs';`).find((d) => d.rule === 'import-not-allowed');
+    const diagnostic = withLine(`import fs from 'node:fs';`).find((d) => d.rule === 'forbidden-import');
     expect(diagnostic?.message).toMatch(/node:fs/);
     expect(diagnostic?.message).toMatch(/webbläsaren/);
   });
 
   it('räknar upp de tillåtna paketen när ett paket nekas', () => {
-    const diagnostic = withLine(`import _ from 'lodash';`).find((d) => d.rule === 'import-not-allowed');
+    const diagnostic = withLine(`import _ from 'lodash';`).find((d) => d.rule === 'forbidden-import');
     expect(diagnostic?.message).toMatch(/lodash/);
     expect(diagnostic?.message).toMatch(/react/);
     expect(diagnostic?.message).toMatch(/@vibesandbox\/sdk/);
@@ -210,40 +210,40 @@ describe('checkSourceFiles: importer', () => {
 
 describe('checkSourceFiles: förbjudna API:er', () => {
   it.each([
-    [`fetch('/x');`, 'network'],
-    [`window.fetch('/x');`, 'network'],
-    [`globalThis.fetch('/x');`, 'network'],
-    [`self.fetch('/x');`, 'network'],
-    [`window['fetch']('/x');`, 'network'],
-    [`window["fetch"]('/x');`, 'network'],
-    [`window[\`fetch\`]('/x');`, 'network'],
-    [`globalThis [ 'fetch' ] ('/x');`, 'network'],
-    [`const f = fetch; f('/x');`, 'network'],
-    [`new XMLHttpRequest();`, 'network'],
-    [`new WebSocket('wss://x');`, 'network'],
-    [`new EventSource('/x');`, 'network'],
-    [`new RTCPeerConnection();`, 'network'],
-    [`const c: RTCDataChannel | null = null;`, 'network'],
-    [`new WebTransport('/x');`, 'network'],
-    [`navigator.sendBeacon('/x', 'd');`, 'network'],
+    [`fetch('/x');`, 'network-api'],
+    [`window.fetch('/x');`, 'network-api'],
+    [`globalThis.fetch('/x');`, 'network-api'],
+    [`self.fetch('/x');`, 'network-api'],
+    [`window['fetch']('/x');`, 'network-api'],
+    [`window["fetch"]('/x');`, 'network-api'],
+    [`window[\`fetch\`]('/x');`, 'network-api'],
+    [`globalThis [ 'fetch' ] ('/x');`, 'network-api'],
+    [`const f = fetch; f('/x');`, 'network-api'],
+    [`new XMLHttpRequest();`, 'network-api'],
+    [`new WebSocket('wss://x');`, 'network-api'],
+    [`new EventSource('/x');`, 'network-api'],
+    [`new RTCPeerConnection();`, 'network-api'],
+    [`const c: RTCDataChannel | null = null;`, 'network-api'],
+    [`new WebTransport('/x');`, 'network-api'],
+    [`navigator.sendBeacon('/x', 'd');`, 'network-api'],
     [`window.open('/x');`, 'window-open'],
     [`open('/x');`, 'window-open'],
-    [`eval('1');`, 'eval'],
-    [`new Function('return 1')();`, 'eval'],
-    [`Function('return 1')();`, 'eval'],
-    [`(() => {}).constructor('return 1')();`, 'eval'],
-    [`setTimeout('alert(1)', 1);`, 'eval'],
-    [`setInterval(\`alert(1)\`, 1);`, 'eval'],
-    [`localStorage.setItem('a', 'b');`, 'storage'],
-    [`window.sessionStorage.clear();`, 'storage'],
-    [`indexedDB.open('x');`, 'storage'],
-    [`document.cookie = 'a=b';`, 'storage'],
-    [`window['localStorage'].getItem('a');`, 'storage'],
+    [`eval('1');`, 'dynamic-code'],
+    [`new Function('return 1')();`, 'dynamic-code'],
+    [`Function('return 1')();`, 'dynamic-code'],
+    [`(() => {}).constructor('return 1')();`, 'dynamic-code'],
+    [`setTimeout('alert(1)', 1);`, 'dynamic-code'],
+    [`setInterval(\`alert(1)\`, 1);`, 'dynamic-code'],
+    [`localStorage.setItem('a', 'b');`, 'browser-storage'],
+    [`window.sessionStorage.clear();`, 'browser-storage'],
+    [`indexedDB.open('x');`, 'browser-storage'],
+    [`document.cookie = 'a=b';`, 'browser-storage'],
+    [`window['localStorage'].getItem('a');`, 'browser-storage'],
     [`document.domain = 'x';`, 'document-domain'],
-    [`navigator.serviceWorker.register('/sw.js');`, 'worker'],
-    [`importScripts('/x.js');`, 'worker'],
-    [`new Worker('/w.js');`, 'worker'],
-    [`new SharedWorker('/w.js');`, 'worker'],
+    [`navigator.serviceWorker.register('/sw.js');`, 'service-worker'],
+    [`importScripts('/x.js');`, 'service-worker'],
+    [`new Worker('/w.js');`, 'service-worker'],
+    [`new SharedWorker('/w.js');`, 'service-worker'],
     [`window.parent.postMessage('x', '*');`, 'frame-escape'],
     [`window.top.location.href;`, 'frame-escape'],
     [`window.opener.focus();`, 'frame-escape'],
@@ -273,8 +273,8 @@ describe('checkSourceFiles: förbjudna API:er', () => {
   });
 
   it('föreslår SDK:t i stället för fetch och localStorage', () => {
-    const fetchDiagnostic = withLine(`fetch('/x');`).find((d) => d.rule === 'network');
-    const storageDiagnostic = withLine(`localStorage.getItem('a');`).find((d) => d.rule === 'storage');
+    const fetchDiagnostic = withLine(`fetch('/x');`).find((d) => d.rule === 'network-api');
+    const storageDiagnostic = withLine(`localStorage.getItem('a');`).find((d) => d.rule === 'browser-storage');
     for (const diagnostic of [fetchDiagnostic, storageDiagnostic]) {
       expect(diagnostic?.message).toMatch(/db\.collection\(\.\.\.\) ur @vibesandbox\/sdk/);
     }
@@ -295,13 +295,13 @@ describe('checkSourceFiles: förbjudna API:er', () => {
     });
 
     it('men ett anrop gömt i det som ser ut som en kommentar eller sträng fångas ändå (skannern kan ta fel på JSX-text)', () => {
-      expect(rules(withLine(`export const A = () => <p>//</p>; fetch('/x');`))).toContain('network');
-      expect(rules(withLine(`export const B = () => <p>Don't {fetch('/x')}</p>;`))).toContain('network');
-      expect(rules(withLine(`if (a) /'/.test(s); fetch('/x');`))).toContain('network');
+      expect(rules(withLine(`export const A = () => <p>//</p>; fetch('/x');`))).toContain('network-api');
+      expect(rules(withLine(`export const B = () => <p>Don't {fetch('/x')}</p>;`))).toContain('network-api');
+      expect(rules(withLine(`if (a) /'/.test(s); fetch('/x');`))).toContain('network-api');
     });
 
     it('kod i ${…} i en mallsträng granskas', () => {
-      expect(rules(withLine('export const t = `a ${localStorage.getItem("x")} b`;'))).toContain('storage');
+      expect(rules(withLine('export const t = `a ${localStorage.getItem("x")} b`;'))).toContain('browser-storage');
     });
   });
 });
@@ -321,9 +321,21 @@ describe('checkSourceFiles: adresser', () => {
     `const u = 'https:\\/\\/evil.example';`,
     `const u = 'https:\\u002f\\u002fevil.example';`,
     `const s = { backgroundImage: 'url(//evil.example/x.png)' };`,
-    `// se https://evil.example`,
   ])('%s ⇒ external-url', (line) => {
     expect(rules(withLine(line))).toContain('external-url');
+  });
+
+  it('en adress i en kommentar är ett eget, lindrigare regelbrott (url-in-comment), inte external-url', () => {
+    const found = rules(withLine(`// se https://evil.example\n/* och http://evil.example */`));
+    expect(found).toContain('url-in-comment');
+    expect(found).not.toContain('external-url');
+  });
+
+  it('agentens regel-id för säkerhetsbrott används (packages/agent/src/klarsprak.ts)', () => {
+    expect(rules(withLine(`fetch('/x'); eval('1'); localStorage.x; window.open('/'); new Worker('/w.js'); const u = 'https://evil.example';`))).toEqual(
+      expect.arrayContaining(['network-api', 'dynamic-code', 'browser-storage', 'window-open', 'service-worker', 'external-url']),
+    );
+    expect(rules(withLine(`import _ from 'lodash';`))).toContain('forbidden-import');
   });
 
   it.each(['http://www.w3.org/2000/svg', 'http://www.w3.org/1998/Math/MathML', 'http://www.w3.org/1999/xlink'])(

@@ -32,15 +32,20 @@ Policyn finns ändå, av tre skäl:
 
 ## Regler för källfiler
 
+Regel-id:na är ett gränssnitt: agenten (`packages/agent/src/klarsprak.ts`) avbryter turen direkt
+vid säkerhetsbrotten `external-url`, `network-api`, `dynamic-code`, `browser-storage`,
+`window-open` och `service-worker`, och förklarar `forbidden-import` i klarspråk. Byt inte namn
+på dem utan att ändra där samtidigt.
+
 | Regel | Vad |
 |---|---|
 | `path-not-allowed` | Sökvägen följer inte `isAllowedSourcePath` ur contracts (EN regel). Stänger `src/tsconfig.json`, `src/vite.config.ts`, `src/.env`, `src/postcss.config.js`, `src/main.tsx` m.fl. |
 | `too-many-files`, `file-too-large`, `total-too-large`, `invalid-content` | Storlek (60 filer, 200 kB/fil, 1 MB totalt) och styrtecken/NUL. |
-| `import-not-allowed` | Bara `react`, `react/jsx-runtime`, `react-dom`, `react-dom/client`, `@vibesandbox/sdk` (härlett ur mallens `approved-packages.json`) och relativa sökvägar som stannar i `src/`, utan `?raw`/`?worker`. |
+| `forbidden-import` | Bara `react`, `react/jsx-runtime`, `react-dom`, `react-dom/client`, `@vibesandbox/sdk` (härlett ur mallens `approved-packages.json`) och relativa sökvägar som stannar i `src/`, utan `?raw`/`?worker`. |
 | `dynamic-import`, `require`, `import-meta`, `triple-slash` | `import()` bara med fast relativ sökväg; ingen `require`; `import.meta` bara som `.env`; inga `/// <reference>` (typkontrollen skulle läsa filer utanför appen). |
-| `network`, `window-open`, `eval`, `storage`, `document-domain`, `worker`, `frame-escape`, `navigation` | Förbjudna API:er per grupp. |
+| `network-api`, `window-open`, `dynamic-code`, `browser-storage`, `document-domain`, `service-worker`, `frame-escape`, `navigation` | Förbjudna API:er per grupp. |
 | `global-access`, `escape-sequence` | Hakparentes eller alias för `window`/`globalThis`/`self`; `\u` i namn. |
-| `external-url`, `javascript-url`, `data-html-url` | Absoluta `http(s)://`, `ws(s)://`, protokollrelativa `//värd`, `javascript:`, `data:text/html`. Undantag: XML-namnrymder (`ALLOWED_SOURCE_URLS`, kommenterad lista). |
+| `external-url`, `url-in-comment`, `javascript-url`, `data-html-url` | Absoluta `http(s)://`, `ws(s)://`, protokollrelativa `//värd`, `javascript:`, `data:text/html`. Undantag: XML-namnrymder (`ALLOWED_SOURCE_URLS`, kommenterad lista). En adress i en kommentar ger det lindrigare `url-in-comment`. |
 | `css-import`, `css-url`, `css-plugin`, `css-expression`, `css-behavior`, `css-binding`, `css-escape` | CSS. `url()` bara med `data:` eller `#id`. `@plugin`/`@config` (Tailwind v4) kör JavaScript vid bygge. |
 
 ### Kommentarer och strängar
