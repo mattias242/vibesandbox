@@ -140,9 +140,9 @@ Given(/^att Anna förhandsvisar ett utkast av appen "([^"]+)"$/, async function 
 
 When(
   /^(Anna|Bertil) schemalägger en påminnelse till alla i (förhandsvisningen av )?appen "([^"]+)" om ett ögonblick med ämnet "([^"]+)"$/,
-  async function (this: Varld, person: string, forhandsvisning: string | undefined, app: string, amne: string) {
+  async function (this: Varld, person: string, forhandsvisning: string | null | undefined, app: string, amne: string) {
     const kropp = { at: omEttOgonblick(this), to: 'all', subject: amne, text: 'Glöm inte.' };
-    this.svar = [await schemalagg(this, person, app, kropp, forhandsvisning !== undefined)];
+    this.svar = [await schemalagg(this, person, app, kropp, typeof forhandsvisning === 'string' && forhandsvisning !== '')];
     assert.equal(this.endaSvaret().status, 201, `Det gick inte att schemalägga: ${this.endaSvaret().kropp.slice(0, 200)}`);
   },
 );
