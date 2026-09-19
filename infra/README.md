@@ -37,7 +37,11 @@ körordningen — följ den, i den här ordningen, första gången på en ny vä
 3. Jämför serverns SSH-värdnyckel med den som leverantörens panel visar.
 4. Spara i lösenordshanteraren: ett nytt, starkt lösenord för `ops`. Det behövs för `sudo`
    och är **nödvägen** via leverantörens webbkonsol. Skapa hashen på din egen dator:
-   `openssl passwd -6` — klartexten ska aldrig hamna på servern.
+   `openssl passwd -6` — klartexten ska aldrig hamna på servern. **Bara bokstäver a–z/A–Z och
+   siffror, hellre långt (24+ tecken):** webbkonsolen skickar tangenter som om tangentbordet vore
+   amerikanskt, så `@ - / ( ) { } | < > ;` och å ä ö blir andra tecken där — lösenordet fungerar
+   då för `sudo` över SSH men inte i nödvägen. Skriv det för hand i konsolen; inklistring där
+   är lika opålitlig.
 5. **Tailnet-ACL** (i Tailscales adminkonsol). Servern kör opålitlig kod och ska bara vara
    *nåbar* från tailnetet, aldrig kunna *initiera* trafik in i det:
    - skapa taggen `tag:vibesandbox` med dig själv som `tagOwner`;
