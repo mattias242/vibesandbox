@@ -54,7 +54,8 @@ Kommentarer skalas bort före API-kontrollen, så att "vi använder inte localSt
 inte fälls. Utan en riktig parser kan skannern ta fel — JSX-text som `<p>//</p>` eller `<p>Don't</p>`
 ser ut som kommentar respektive sträng. Därför granskas allt som lades undan som text **ändå**, med
 mönster formade som anrop (`fetch(`, `localStorage.`). Kod som gömts i något som ser ut som en
-kommentar fastnar alltså; vanlig prosa gör det inte. Adresser granskas i hela källan, även kommentarer.
+kommentar fastnar alltså; vanlig prosa gör det inte. En adress i en kommentar nekas också, men
+som det lindrigare `url-in-comment`, så att agenten låter modellen rätta i stället för att avbryta.
 
 ## Regler för det byggda (`checkBuiltBundle`)
 
