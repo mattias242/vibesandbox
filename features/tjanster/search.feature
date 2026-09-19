@@ -1,5 +1,5 @@
 # language: sv
-@tjanst-search @pågår
+@tjanst-search
 Egenskap: Sökning i en apps dokument efter innebörd
   En app med ärenden, en kunskapsbank eller anteckningar behöver kunna hitta det som handlar
   om samma sak, även när orden inte är exakt desamma. Plattformen söker åt appen — men bara
