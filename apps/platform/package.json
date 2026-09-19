@@ -21,6 +21,15 @@
     "@vibesandbox/data-api": "*",
     "@vibesandbox/gateway": "*",
     "@vibesandbox/identity": "*",
-    "@vibesandbox/llm": "*"
+    "@vibesandbox/llm": "*",
+    "@vibesandbox/tjanst-files": "*",
+    "@vibesandbox/tjanst-history": "*",
+    "@vibesandbox/tjanst-llm": "*",
+    "@vibesandbox/tjanst-notify": "*",
+    "@vibesandbox/tjanst-ocr": "*",
+    "@vibesandbox/tjanst-roles": "*",
+    "@vibesandbox/tjanst-schedule": "*",
+    "@vibesandbox/tjanst-search": "*",
+    "@vibesandbox/tjanst-transcribe": "*"
   }
 }

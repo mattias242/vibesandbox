@@ -13,8 +13,8 @@
  */
 import { isIP } from 'node:net';
 import { isAbsolute, resolve } from 'node:path';
-import { BUILDER_HOST_LABEL } from '@vibesandbox/contracts';
-import type { TenantLimits } from '@vibesandbox/contracts';
+import { APP_SERVICE_NAMES, BUILDER_HOST_LABEL } from '@vibesandbox/contracts';
+import type { AppServiceName, TenantLimits } from '@vibesandbox/contracts';
 import type { PlatformLogger } from './logg.ts';
 
 /** Byggverktygets webbgränssnitt, byggt med `npm run build -w @vibesandbox/builder-ui`. */
@@ -58,6 +58,11 @@ export interface PlatformConfig {
   readonly identity: IdentityConfig;
   /** Finns när byggverktyget är påslaget (`LLM_MODEL` satt). */
   readonly builder?: BuilderConfig;
+  /**
+   * Plattformstjänster för appar (`APP_SERVICES`, kommaseparerad). Saknas = inga. `env` är hela
+   * miljön: varje tjänst läser sina egna `SVC_<NAMN>_…` och vägrar starta om något fattas.
+   */
+  readonly appServices?: { readonly enabled: readonly AppServiceName[]; readonly env: Environment };
   /** Sätts inte ur miljön. Finns för tester som behöver en liten kvot för att gå fort. */
   readonly limits?: TenantLimits;
   /** Sätts inte ur miljön. Standard är tyst; `main.ts` skickar in en som skriver JSON-rader. */
@@ -185,6 +190,7 @@ export function loadConfig(env: Environment): PlatformConfig {
 
   const identity = loadIdentity(env, production, problems, required);
   const builder = loadBuilder(env, production, problems);
+  const appServices = loadAppServices(env, problems);
 
   if (problems.length > 0) throw new ConfigError(problems);
 
@@ -198,6 +204,7 @@ export function loadConfig(env: Environment): PlatformConfig {
     ...(publicPort === undefined ? {} : { publicPort }),
     identity: identity as IdentityConfig,
     ...(builder === undefined ? {} : { builder }),
+    ...(appServices.length === 0 ? {} : { appServices: { enabled: appServices, env } }),
   };
 }
 
@@ -304,6 +311,25 @@ function loadIdentity(env: Environment, production: boolean, problems: string[],
 
 const REASONING_EFFORTS: readonly string[] = ['low', 'medium', 'high'];
 const BUILD_DRIVERS: readonly string[] = ['local', 'docker', 'spool'];
+
+/** Namnen ur `APP_SERVICES`, i plattformens fasta ordning (`APP_SERVICE_NAMES`) och utan dubbletter. */
+function loadAppServices(env: Environment, problems: string[]): AppServiceName[] {
+  const text = env['APP_SERVICES'] ?? '';
+  const wanted = new Set(
+    text
+      .split(',')
+      .map((name) => name.trim())
+      .filter((name) => name !== ''),
+  );
+  const known = new Set<string>(APP_SERVICE_NAMES);
+  for (const name of wanted) {
+    if (!known.has(name)) {
+      const shown = name.length > 40 || hasControlCharacters(name) ? 'ett ogiltigt namn' : `"${name}"`;
+      problems.push(`APP_SERVICES innehåller ${shown}. Kända tjänster: ${APP_SERVICE_NAMES.join(', ')}.`);
+    }
+  }
+  return APP_SERVICE_NAMES.filter((name) => wanted.has(name));
+}
 
 function loadBuilder(env: Environment, production: boolean, problems: string[]): BuilderConfig | undefined {
   // Byggverktyget är påslaget exakt när en modell är vald. Allt annat som då saknas är ett fel —

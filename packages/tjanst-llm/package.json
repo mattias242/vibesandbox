@@ -1,0 +1,14 @@
+{
+  "name": "@vibesandbox/tjanst-llm",
+  "version": "0.0.0",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "description": "Språkmodell för appar via Berget, med maskning av personuppgifter och tokenkvot per app.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@vibesandbox/contracts": "*"
+  }
+}

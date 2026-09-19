@@ -3,6 +3,7 @@
  * scenariot fallerar, och även när själva starten gick snett halvvägs.
  */
 import { After, Before, setDefaultTimeout } from '@cucumber/cucumber';
+import { tjansterIScenariot } from './stod/tjanster.ts';
 import { LITEN_KVOT } from './stod/varld.ts';
 import type { Varld } from './stod/varld.ts';
 
@@ -17,6 +18,8 @@ Before(async function (this: Varld, { pickle }) {
   // bygga och dela appar — övriga scenarier kör plattformen som i drift utan byggverktyg.
   const mappar = pickle.uri.split(/[\\/]/);
   if (mappar.includes('bygga') || mappar.includes('delning')) this.byggverktyg = true;
+  // Plattformstjänster slås på med taggen `@tjanst-<namn>` på egenskapen eller scenariot.
+  this.tjanster = tjansterIScenariot(pickle.tags.map((tagg) => tagg.name));
   try {
     await this.starta();
   } catch (fel) {

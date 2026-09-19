@@ -87,7 +87,7 @@ export function createPlatformAdapter(options: { readonly fetch?: FetchLike } = 
   };
 }
 
-async function toSdkError(response: Awaited<ReturnType<FetchLike>>): Promise<SdkError> {
+export async function toSdkError(response: Awaited<ReturnType<FetchLike>>): Promise<SdkError> {
   try {
     const body = await response.json();
     if (isRecord(body) && isRecord(body['error'])) {

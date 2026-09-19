@@ -556,6 +556,143 @@ export interface Agent {
   runTurn(input: AgentTurnInput): Promise<AgentTurnResult>;
 }
 
+// ── Plattformstjänster för appar ────────────────────────────────────────────────
+//
+// Appar når inte internet. Det en app behöver utöver sin egen kod — filer, aviseringar,
+// språkmodell, OCR … — är plattformstjänster under `/_api/<namn>/…` på appens egen värd.
+// Gatewayn har redan avgjort hyresgäst (ur värdnamnet), inloggning, åtkomst till appen
+// (`AppAccessRole`), skyddshuvudena och CSRF (skrivande metoder kräver `CSRF_HEADER`) innan
+// tjänsten anropas. En tjänst litar aldrig på något app-id i sökväg, fråga eller kropp.
+// Tjänster slås på var för sig i plattformens konfiguration (flagga); en avslagen tjänst
+// finns inte (404), så att `main` alltid går att driftsätta.
+
+/** Namn en tjänst inte får ta: data-API:ts egna rutter och byggverktyget. */
+export const RESERVED_APP_SERVICE_NAMES: ReadonlySet<string> = new Set(['whoami', 'collections', 'builder', 'auth']);
+
+/** Tjänstens namn är det första segmentet efter `/_api`. */
+export const APP_SERVICE_NAME_PATTERN = /^[a-z][a-z0-9-]{1,30}$/;
+
+/** Övre gräns för en tjänsts förfrågningskropp, oavsett vad tjänsten själv begär. */
+export const MAX_APP_SERVICE_BODY_BYTES = 25 * 1024 * 1024;
+
+export interface AppServiceRequest {
+  readonly method: string;
+  /** Segmenten EFTER `/_api/<namn>`, normaliserade av gatewayn (inga `..`, ingen tom del). */
+  readonly segments: readonly string[];
+  /** Frågesträngen utan `?`. En parameter som förekommer flera gånger ska tjänsten neka. */
+  readonly query: string;
+  /** Gemena huvudnamn. */
+  readonly headers: Readonly<Record<string, string | undefined>>;
+  /** Hela kroppen, högst tjänstens `maxBodyBytes` (större ⇒ 413 innan tjänsten anropas). */
+  readonly body?: Uint8Array;
+  readonly tenant: TenantContext;
+  readonly identity: Identity;
+  /** Användarens roll i appen, redan kontrollerad av gatewayn. */
+  readonly access: AppAccessRole;
+}
+
+export interface AppServiceResponse {
+  readonly status: number;
+  /**
+   * Bara `Content-Type`, `Cache-Control` och `Content-Disposition` släpps igenom; plattformens
+   * skyddshuvuden (CSP, nosniff …) vinner alltid. Fel svaras som `ApiErrorBody` i JSON.
+   */
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body?: string | Uint8Array;
+}
+
+export interface AppService {
+  /** Matchar `APP_SERVICE_NAME_PATTERN` och finns inte i `RESERVED_APP_SERVICE_NAMES`. */
+  readonly name: string;
+  /** Största kropp tjänsten tar emot; högst `MAX_APP_SERVICE_BODY_BYTES`. */
+  readonly maxBodyBytes: number;
+  handle(request: AppServiceRequest): Promise<AppServiceResponse>;
+  /** Stängs när plattformen stängs (bakgrundsjobb, databaser). */
+  close?(): Promise<void>;
+}
+
+/**
+ * Appens åtkomstlista för tjänster som behöver veta vilka som hör till appen (aviseringar,
+ * roller i appen). Implementeras av control. E-postadressen lämnas bara ut till tjänster,
+ * aldrig till appens kod.
+ */
+export interface AppMemberDirectory {
+  members(appId: AppId): Promise<readonly { readonly userId: string; readonly role: AppAccessRole; readonly email: string | null }[]>;
+}
+
+/**
+ * Uppladdade filer, som andra tjänster (OCR, tal till text) läser. Implementeras av tjänsten
+ * `files`. Filen slås upp inom `tenant` — ett fil-id från en annan app ger `null`.
+ */
+export interface AppFileReader {
+  read(tenant: TenantContext, fileId: string): Promise<{ readonly body: Uint8Array; readonly contentType: string; readonly name: string } | null>;
+}
+
+/** Mejl ut från plattformen (Mailgun EU i drift, en utkorg i test). Adressen loggas aldrig. */
+export interface AppMailer {
+  send(message: { readonly to: string; readonly subject: string; readonly text: string }): Promise<void>;
+}
+
+/**
+ * Aviseringar till en apps medlemmar. Implementeras av tjänsten `notify`; används också av
+ * `schedule`. Mottagarna är ALLTID medlemmar i appen — aldrig en godtycklig adress.
+ */
+export interface AppNotifier {
+  notify(
+    appId: AppId,
+    message: {
+      /** Användar-id bland appens medlemmar, eller `'all'`/`'owner'`. Okända id hoppas över. */
+      readonly to: readonly string[] | 'all' | 'owner';
+      readonly subject: string;
+      readonly text: string;
+    },
+  ): Promise<{ readonly sent: number }>;
+}
+
+/** Det plattformen ger en tjänst när den skapas. Allt utom `name`/`dataDir`/`log`/`now` kan saknas. */
+export interface AppServiceDependencies {
+  /** Tjänstens egen katalog (`<DATA_DIR>/services/<namn>`), skapad av plattformen. */
+  readonly dataDir: string;
+  /**
+   * Miljövariablerna. En tjänst läser bara sina egna (`SVC_<NAMN>_…`) och kastar vid start
+   * med ett begripligt meddelande om något saknas.
+   */
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly log: (entry: { readonly level: 'info' | 'warn' | 'error'; readonly event: string } & Readonly<Record<string, string | number | boolean>>) => void;
+  readonly now: () => Date;
+  readonly members: AppMemberDirectory;
+  readonly store: TenantStore;
+  /** Berget (OpenAI-kompatibelt API). Saknas om ingen nyckel är inställd. */
+  readonly berget?: { readonly baseUrl: string; readonly apiKey: string };
+  readonly mailer?: AppMailer;
+  /** Finns när tjänsten `files` är påslagen. */
+  readonly files?: AppFileReader;
+  /** Finns när tjänsten `notify` är påslagen. */
+  readonly notifier?: AppNotifier;
+  /** Plattformens adresser, t.ex. för länkar i mejl. */
+  readonly publishedUrl: (appId: AppId) => string;
+}
+
+/** Det en tjänstefabrik ger tillbaka. `files` och `notify` delar med sig till andra tjänster. */
+export interface AppServiceInstance {
+  readonly service: AppService;
+  readonly fileReader?: AppFileReader;
+  readonly notifier?: AppNotifier;
+}
+
+/**
+ * Synkron: plattformen skapas synkront och ett konfigurationsfel ska synas vid start. Det som
+ * måste vänta (nätverk, uppvärmning) görs vid första förfrågan. Kastar ⇒ plattformen startar inte.
+ */
+export type AppServiceFactory = (dependencies: AppServiceDependencies) => AppServiceInstance;
+
+/**
+ * Alla tjänster plattformen känner till, i den ordning de skapas (en tjänst kan bara använda
+ * det som skapats före den). Namnet är också sökvägen: `/_api/<namn>`.
+ */
+export const APP_SERVICE_NAMES = ['files', 'notify', 'roles', 'llm', 'ocr', 'history', 'schedule', 'transcribe', 'search'] as const;
+export type AppServiceName = (typeof APP_SERVICE_NAMES)[number];
+
 // ── Byggverktygets värd i gatewayn ──────────────────────────────────────────────
 
 /**

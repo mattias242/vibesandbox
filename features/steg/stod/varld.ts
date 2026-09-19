@@ -17,6 +17,9 @@ import type { Control } from '@vibesandbox/control';
 import { signTestIdentity, testLoginPath } from '@vibesandbox/gateway';
 import { createFakeProvider } from '@vibesandbox/llm';
 import type { FakeProvider, FakeReply } from '@vibesandbox/llm';
+import type { AppMailer, AppServiceName } from '@vibesandbox/contracts';
+import { forbered } from './tjanster.ts';
+import type { TjanstForberedelse } from './tjanster.ts';
 import { createPlatform, loadAgentKnowledge } from '@vibesandbox/platform';
 import type { Platform } from '@vibesandbox/platform';
 import { fejkadByggkedja } from './byggkedja.ts';
@@ -136,6 +139,9 @@ export class Varld extends World {
   // ── Byggverktyget (bara i scenarierna under features/bygga/) ──────────────────
   /** Sätts av kroken innan plattformen startar. */
   byggverktyg = false;
+  /** Plattformstjänster scenariot slagit på med `@tjanst-<namn>` (se stod/tjanster.ts). */
+  tjanster: AppServiceName[] = [];
+  #tjanstForberedelser: TjanstForberedelse[] = [];
   /** Allt som skickades till språkmodellen, EFTER plattformens maskning. */
   readonly modellanrop: ChatMessage[][] = [];
   /** Varje persons app i byggverktyget ("Annas app"). */
@@ -186,6 +192,15 @@ export class Varld extends World {
       },
     };
 
+    this.#tjanstForberedelser = await forbered(this.tjanster);
+    const tjanstMiljo: Record<string, string> = {};
+    const tjanstOverrides: { mailer?: AppMailer; berget?: { baseUrl: string; apiKey: string } } = {};
+    for (const f of this.#tjanstForberedelser) {
+      Object.assign(tjanstMiljo, f.miljo ?? {});
+      if (f.mailer !== undefined) tjanstOverrides.mailer = f.mailer;
+      if (f.berget !== undefined) tjanstOverrides.berget = f.berget;
+    }
+
     this.#platform = createPlatform(
       {
         baseDomain: DOMAN,
@@ -197,8 +212,14 @@ export class Varld extends World {
         identity: { provider: 'test', testSecret: TESTHEMLIGHET },
         ...(builder === undefined ? {} : { builder }),
         ...(this.kvot === undefined ? {} : { limits: this.kvot }),
+        ...(this.tjanster.length === 0 ? {} : { appServices: { enabled: this.tjanster, env: tjanstMiljo } }),
       },
-      this.#byggkedja === undefined ? {} : { buildRunner: this.#byggkedja, llmProvider: modell, knowledge: await loadAgentKnowledge() },
+      {
+        ...(this.#byggkedja === undefined
+          ? {}
+          : { buildRunner: this.#byggkedja, llmProvider: modell, knowledge: await loadAgentKnowledge(undefined, this.tjanster) }),
+        ...(Object.keys(tjanstOverrides).length === 0 ? {} : { appServiceOverrides: tjanstOverrides }),
+      },
     );
     this.port = (await this.#platform.listen()).port;
   }
@@ -206,6 +227,7 @@ export class Varld extends World {
   /** Stänger och städar ALLT, även när bara en del hann starta. Kastar aldrig. */
   async stada(): Promise<void> {
     await this.#platform?.close().catch(() => {});
+    for (const f of this.#tjanstForberedelser) await f.stada?.().catch(() => {});
     await this.#control?.close().catch(() => {});
     for (const katalog of this.#byggkedja?.kvar ?? []) await rm(katalog, { recursive: true, force: true }).catch(() => {});
     if (this.#arbetskatalog !== undefined) {

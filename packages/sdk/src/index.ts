@@ -137,3 +137,14 @@ export const db = {
     };
   },
 };
+
+// Plattformstjänster (`/_api/<namn>`). Varje modul är en tjänst; en avslagen tjänst svarar 404.
+export * as files from './tjanster/files.ts';
+export * as notify from './tjanster/notify.ts';
+export * as roles from './tjanster/roles.ts';
+export * as llm from './tjanster/llm.ts';
+export * as ocr from './tjanster/ocr.ts';
+export * as history from './tjanster/history.ts';
+export * as schedule from './tjanster/schedule.ts';
+export * as transcribe from './tjanster/transcribe.ts';
+export * as search from './tjanster/search.ts';

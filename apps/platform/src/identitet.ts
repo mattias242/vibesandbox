@@ -9,7 +9,7 @@
  */
 import { createHmac } from 'node:crypto';
 import { DataApiError } from '@vibesandbox/contracts';
-import type { Identity, IdentityProvider, InvitationService, Role } from '@vibesandbox/contracts';
+import type { AppMailer, Identity, IdentityProvider, InvitationService, Role } from '@vibesandbox/contracts';
 import { createTestIdentityProvider, testLoginPath } from '@vibesandbox/gateway';
 import {
   createEmailOtpProvider,
@@ -55,6 +55,14 @@ export interface PlatformIdentity {
 function mailSender(mail: MailConfig): MailSender {
   if (mail.kind === 'outbox') return createOutboxSender({ directory: mail.directory });
   return createMailgunSender({ apiKey: mail.apiKey, domain: mail.domain, from: mail.from, region: 'eu' });
+}
+
+/**
+ * Mejl för plattformstjänsterna (aviseringar): samma väg som inloggningskoderna. I testläge finns
+ * inget mejl — då saknas tjänsternas `mailer`, och en tjänst som kräver den vägrar starta.
+ */
+export function platformMailer(config: PlatformConfig): AppMailer | undefined {
+  return config.identity.provider === 'test' ? undefined : mailSender(config.identity.mail);
 }
 
 export function createPlatformIdentity(config: PlatformConfig, log: PlatformLogger): PlatformIdentity {

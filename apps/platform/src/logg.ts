@@ -21,6 +21,18 @@ export type PlatformLogEntry =
   | ({ readonly source: 'gateway' } & GatewayLogEntry)
   | ({ readonly source: 'builder' } & BuilderLogEntry)
   | ({ readonly source: 'identity' } & IdentityLogEntry)
-  | ({ readonly source: 'platform' } & PlatformEventEntry);
+  | ({ readonly source: 'platform' } & PlatformEventEntry)
+  | ServiceLogEntry;
+
+/**
+ * En plattformstjänsts loggpost. Tjänsten väljer fälten själv, men bara platta värden — och
+ * samma regel gäller: aldrig e-postadresser, dokumentinnehåll, filinnehåll eller nycklar.
+ */
+export type ServiceLogEntry = {
+  readonly source: 'service';
+  readonly service: string;
+  readonly level: 'info' | 'warn' | 'error';
+  readonly event: string;
+} & Readonly<Record<string, string | number | boolean>>;
 
 export type PlatformLogger = (entry: PlatformLogEntry) => void;

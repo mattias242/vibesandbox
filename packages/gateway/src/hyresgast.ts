@@ -57,7 +57,7 @@ export async function resolveTenant(
   registry: AppRegistry,
   userId: string,
   log: GatewayLogger,
-): Promise<TenantContext> {
+): Promise<{ readonly tenant: TenantContext; readonly access: AppAccessRole }> {
   const app = await registry.find(parsed.appId);
 
   // Samma svar för "appen finns inte" och "appen saknar den här versionen", så att svaret inte
@@ -77,5 +77,5 @@ export async function resolveTenant(
     throw appNotFound();
   }
 
-  return unsafeCreateTenantContext(parsed.appId, parsed.kind);
+  return { tenant: unsafeCreateTenantContext(parsed.appId, parsed.kind), access: role };
 }

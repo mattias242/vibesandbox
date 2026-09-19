@@ -1,0 +1,14 @@
+{
+  "name": "@vibesandbox/tjanst-schedule",
+  "version": "0.0.0",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "description": "Schemalagda påminnelser till en apps medlemmar.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@vibesandbox/contracts": "*"
+  }
+}

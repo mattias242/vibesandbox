@@ -40,7 +40,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { API_PREFIX, CSRF_HEADER } from '@vibesandbox/contracts';
-import type { AppFiles, AppRegistry, Identity, IdentityProvider, TenantStore } from '@vibesandbox/contracts';
+import type { AppFiles, AppRegistry, AppService, Identity, IdentityProvider, TenantStore } from '@vibesandbox/contracts';
 import { handleApi } from './api.ts';
 import { createBuilderConfig, handleBuilderRequest } from './byggverktyg.ts';
 import type { BuilderConfig, BuilderOptions } from './byggverktyg.ts';
@@ -60,6 +60,7 @@ import { appIdPrefix, describeError, safeLogger, silentLogger } from './logg.ts'
 import type { GatewayLogEntry, GatewayLogger } from './logg.ts';
 import { normalizeTarget } from './sokvag.ts';
 import { handleStatic } from './statiskt.ts';
+import { createServiceTable, handleServiceRequest } from './tjanster.ts';
 import { sendFailure } from './svar.ts';
 import { createHostParser } from './vardnamn.ts';
 import type { BuilderHost, ParsedHost } from './vardnamn.ts';
@@ -86,6 +87,8 @@ export interface GatewayOptions {
    * och förhandsvisningar får inte ramas in av någon.
    */
   readonly builder?: BuilderOptions;
+  /** Påslagna plattformstjänster under `/_api/<namn>` (contracts `AppService`). Standard: inga. */
+  readonly services?: readonly AppService[];
 }
 
 export type RequestHandler = (request: IncomingMessage, response: ServerResponse) => void;
@@ -148,6 +151,7 @@ interface Gateway {
   readonly log: GatewayLogger;
   readonly builder: BuilderConfig | undefined;
   readonly loginRedirect: LoginRedirect | undefined;
+  readonly services: ReadonlyMap<string, AppService>;
 }
 
 /** 303 och inte 302: webbläsaren ska alltid göra en GET mot inloggningssidan. Ingen kropp. */
@@ -259,13 +263,32 @@ async function handle(
   //    routning: ett 403 eller 400 där skulle annars röja för en obehörig att appen finns.
   //    Loggposterna därifrån får spårets fält (userId, appens prefix, värdsort) — aldrig e-post.
   const logWithTrace: GatewayLogger = (entry) => log({ ...trace, ...entry });
-  const tenant = await resolveTenant(host, options.registry, identity.userId, logWithTrace);
+  const { tenant, access } = await resolveTenant(host, options.registry, identity.userId, logWithTrace);
 
   // 6. CSRF-skydd för skrivande metoder — före routningen, så att inget skrivande når en rutt utan det.
   if (WRITING_METHODS.has(method)) assertCsrfProtection(request, hostname);
 
   // 7. Routning på den normaliserade sökvägen (tolkad i steg 3½).
   if (target === 'ogiltig') throw invalidRequest('Adressen är ogiltig.');
+
+  // En påslagen plattformstjänst äger sitt namn under `/_api`; allt annat där är data-API:t.
+  const service = target.segments[0] === API_SEGMENT ? gateway.services.get(target.segments[1] ?? '') : undefined;
+  if (service !== undefined) {
+    trace.route = 'service';
+    await handleServiceRequest({
+      request,
+      response,
+      method,
+      service,
+      segments: target.segments.slice(2),
+      query: target.query,
+      tenant,
+      identity,
+      access,
+      log: logWithTrace,
+    });
+    return;
+  }
 
   if (target.segments[0] === API_SEGMENT) {
     trace.route = 'api';
@@ -300,6 +323,7 @@ export function createGateway(options: GatewayOptions): RequestHandler {
     log: safeLogger(options.logger ?? silentLogger),
     builder,
     loginRedirect: createLoginRedirect(options.identityProvider),
+    services: createServiceTable(options.services),
   };
   const log = gateway.log;
 

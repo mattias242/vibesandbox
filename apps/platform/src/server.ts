@@ -30,7 +30,7 @@ import { createAgent } from '@vibesandbox/agent';
 import { createBuilder } from '@vibesandbox/builder';
 import type { Builder } from '@vibesandbox/builder';
 import type { AgentKnowledge } from '@vibesandbox/agent';
-import type { BuildRunner, LlmProvider, Role } from '@vibesandbox/contracts';
+import type { AppMailer, AppServiceFactory, AppServiceName, BuildRunner, LlmProvider, Role } from '@vibesandbox/contracts';
 import { createControl } from '@vibesandbox/control';
 import { createTenantStore } from '@vibesandbox/data-api';
 import { RECOMMENDED_SERVER_OPTIONS, createGateway, handleClientError } from '@vibesandbox/gateway';
@@ -39,7 +39,8 @@ import type { AddedUser } from '@vibesandbox/identity';
 import { createMaskingProvider, createOpenAiCompatibleProvider } from '@vibesandbox/llm';
 import { ConfigError, platformAddresses } from './config.ts';
 import type { BuilderConfig, PlatformConfig } from './config.ts';
-import { createPlatformIdentity } from './identitet.ts';
+import { createPlatformIdentity, platformMailer } from './identitet.ts';
+import { APP_SERVICE_FACTORIES, createAppServices } from './tjanster.ts';
 import type { PlatformIdentity } from './identitet.ts';
 import type { PlatformLogEntry, PlatformLogger } from './logg.ts';
 
@@ -59,6 +60,16 @@ export interface PlatformDependencies {
    * Maskningen av personuppgifter läggs alltid på av plattformen, även på en insänd leverantör.
    */
   readonly llmProvider?: LlmProvider;
+  /**
+   * Plattformstjänsternas fabriker. Standard: de byggda paketen (`APP_SERVICE_FACTORIES`).
+   * Tester skickar egna. Vilka som SKAPAS avgör ändå konfigurationens `appServices`.
+   */
+  readonly appServiceFactories?: Readonly<Partial<Record<AppServiceName, AppServiceFactory>>>;
+  /** Tester: mejl och Berget för tjänsterna, i stället för konfigurationens. */
+  readonly appServiceOverrides?: {
+    readonly mailer?: AppMailer;
+    readonly berget?: { readonly baseUrl: string; readonly apiKey: string };
+  };
 }
 
 export interface ListenInfo {
@@ -135,6 +146,10 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
     throw new ConfigError(['Byggverktyget är påslaget, men agentens kunskap om mallen och SDK:t är inte inläst.']);
   }
   const addresses = platformAddresses(config);
+  const mailer = deps.appServiceOverrides?.mailer ?? platformMailer(config);
+  const berget =
+    deps.appServiceOverrides?.berget ??
+    (config.builder === undefined ? undefined : { baseUrl: config.builder.llm.baseUrl, apiKey: config.builder.llm.apiKey });
 
   // Ordningen är vald så att ett fel lämnar så lite som möjligt öppet: det som kan kasta utan
   // att ha öppnat något kommer först. Det som ändå hunnit öppnas stängs i `catch`, i omvänd ordning.
@@ -189,6 +204,24 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
       opened.push(() => openBuilder.close());
     }
 
+    // Plattformstjänsterna: bara de påslagna skapas, och efter lagring, register och inloggning,
+    // så att de kan få medlemslistan och lagret. De stängs före dem (ordningen i `opened`).
+    const services = createAppServices({
+      enabled: config.appServices?.enabled ?? [],
+      env: config.appServices?.env ?? {},
+      factories: deps.appServiceFactories ?? APP_SERVICE_FACTORIES,
+      dataDir: config.dataDir,
+      log,
+      members: { members: (appId) => openControl.listAccess(appId) },
+      store: openStore,
+      publishedUrl: (appId) => addresses.published(appId),
+      ...(berget === undefined ? {} : { berget }),
+      ...(mailer === undefined ? {} : { mailer }),
+    });
+    for (const service of services) {
+      if (service.close !== undefined) opened.push(() => service.close?.() ?? Promise.resolve());
+    }
+
     handler = createGateway({
       appDomain: config.appDomain,
       // ADR 0002: förhandsvisningar av ogranskade utkast ligger på samma site som byggverktyget.
@@ -198,6 +231,7 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
       files: openControl.files,
       store: openStore,
       logger: (entry) => log({ source: 'gateway', ...entry }),
+      services,
       ...(builder === undefined ? {} : { builder: { handler: builder, origin: addresses.builderOrigin } }),
     });
   } catch (error) {
