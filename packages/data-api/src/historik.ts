@@ -38,6 +38,7 @@ import {
   SELECT_DOCUMENT_FOR_DELETE,
   SELECT_DOCUMENT_OWNER,
   SELECT_HISTORY_AT,
+  SELECT_LAST_HISTORY_AT,
   UPDATE_DOCUMENT,
 } from './sql.ts';
 
@@ -100,6 +101,20 @@ function insertHistory(handle: TenantHandle, row: HistoryRow): void {
   });
 }
 
+/**
+ * Tiden för en ny rad i ett dokuments historik: nu, men alltid STRIKT senare än dokumentets
+ * förra rad. Då identifierar `at` en version entydigt — två ändringar inom samma millisekund,
+ * eller en klocka som ställts bakåt, ger ändå olika tider i rätt ordning, och `restore { at }`
+ * kan aldrig träffa fel version.
+ */
+function nextAt(handle: TenantHandle, collection: string, id: string): string {
+  const now = new Date().toISOString();
+  const row: Row | undefined = handle.statement(SELECT_LAST_HISTORY_AT).get({ collection, id });
+  const last = row?.['at'];
+  if (typeof last !== 'string' || now > last) return now;
+  return new Date(Date.parse(last) + 1).toISOString();
+}
+
 function prune(handle: TenantHandle, settings: HistorySettings): void {
   handle.statement(PRUNE_HISTORY).run({ cutoff: cutoff(settings), count: PRUNE_BATCH });
 }
@@ -157,7 +172,7 @@ export function replaceWithHistory(
   return whenFullEvictOldest(handle, () =>
     handle.transaction(() => {
       prune(handle, settings);
-      const now = new Date().toISOString();
+      const now = nextAt(handle, request.collection, request.id);
       const row: Row | undefined = handle.statement(UPDATE_DOCUMENT).get({
         collection: request.collection,
         id: request.id,
@@ -199,7 +214,7 @@ export function deleteWithHistory(handle: TenantHandle, settings: HistorySetting
           owner,
           userId: request.userId,
           event: 'delete',
-          at: new Date().toISOString(),
+          at: nextAt(handle, request.collection, request.id),
           dataText: data,
         });
       }),
@@ -237,7 +252,7 @@ export function restoreWithHistory(
         throw dataApiError('invalid_request', 'Välj en tidpunkt då dokumentet fanns — inte själva raderingen.');
       }
 
-      const now = new Date().toISOString();
+      const now = nextAt(handle, request.collection, request.id);
       const parameters = { collection: request.collection, id: request.id, user: request.userId, data, now };
       let row: Row | undefined = handle.statement(UPDATE_DOCUMENT).get(parameters);
       let documentOwner = owner;

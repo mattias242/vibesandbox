@@ -264,12 +264,26 @@ describe('ändringshistorik i data-API:t', () => {
       await förväntaFel(store.restoreDocument(app, anna, 'arenden', dok.id, radering?.at ?? ''), 'invalid_request');
     });
 
-    it('delar skapande och radering millisekund väljs versionen som hade innehåll', async () => {
+    it('tiderna är strikt stigande per dokument, även inom samma millisekund och med bakåtställd klocka', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date('2026-09-01T10:00:00.000Z'));
-      const dok = await store.createDocument(app, anna, 'arenden', 'app', { a: 1 });
+      const dok = await store.createDocument(app, anna, 'arenden', 'app', { v: 1 });
+      const andra = await store.replaceDocument(app, anna, 'arenden', dok.id, { v: 2 });
+      vi.setSystemTime(new Date('2026-08-01T10:00:00.000Z'));
+      await store.replaceDocument(app, anna, 'arenden', dok.id, { v: 3 });
       await store.deleteDocument(app, anna, 'arenden', dok.id);
-      expect((await store.restoreDocument(app, anna, 'arenden', dok.id, dok.createdAt)).data).toEqual({ a: 1 });
+
+      const tider = (await store.readDocumentHistory(app, anna, 'arenden', dok.id)).entries.map((rad) => rad.at);
+      expect(tider).toEqual([
+        '2026-09-01T10:00:00.003Z',
+        '2026-09-01T10:00:00.002Z',
+        '2026-09-01T10:00:00.001Z',
+        '2026-09-01T10:00:00.000Z',
+      ]);
+      expect(andra.updatedAt).toBe('2026-09-01T10:00:00.001Z');
+      // Varje tid pekar ut exakt en version.
+      expect((await store.restoreDocument(app, anna, 'arenden', dok.id, dok.createdAt)).data).toEqual({ v: 1 });
+      expect((await store.restoreDocument(app, anna, 'arenden', dok.id, andra.updatedAt)).data).toEqual({ v: 2 });
     });
 
     it('någon annans personliga dokument kan inte återställas, och försöket syns inte', async () => {

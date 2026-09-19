@@ -147,6 +147,11 @@ export const INSERT_HISTORY = `
   VALUES (:collection, :id, :owner, :user, :event, :at, :data)
 `;
 
+/** Tiden för dokumentets senaste historikrad — går mot `history_by_document`. */
+export const SELECT_LAST_HISTORY_AT = `
+  SELECT at FROM history WHERE collection = :collection AND doc_id = :id ORDER BY seq DESC LIMIT 1
+`;
+
 /** Ägaren till ett dokument som den frågande redan fått skriva till (samma transaktion). */
 export const SELECT_DOCUMENT_OWNER = `
   SELECT owner FROM documents WHERE collection = :collection AND id = :id
@@ -187,8 +192,9 @@ export const LIST_COLLECTION_HISTORY = `
 `;
 
 /**
- * Raden en återställning utgår från: exakt den tiden. Delar flera rader millisekund väljs den
- * senaste som INTE är en radering — en radering har inget innehåll att återställa till.
+ * Raden en återställning utgår från: exakt den tiden. Tiderna är strikt stigande per dokument
+ * (se `nextAt` i historik.ts), så det finns högst en. Ordningen är ett extra skydd för rader
+ * skrivna innan dess: en radering har inget innehåll att återställa till och väljs sist.
  */
 export const SELECT_HISTORY_AT = `
   SELECT owner, event, data
