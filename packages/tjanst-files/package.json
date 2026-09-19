@@ -6,7 +6,8 @@
   "type": "module",
   "description": "Filer och bilagor för appar: uppladdning, nedladdning, kvot per app och allowlista för filtyper.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./test/testing.ts"
   },
   "dependencies": {
     "@vibesandbox/contracts": "*"
