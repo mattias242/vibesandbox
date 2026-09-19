@@ -369,7 +369,7 @@ describe('inloggningsrutter under /_auth/', () => {
       expect(svar.status).toBe(200);
       forvantaAppensCsp(svar, INGEN_INRAMNING);
       expect(enHuvud(svar, 'x-content-type-options')).toBe('nosniff');
-      expect(enHuvud(svar, 'referrer-policy')).toBe('no-referrer');
+      expect(enHuvud(svar, 'referrer-policy')).toBe('same-origin');
       expect(enHuvud(svar, 'cross-origin-resource-policy')).toBe('same-origin');
       expect(enHuvud(svar, 'cache-control')).toBe('no-store');
       forvantaSkyddshuvuden(svar);

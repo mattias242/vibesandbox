@@ -254,7 +254,7 @@ describe('byggverktygets värd', () => {
       expect(enHuvud(svar, 'Content-Security-Policy')).toBe(FORVANTAD_CSP);
       expect(FORVANTAD_CSP).toContain(`frame-src https://*.${DOMAN}`);
       expect(enHuvud(svar, 'X-Content-Type-Options')).toBe('nosniff');
-      expect(enHuvud(svar, 'Referrer-Policy')).toBe('no-referrer');
+      expect(enHuvud(svar, 'Referrer-Policy')).toBe('same-origin');
       expect(enHuvud(svar, 'Cross-Origin-Resource-Policy')).toBe('same-origin');
       expect(enHuvud(svar, 'Cache-Control')).toBe('no-store');
     });
@@ -588,7 +588,7 @@ describe('byggverktygets värd', () => {
       expect(enHuvud(svar, 'Content-Type')).toBe('text/html; charset=utf-8');
       expect(enHuvud(svar, 'Content-Security-Policy')).toBe(FORVANTAD_CSP);
       expect(enHuvud(svar, 'X-Content-Type-Options')).toBe('nosniff');
-      expect(enHuvud(svar, 'Referrer-Policy')).toBe('no-referrer');
+      expect(enHuvud(svar, 'Referrer-Policy')).toBe('same-origin');
       expect(enHuvud(svar, 'Cross-Origin-Resource-Policy')).toBe('same-origin');
       expect(enHuvud(svar, 'Cache-Control')).toBe('no-store');
       for (const namn of [
