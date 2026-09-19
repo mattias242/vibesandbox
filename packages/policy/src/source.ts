@@ -87,7 +87,7 @@ const GLOBAL = String.raw`(?:window|globalThis|self|document)`;
 
 const API_RULES: readonly ApiRule[] = [
   {
-    rule: 'network',
+    rule: 'network-api',
     code: /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|RTCPeerConnection|webkitRTCPeerConnection|RTCDataChannel|WebTransport|sendBeacon)\b/,
     text: /\b(?:fetch|sendBeacon)\s*\(|\bnew\s+(?:XMLHttpRequest|WebSocket|EventSource|RTCPeerConnection|WebTransport)\b/,
     what: 'appen får inte tala med nätet direkt',
@@ -101,7 +101,7 @@ const API_RULES: readonly ApiRule[] = [
     instead: 'Visa innehållet i appen själv, t.ex. i en dialog (<dialog>) eller en egen vy.',
   },
   {
-    rule: 'eval',
+    rule: 'dynamic-code',
     code: /\beval\b|\bnew\s+Function\b|(?<![\w$.])Function\s*\(|\.constructor\s*\(/,
     text: /\beval\s*\(|\bnew\s+Function\s*\(/,
     withStrings: /\b(?:setTimeout|setInterval)\s*\(\s*['"`]/,
@@ -109,7 +109,7 @@ const API_RULES: readonly ApiRule[] = [
     instead: 'Skriv koden som vanliga funktioner. Ge setTimeout en funktion: setTimeout(() => { ... }, 1000).',
   },
   {
-    rule: 'storage',
+    rule: 'browser-storage',
     code: /\b(?:localStorage|sessionStorage|indexedDB|cookieStore|caches)\b|\bdocument\s*\??\.\s*cookie\b/,
     text: /\b(?:localStorage|sessionStorage|indexedDB)\s*\.|\bdocument\.cookie\b/,
     what: 'appen får inte lagra data i webbläsaren',
@@ -122,7 +122,7 @@ const API_RULES: readonly ApiRule[] = [
     instead: 'Ta bort koden; appen behöver inte veta sin domän.',
   },
   {
-    rule: 'worker',
+    rule: 'service-worker',
     code: /\b(?:serviceWorker|importScripts|SharedWorker|Worker|Worklet|audioWorklet|paintWorklet)\b/,
     text: /\bnew\s+(?:Shared)?Worker\s*\(|\bserviceWorker\s*\.|\bimportScripts\s*\(/,
     what: 'appen får inte starta bakgrundsskript (Worker, service worker)',
@@ -268,7 +268,7 @@ function checkImports(file: string, code: string, lineOf: (index: number) => num
     } else {
       message = `Paketet ${shown} är inte tillåtet. Appen får importera ${allowedList} och sina egna filer under src/. Skriv det som behövs själv.`;
     }
-    out.add('import-not-allowed', file, lineOf(index), message);
+    out.add('forbidden-import', file, lineOf(index), message);
   };
 
   const staticForms = [
@@ -369,12 +369,26 @@ function checkScript(file: string, source: string, out: Collector): void {
     }
   }
 
-  // Adresser granskas i HELA källan, även kommentarer: skannern kan ta JSX-text för en kommentar,
-  // och en adress i en kommentar behövs aldrig. Strängarnas avkodade värden granskas dessutom,
-  // så att `'\x68ttps://'` och `'https:\/\/'` inte slinker igenom.
-  checkUrlsInText(file, source, 0, lineOf, out);
+  // Adresser i kod och strängar är ett säkerhetsbrott (`external-url`, som avbryter agentens tur).
+  // Strängarnas avkodade värden granskas också, så att `'\x68ttps://'` och `'https:\/\/'` inte
+  // slinker igenom. En adress i det som ser ut som en kommentar är ett LINDRIGARE brott
+  // (`url-in-comment`): modellen får ta bort den och försöka igen. Den nekas ändå, eftersom
+  // skannern kan ta JSX-text eller kod för en kommentar — men en ofarlig kommentar ska inte
+  // stoppa hela turen.
+  checkUrlsInText(file, code, 0, lineOf, out);
   for (const segment of texts) {
-    if (segment.kind === 'comment' || segment.kind === 'regex') continue;
+    if (segment.kind === 'comment') {
+      for (const hit of findExternalUrls(segment.raw, ALLOWED_SOURCE_URLS)) {
+        out.add(
+          'url-in-comment',
+          file,
+          lineOf(segment.start + hit.index),
+          'En extern adress står i en kommentar. Ta bort den — appen får inte peka ut något utanför sig själv, inte heller i kommentarer.',
+        );
+      }
+      continue;
+    }
+    if (segment.kind === 'regex') continue;
     if (segment.decoded !== segment.raw) checkUrlsInText(file, segment.decoded, 0, () => lineOf(segment.start), out);
     protocolRelative(file, segment, lineOf, out);
   }
