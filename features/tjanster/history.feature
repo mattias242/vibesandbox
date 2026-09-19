@@ -1,5 +1,5 @@
 # language: sv
-@tjanst-history @pågår
+@tjanst-history
 Egenskap: Ändringshistorik — vem ändrade vad och när
   I offentlig sektor måste det gå att se vem som ändrat en uppgift, när, och vad den
   innehöll då. Plattformen skriver historiken i samma ögonblick som dokumentet ändras,

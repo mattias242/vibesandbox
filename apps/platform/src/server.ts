@@ -179,6 +179,7 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
     const openStore = createTenantStore({
       dataDir: join(config.dataDir, TENANT_DIRECTORY),
       ...(config.limits === undefined ? {} : { limits: config.limits }),
+      ...(config.appServices?.enabled.includes('history') ? { history: { retentionDays: config.appServices.env['SVC_HISTORY_RETENTION_DAYS'] } } : {}),
     });
     opened.push(() => openStore.close());
 
