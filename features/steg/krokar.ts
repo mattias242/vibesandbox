@@ -13,6 +13,9 @@ Before(async function (this: Varld, { pickle }) {
   // Kvoten är plattformens konfiguration och måste vara satt INNAN servern startar. Scenarierna
   // om en full app känns igen på sitt Givet-steg; alla andra kör med de riktiga standardgränserna.
   if (pickle.steps.some((steg) => steg.text.includes('har nått sin lagringsgräns'))) this.kvot = LITEN_KVOT;
+  // Byggverktyget (med inspelad språkmodell och fejkad byggkedja) slås på för scenarierna om att
+  // bygga appar — övriga scenarier kör plattformen som i drift utan byggverktyg.
+  if (pickle.uri.split(/[\\/]/).includes('bygga')) this.byggverktyg = true;
   try {
     await this.starta();
   } catch (fel) {
@@ -27,5 +30,8 @@ After(async function (this: Varld, { result }) {
     const sammanfattning = this.svar.map((svar) => `${svar.status} ${svar.kropp.slice(0, 300)}`).join('\n');
     this.attach(`Senaste svar:\n${sammanfattning}`, 'text/plain');
   }
+  // Varje bygge som plattformen tog emot ska ha städats bort — annars läcker kataloger i drift.
+  const kvar = this.ostadadeByggen();
   await this.stada();
+  if (result?.status === 'PASSED' && kvar > 0) throw new Error(`${kvar} byggkataloger städades aldrig bort.`);
 });
