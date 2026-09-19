@@ -6,7 +6,7 @@
 # @tjanst-transcribe slår på tjänsten i den riktiga plattformen, som vägrar starta utan `files`.
 # När `files` finns: tagga @tjanst-files @tjanst-transcribe, låt "har laddat upp" gå genom
 # /_api/files och låt stegen anropa /_api/transcribe över HTTP — scenarierna ändras inte.
-@transcribe @pågår
+@transcribe
 Egenskap: Tal till text för uppladdade ljudfiler
   En app kan låta sina användare göra om en inspelning — ett möte, en intervju — till text.
   Ljudet skrivs ut av Berget, plattformens svenska personuppgiftsbiträde. Den som startade
