@@ -1,0 +1,8 @@
+#!/bin/sh
+# Stubbe för docker i driftsatt-testets container: loggar anropet och svarar som en frisk stack.
+printf '%s\n' "$*" >>/var/log/docker-stubbe.log
+case "$*" in
+  *" ps "*Service*) printf 'caddy: running\negress: running\nplatform: running\nbuild-worker: running\n' ;;
+  *" ps "*) printf 'running\nrunning\nrunning\nrunning\n' ;;
+esac
+exit 0
