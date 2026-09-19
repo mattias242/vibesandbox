@@ -1,5 +1,5 @@
 # language: sv
-@tjanst-files @pågår
+@tjanst-files
 Egenskap: Filer och bilagor i appar
   En app kan låta sina användare ladda upp filer — bilder, dokument, kalkylark och
   ljudinspelningar — och visa eller ladda ned dem igen. Filerna hör till appen: en annan app
