@@ -5,13 +5,32 @@ import type { IncomingHttpHeaders, ServerResponse } from 'node:http';
 import { APP_CONTENT_SECURITY_POLICY } from '@vibesandbox/contracts';
 
 /**
+ * Vem som får rama in en värd (`frame-ancestors`). Kontraktets `APP_CONTENT_SECURITY_POLICY`
+ * saknar direktivet med avsikt — svaret beror på värdsorten:
+ *
+ *   - förhandsvisning (`p-<id>`): byggverktygets EXAKTA origin, som visar utkastet i en ram
+ *   - publicerad app: ingen, tills plattformens skal finns
+ *   - allt annat (ogiltigt värdnamn, ett svar innan värden är känd): ingen
+ *
+ * Direktivet läggs i SAMMA huvud som resten av policyn, sist. Det ändrar ingen av kontraktets
+ * regler, och en granskare ser hela policyn på ett ställe.
+ */
+export function appContentSecurityPolicy(frameAncestors: string): string {
+  return `${APP_CONTENT_SECURITY_POLICY}; frame-ancestors ${frameAncestors}`;
+}
+
+export const NO_FRAMING = "'none'";
+
+/**
  * Skyddsreglerna som data, så att de går att sätta även där det inte finns något
  * `ServerResponse` — nämligen i svaret på en förfrågan som Nodes HTTP-tolk själv vägrat
  * (se server.ts). Det finns EN lista; inget svar från en app-origin får sakna något ur den.
+ * Här är CSP:n den strängaste varianten — ingen inramning alls — eftersom värden inte är känd.
  */
 export const SECURITY_HEADERS: ReadonlyArray<readonly [name: string, value: string]> = [
-  // Exakt kontraktets värde. `connect-src 'self'` är det som hindrar appkod från att ringa hem.
-  ['Content-Security-Policy', APP_CONTENT_SECURITY_POLICY],
+  // Kontraktets värde plus `frame-ancestors 'none'`. `connect-src 'self'` är det som hindrar
+  // appkod från att ringa hem.
+  ['Content-Security-Policy', appContentSecurityPolicy(NO_FRAMING)],
   // Webbläsaren får inte gissa innehållstyp — annars kan en uppladdad "bild" köras som skript.
   ['X-Content-Type-Options', 'nosniff'],
   // Appens adress ÄR den hemliga delningslänken; den får aldrig följa med till en annan webbplats.
@@ -29,8 +48,11 @@ export const SECURITY_HEADERS: ReadonlyArray<readonly [name: string, value: stri
  * Appens kod kan inte påverka dem: en `<meta http-equiv>` kan bara skärpa en CSP från
  * svarshuvudet, aldrig lätta den.
  */
-export function applySecurityHeaders(response: ServerResponse): void {
+export function applySecurityHeaders(response: ServerResponse, contentSecurityPolicy?: string): void {
   for (const [name, value] of SECURITY_HEADERS) response.setHeader(name, value);
+  // Värdsortens egen policy ERSÄTTER standardvärdet (setHeader skriver över, lägger inte till),
+  // så att svaret aldrig bär två policyer som webbläsaren skulle tillämpa båda av.
+  if (contentSecurityPolicy !== undefined) response.setHeader('Content-Security-Policy', contentSecurityPolicy);
 }
 
 /**
