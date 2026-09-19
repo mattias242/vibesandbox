@@ -1,5 +1,5 @@
 # language: sv
-@tjanst-roles @pågår
+@tjanst-roles
 Egenskap: Roller inuti en app
   En app kan behöva skilja på dem som använder den: en handläggare ser ärendelistan,
   en administratör ser inställningarna. Appen bestämmer vilka roller som finns, och
