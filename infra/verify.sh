@@ -119,6 +119,7 @@ las_tillstand() {
   DATA_USER="${DATA_USER:-vibesandbox}"
   DATA_UID="${DATA_UID:-110001}"
   DOCKREMAP_SUBID_BASE="${DOCKREMAP_SUBID_BASE:-100000}"
+  TAILSCALE_TAGS="${TAILSCALE_TAGS:-tag:vibesandbox}"
 }
 
 # ── Kontroller ─────────────────────────────────────────────────────────────────────────────
@@ -281,6 +282,24 @@ kontroll_tailscale() {
     ok "ansluten till tailnetet"
   else
     fel "inte ansluten till tailnetet ('tailscale ip -4': kod ${FANGAD_KOD}, utdata '${ip%%$'\n'*}')"
+    return 0
+  fi
+  # Utan rätt tagg räknas servern som en av ägarens egna enheter, och ACL:en släpper den in i
+  # tailnetet. Det syns inte i någon fil på värden — bara i nodens faktiska taggar.
+  local json taggar onskade
+  onskade="$(tr ',' '\n' <<<"$TAILSCALE_TAGS" | sed '/^$/d' | sort -u | paste -sd, -)"
+  if ! har_kommando python3; then
+    fel "python3 saknas — nodens taggar går inte att läsa"
+  elif ! fanga json tailscale status --json; then
+    fel "'tailscale status --json' misslyckades (kod ${FANGAD_KOD}) — nodens taggar är okända"
+  elif ! taggar="$(python3 -c 'import json,sys
+s = json.load(sys.stdin).get("Self") or {}
+print(",".join(sorted(s.get("Tags") or [])))' <<<"$json" 2>/dev/null)"; then
+    fel "'tailscale status --json' gick inte att tolka — nodens taggar är okända"
+  elif [[ "$taggar" == "$onskade" ]]; then
+    ok "noden har taggarna ${taggar}"
+  else
+    fel "noden har taggarna '${taggar:-‹inga›}', inte '${onskade}' — utan tagg når servern hela tailnetet"
   fi
   return 0
 }
