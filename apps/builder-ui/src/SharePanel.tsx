@@ -1,5 +1,6 @@
 import { useId, useRef, useState, type FormEvent } from 'react';
 import { api } from './client.ts';
+import { MembersList } from './MembersList.tsx';
 import { OpenLink } from './OpenLink.tsx';
 import { SHARE_SUCCESS_MESSAGE, shareErrorMessage, validateEmail } from './share.ts';
 
@@ -10,6 +11,8 @@ export function SharePanel({ appId, publishedUrl }: { appId: string; publishedUr
   const [email, setEmail] = useState('');
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // Ökas efter en lyckad inbjudan: den inbjudna har då fått åtkomst, och listan hämtas om.
+  const [membersVersion, setMembersVersion] = useState(0);
   const emailId = useId();
   const resultId = useId();
 
@@ -37,6 +40,7 @@ export function SharePanel({ appId, publishedUrl }: { appId: string; publishedUr
       await api.share(appId, checked.email);
       setResult({ ok: true, message: SHARE_SUCCESS_MESSAGE });
       setEmail('');
+      setMembersVersion((version) => version + 1);
     } catch (error) {
       setResult({ ok: false, message: shareErrorMessage(error) });
     } finally {
@@ -92,6 +96,8 @@ export function SharePanel({ appId, publishedUrl }: { appId: string; publishedUr
           {result?.message ?? ''}
         </p>
       </form>
+
+      <MembersList appId={appId} refreshKey={membersVersion} />
     </section>
   );
 }

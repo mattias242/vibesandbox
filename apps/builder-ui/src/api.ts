@@ -10,6 +10,7 @@ import {
   CSRF_HEADER,
   type ApiErrorCode,
   type BuilderAppDetail,
+  type BuilderAppMember,
   type BuilderAppSummary,
   type BuilderJob,
   type BuilderMe,
@@ -46,6 +47,10 @@ export interface ApiClient {
   publish(appId: string): Promise<{ publishedUrl: string }>;
   openUrl(appId: string, target: OpenTarget): Promise<string>;
   share(appId: string, email: string): Promise<void>;
+  /** Vilka som har åtkomst till appen, ägaren först. */
+  listMembers(appId: string): Promise<readonly BuilderAppMember[]>;
+  /** Tar bort en persons åtkomst. Gäller direkt. */
+  removeMember(appId: string, memberId: string): Promise<void>;
 }
 
 export const NETWORK_ERROR_MESSAGE = 'Kunde inte nå servern. Kontrollera uppkopplingen och försök igen.';
@@ -70,9 +75,32 @@ export function fallbackMessage(status: number): string {
  */
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-function checkId(id: string): string {
-  if (!ID_PATTERN.test(id)) throw new ApiError(400, 'Den här appen finns inte.');
+function checkId(id: string, message = 'Den här appen finns inte.'): string {
+  if (!ID_PATTERN.test(id)) throw new ApiError(400, message);
   return id;
+}
+
+/**
+ * Åtkomstlistan styr vilka knappar som visas och vilket id som hamnar i en sökväg vid borttagning,
+ * så varje rad kontrolleras. En rad som inte stämmer gör hela svaret ogiltigt.
+ */
+function checkMembers(value: unknown): readonly BuilderAppMember[] {
+  if (!Array.isArray(value)) throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  return value.map((item: unknown) => {
+    if (typeof item !== 'object' || item === null) throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+    const { memberId, email, role } = item as Record<string, unknown>;
+    if (
+      typeof memberId !== 'string' ||
+      !ID_PATTERN.test(memberId) ||
+      typeof email !== 'string' ||
+      email === '' ||
+      email.length > 254 ||
+      (role !== 'owner' && role !== 'user')
+    ) {
+      throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+    }
+    return { memberId, email, role };
+  });
 }
 
 /** Adresser från servern hamnar i en iframe eller en länk — bara http(s) godtas, aldrig `javascript:`. */
@@ -100,10 +128,11 @@ function readErrorBody(body: unknown): { code: ApiErrorCode; message: string } |
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
-  async function request<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+  async function request<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = { Accept: 'application/json' };
     const init: RequestInit = { method, credentials: 'same-origin', headers };
-    if (method === 'POST') {
+    // Alla skrivande anrop behandlas lika: skyddshuvud och en JSON-kropp (tom när inget skickas).
+    if (method !== 'GET') {
       headers[CSRF_HEADER] = '1';
       headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(body ?? {});
@@ -160,6 +189,16 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
     share: async (appId, email) => {
       await request('POST', `/apps/${checkId(appId)}/share`, { email });
+    },
+
+    listMembers: async (appId) => {
+      const result = await request<{ members?: unknown }>('GET', `/apps/${checkId(appId)}/members`);
+      return checkMembers(result.members);
+    },
+
+    removeMember: async (appId, memberId) => {
+      const path = `/apps/${checkId(appId)}/members/${checkId(memberId, 'Den personen finns inte i listan.')}`;
+      await request('DELETE', path);
     },
   };
 }

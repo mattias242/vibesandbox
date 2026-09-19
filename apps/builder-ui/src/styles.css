@@ -658,6 +658,50 @@ main:focus-visible {
   margin-top: 1.5rem;
 }
 
+/* Vilka har åtkomst */
+.members {
+  margin-top: 1.5rem;
+}
+
+.members h3:focus {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.member-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.member-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.member-email {
+  overflow-wrap: anywhere;
+}
+
+.member-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* Bekräftelsesteget: röd så att det syns att nästa klick gäller. Vit mot #a4262c ≈ 7:1. */
+.button-danger,
+.button-danger:hover {
+  background: var(--error);
+  border-color: var(--error);
+  color: var(--white);
+}
+
 .url-row {
   display: flex;
   flex-wrap: wrap;

@@ -225,3 +225,60 @@ describe('fel blir klarspråk', () => {
     expect(error.status).toBe(401);
   });
 });
+
+describe('åtkomstlistan', () => {
+  const MEMBER_ID = 'Qm9ydGlsLXVzZXItaWQwMQ';
+  const members = [
+    { memberId: 'b3duZXItdXNlci1pZC0wMQ', email: 'anna@example.se', role: 'owner' },
+    { memberId: MEMBER_ID, email: 'bertil@example.se', role: 'user' },
+  ];
+
+  it('listMembers: GET utan skyddshuvud och packar upp listan i serverns ordning', async () => {
+    const { api, calls } = client(() => json(200, { members }));
+    await expect(api.listMembers(APP_ID)).resolves.toEqual(members);
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([`GET ${BUILDER_API_PREFIX}/apps/${APP_ID}/members`]);
+    expect(calls[0]?.headers[CSRF_HEADER]).toBeUndefined();
+    expect(calls[0]?.credentials).toBe('same-origin');
+  });
+
+  it('removeMember: DELETE med skyddshuvud, samma hantering som övriga skrivande anrop', async () => {
+    const { api, calls } = client(() => json(200, { removed: true }));
+    await expect(api.removeMember(APP_ID, MEMBER_ID)).resolves.toBeUndefined();
+    expect(calls.map((call) => [call.method, call.url])).toEqual([
+      ['DELETE', `${BUILDER_API_PREFIX}/apps/${APP_ID}/members/${MEMBER_ID}`],
+    ]);
+    expect(calls[0]?.headers[CSRF_HEADER]).toBe('1');
+    expect(calls[0]?.headers['content-type']).toBe('application/json');
+    expect(calls[0]?.credentials).toBe('same-origin');
+  });
+
+  it('fientliga id:n skickas aldrig, varken för appen eller medlemmen', async () => {
+    const hostile = ['..', '../me', 'a/b', 'a?b=1', 'a#b', '', 'a\u0000b', '%2e%2e', 'x'.repeat(200)];
+    const { api, calls } = client();
+    for (const id of hostile) {
+      await expect(api.listMembers(id)).rejects.toBeInstanceOf(ApiError);
+      await expect(api.removeMember(id, MEMBER_ID)).rejects.toBeInstanceOf(ApiError);
+      await expect(api.removeMember(APP_ID, id)).rejects.toBeInstanceOf(ApiError);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ['saknar listan', {}],
+    ['listan är inget fält', { members: 'anna@example.se' }],
+    ['en rad saknar adress', { members: [{ memberId: MEMBER_ID, role: 'user' }] }],
+    ['en rad har okänd roll', { members: [{ memberId: MEMBER_ID, email: 'a@b.se', role: 'admin' }] }],
+    ['ett id som inte går att använda i en sökväg', { members: [{ memberId: '../x', email: 'a@b.se', role: 'user' }] }],
+  ])('ett svar som %s blir ett fel i klarspråk, inte en trasig vy', async (_name, body) => {
+    const { api } = client(() => json(200, body));
+    const error = (await api.listMembers(APP_ID).catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.message).toMatch(/Något gick fel/);
+  });
+
+  it('serverns fel går igenom som ApiError med status', async () => {
+    const { api } = client(() => json(400, { error: { code: 'invalid_request', message: 'Ogiltig begäran.' } }));
+    const error = (await api.removeMember(APP_ID, MEMBER_ID).catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toMatchObject({ status: 400, code: 'invalid_request' });
+  });
+});

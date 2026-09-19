@@ -10,6 +10,7 @@
  *   "fel" i ett önskemål   → första kontrollen hittar fel, som sedan rättas
  *   "stopp" i ett önskemål → bygget misslyckas med en förklaring
  *   "upptagen@…" vid delning → 429 (för många inbjudningar)
+ * Åtkomstlistan: den som delas med hamnar i listan; att ta bort "fast@…" ger 500.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
@@ -36,6 +37,8 @@ interface MockApp {
   publishedVersion: number;
   messages: BuilderMessage[];
   job?: { jobId: string };
+  /** Adress → medlems-id för dem appen delats med. Ägaren läggs till i svaret. */
+  members: Map<string, string>;
 }
 
 interface MockJob {
@@ -155,7 +158,7 @@ ul{padding:0}small{color:#4a5668}</style></head><body data-mock="${MOCK_MARKER}"
 }
 
 function detail(app: MockApp, req: IncomingMessage): BuilderAppDetail {
-  const { draftVersion: _d, publishedVersion: _p, job, ...summary } = app;
+  const { draftVersion: _d, publishedVersion: _p, job, members: _m, ...summary } = app;
   const current = job === undefined ? undefined : jobs.get(job.jobId);
   return {
     ...summary,
@@ -170,7 +173,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const method = req.method ?? 'GET';
   const path = url.pathname.slice(BUILDER_API_PREFIX.length);
 
-  if (method === 'POST' && req.headers[CSRF_HEADER] !== '1') {
+  if (method !== 'GET' && req.headers[CSRF_HEADER] !== '1') {
     fail(res, 403, 'forbidden', 'Åtkomst nekad.');
     return;
   }
@@ -196,6 +199,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         draftVersion: 0,
         publishedVersion: 0,
         messages: [],
+        members: new Map(),
       });
       return send(res, 201, { appId });
     }
@@ -209,6 +213,29 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const { status, released } = jobStatus(job);
     const body: BuilderJob = { jobId: job.jobId, appId: job.appId, status, events: released.slice(after), next: released.length };
     return send(res, 200, body);
+  }
+
+  const memberMatch = /^\/apps\/([\w-]+)\/members(?:\/([\w-]+))?$/.exec(path);
+  if (memberMatch !== null) {
+    const owned = apps.get(memberMatch[1] ?? '');
+    if (owned === undefined) return fail(res, 404, 'not_found', 'Det finns inte.');
+    const memberId = memberMatch[2];
+    if (memberId === undefined && method === 'GET') {
+      const members = [
+        { memberId: 'agare-anna', email: 'anna@example.se', role: 'owner' },
+        ...[...owned.members].map(([email, id]) => ({ memberId: id, email, role: 'user' })),
+      ];
+      return send(res, 200, { members });
+    }
+    if (memberId !== undefined && method === 'DELETE') {
+      if (memberId === 'agare-anna') return fail(res, 400, 'invalid_request', 'Ogiltig begäran.');
+      for (const [email, id] of owned.members) {
+        if (id !== memberId) continue;
+        if (email.startsWith('fast@')) return fail(res, 500, 'internal', 'Något gick fel hos oss. Försök igen om en stund.');
+        owned.members.delete(email);
+      }
+      return send(res, 200, { removed: true });
+    }
   }
 
   const appMatch = /^\/apps\/([\w-]+)(?:\/(messages|publish|open|share))?$/.exec(path);
@@ -256,6 +283,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const email = typeof body['email'] === 'string' ? body['email'].trim().toLowerCase() : '';
     if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(email)) return fail(res, 400, 'invalid_request', 'Ogiltig adress.');
     if (email.startsWith('upptagen@')) return fail(res, 429, 'rate_limited', 'För många försök.');
+    if (!app.members.has(email)) app.members.set(email, newId('m'));
     return send(res, 200, { shared: true });
   }
 
