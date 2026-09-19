@@ -132,7 +132,7 @@ describe('det byggda gränssnittet', () => {
     });
 
     it('index.html har inga inline-skript: varje <script> har src och saknar innehåll', () => {
-      const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
+      const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)];
       expect(scripts.length).toBeGreaterThan(0);
       for (const [, attributes = '', body = ''] of scripts) {
         expect(attributes).toMatch(/\bsrc=/);
@@ -189,7 +189,7 @@ describe('det byggda gränssnittet', () => {
     });
 
     it('API-anropen går till byggverktygets egen origin', () => {
-      expect(findIn(texts, new RegExp(BUILDER_API_PREFIX.replace(/\//g, '\\/'))).length).toBeGreaterThan(0);
+      expect(findIn(texts, new RegExp(BUILDER_API_PREFIX.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&'))).length).toBeGreaterThan(0);
       expect(findIn(texts, /same-origin/).length).toBeGreaterThan(0);
     });
   });
