@@ -122,6 +122,7 @@ las_tillstand() {
   TAILSCALE_TAGS="${TAILSCALE_TAGS:-tag:vibesandbox}"
   AUTO_REBOOT="${AUTO_REBOOT:-1}"
   AUTO_REBOOT_TIME="${AUTO_REBOOT_TIME:-04:00}"
+  DEPLOY_UTAN_LOSENORD="${DEPLOY_UTAN_LOSENORD:-0}"
 }
 
 # ── Kontroller ─────────────────────────────────────────────────────────────────────────────
@@ -265,6 +266,10 @@ kontroll_sudoers() {
     # "%rootgrupp", "rootish" och alla andra namn räknas fortfarande.
     if (( kod == 0 )); then
       traffar="$(grep -vE '^[^:]+:[0-9]+:[[:space:]]*root[[:space:]]' <<<"$traffar" || true)"
+      # Driftsättningens regel (DEPLOY_UTAN_LOSENORD=1) — exakt den raden, i exakt den filen.
+      if (( DEPLOY_UTAN_LOSENORD )); then
+        traffar="$(grep -vxF "${DRIFTSATT_REGELFIL}:1:${OPS_USER} ALL=(root) NOPASSWD: ${DRIFTSATT_KMD}" <<<"$traffar" || true)"
+      fi
       [[ -n "$traffar" ]] || kod=1
     fi
     case "$kod" in
@@ -278,10 +283,46 @@ kontroll_sudoers() {
     fel "sudo saknas — ${OPS_USER} kan inte bli root"
   elif ! fanga lista sudo -n -l -U "$OPS_USER"; then
     fel "'sudo -l -U ${OPS_USER}' misslyckades (kod ${FANGAD_KOD}) — sudos regler för ${OPS_USER} är okända"
-  elif grep -qE 'NOPASSWD|!authenticate' <<<"$lista"; then
-    fel "sudo -l -U ${OPS_USER}: lösenordsfri sudo för ${OPS_USER}"
   else
-    ok "sudo -l -U ${OPS_USER}: sudo kräver lösenord"
+    local losenordsfria
+    losenordsfria="$(grep -E 'NOPASSWD|!authenticate' <<<"$lista" | sed -E 's/^[[:space:]]+//' || true)"
+    if (( DEPLOY_UTAN_LOSENORD )); then
+      losenordsfria="$(grep -vxF "(root) NOPASSWD: ${DRIFTSATT_KMD}" <<<"$losenordsfria" || true)"
+    fi
+    if [[ -n "$losenordsfria" ]]; then
+      fel "sudo -l -U ${OPS_USER}: lösenordsfri sudo för ${OPS_USER}: $(tr '\n' ' ' <<<"$losenordsfria")"
+    elif (( DEPLOY_UTAN_LOSENORD )); then
+      ok "sudo -l -U ${OPS_USER}: sudo kräver lösenord utom för ${DRIFTSATT_KMD}"
+    else
+      ok "sudo -l -U ${OPS_USER}: sudo kräver lösenord"
+    fi
+  fi
+  kontroll_driftsattning
+}
+
+# Rotsteget körs som root utan lösenord: är filen (eller katalogen den ligger i) skrivbar för
+# någon annan än root blir den personen root. Därför ägare och läge, inte bara att regeln finns.
+DRIFTSATT_KMD=/usr/local/sbin/vibesandbox-driftsatt
+DRIFTSATT_REGELFIL=/etc/sudoers.d/vibesandbox-driftsatt
+kontroll_driftsattning() {
+  if (( ! DEPLOY_UTAN_LOSENORD )); then
+    if [[ -e "$DRIFTSATT_REGELFIL" ]]; then fel "${DRIFTSATT_REGELFIL} finns trots DEPLOY_UTAN_LOSENORD=0"; fi
+    return 0
+  fi
+  local lage
+  if ! fanga lage stat -c '%U:%G %a' "$DRIFTSATT_KMD"; then
+    fel "${DRIFTSATT_KMD} saknas (stat, kod ${FANGAD_KOD}) — regeln pekar på ingenting"
+  elif [[ "$lage" != "root:root 755" ]]; then
+    fel "${DRIFTSATT_KMD} är ${lage}, ska vara root:root 755 — annars blir den som kan skriva i den root"
+  elif ! fanga lage stat -c '%U %a' "$(dirname "$DRIFTSATT_KMD")" || [[ "$lage" != "root 755" ]]; then
+    fel "$(dirname "$DRIFTSATT_KMD") är '${lage}', ska vara root 755"
+  else
+    ok "lösenordsfri sudo bara för ${DRIFTSATT_KMD} (rootägd, 755)"
+  fi
+  if fanga lage stat -c '%U %a' "$DRIFTSATT_REGELFIL" && [[ "$lage" == "root 440" ]]; then
+    ok "${DRIFTSATT_REGELFIL}: root 440"
+  else
+    fel "${DRIFTSATT_REGELFIL} är '${lage:-‹saknas›}', ska vara root 440"
   fi
 }
 

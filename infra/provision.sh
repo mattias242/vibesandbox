@@ -428,6 +428,7 @@ las_konfiguration() {
   AUTO_REBOOT="${AUTO_REBOOT:-1}"
   AUTO_REBOOT_TIME="${AUTO_REBOOT_TIME:-04:00}"
   AUTO_UPGRADE_DOCKER="${AUTO_UPGRADE_DOCKER:-1}"
+  DEPLOY_UTAN_LOSENORD="${DEPLOY_UTAN_LOSENORD:-1}"
   LOCK_ROOT_PASSWORD="${LOCK_ROOT_PASSWORD:-1}"
   HARDEN_GUEST_AGENT="${HARDEN_GUEST_AGENT:-0}"
   INSTALL_GVISOR="${INSTALL_GVISOR:-0}"
@@ -457,7 +458,7 @@ las_konfiguration() {
     || avbryt "BEKRAFTELSE_SEKUNDER måste vara 5–600 (är '${BEKRAFTELSE_SEKUNDER}')."
   BEKRAFTELSE_SEKUNDER=$(( 10#$BEKRAFTELSE_SEKUNDER ))
   readonly BEKRAFTELSE_SEKUNDER
-  for v in OPEN_TAILSCALE_UDP AUTO_REBOOT AUTO_UPGRADE_DOCKER LOCK_ROOT_PASSWORD HARDEN_GUEST_AGENT INSTALL_GVISOR DOCKER_XFS_LOOP; do
+  for v in OPEN_TAILSCALE_UDP AUTO_REBOOT AUTO_UPGRADE_DOCKER LOCK_ROOT_PASSWORD HARDEN_GUEST_AGENT INSTALL_GVISOR DOCKER_XFS_LOOP DEPLOY_UTAN_LOSENORD; do
     [[ "${!v}" =~ ^[01]$ ]] || avbryt "${v} måste vara 0 eller 1 (är '${!v}')."
   done
   for v in PUBLIC_TCP_PORTS PUBLIC_UDP_PORTS; do
@@ -502,7 +503,7 @@ skriv_tillstand() {
     printf '# Skriven av provision.sh — läses av verify.sh. Innehåller inga hemligheter.\n'
     for v in OPS_USER PUBLIC_TCP_PORTS PUBLIC_UDP_PORTS OPEN_TAILSCALE_UDP LOCK_ROOT_PASSWORD \
       HARDEN_GUEST_AGENT INSTALL_GVISOR DOCKER_XFS_LOOP SWAPFILE_SIZE_GB VM_SWAPPINESS \
-      PLATFORM_ROOT DATA_USER DATA_UID DOCKREMAP_SUBID_BASE TAILSCALE_TAGS AUTO_REBOOT AUTO_REBOOT_TIME; do
+      PLATFORM_ROOT DATA_USER DATA_UID DOCKREMAP_SUBID_BASE TAILSCALE_TAGS AUTO_REBOOT AUTO_REBOOT_TIME DEPLOY_UTAN_LOSENORD; do
       printf '%s=%q\n' "$v" "${!v}"
     done
   )"
@@ -2136,6 +2137,27 @@ steg_kataloger() {
   sakerstall_katalog "${PLATFORM_ROOT}/compose" 0750 "0:0"
   sakerstall_katalog "${PLATFORM_ROOT}/data" 0750 "${DATA_UID}:${DATA_UID}"
   sakerstall_katalog "${PLATFORM_ROOT}/backups" 0700 "0:0"
+
+  # Driftsättningens rotsteg (deploy/driftsatt.sh) som fast, rootägd fil. Med
+  # DEPLOY_UTAN_LOSENORD=1 får driftanvändaren köra JUST det utan lösenord — allt annat med sudo
+  # kräver fortfarande lösenord. Rotsteget tar inga sökvägar utifrån och godtar bara en
+  # SSH-session från tailnetet. Priset (medvetet val): den som har ops nyckel kan lägga ut vad
+  # som helst, och en compose-fil kan nå root. Se README.
+  skriv_fil /usr/local/sbin/vibesandbox-driftsatt 0755 <"${SKRIPTKATALOG}/vibesandbox-driftsatt"
+  local regelfil=/etc/sudoers.d/vibesandbox-driftsatt
+  if (( DEPLOY_UTAN_LOSENORD )); then
+    local regel="${OPS_USER} ALL=(root) NOPASSWD: /usr/local/sbin/vibesandbox-driftsatt"
+    # En trasig fil i sudoers.d stänger av ALL sudo — pröva kandidaten med visudo först.
+    if (( ! DRY_RUN )) && ! printf '%s\n' "$regel" | visudo -cqf - >/dev/null 2>&1; then
+      avbryt "visudo underkänner sudo-regeln för driftsättningen: '${regel}'. Ingenting är ändrat."
+    fi
+    skriv_fil "$regelfil" 0440 <<<"$regel"
+  elif [[ -e "$regelfil" ]]; then
+    gor "tar bort den lösenordsfria regeln för driftsättning (DEPLOY_UTAN_LOSENORD=0)"
+    kor rm -f -- "$regelfil"
+  else
+    klart "ingen lösenordsfri regel för driftsättning (DEPLOY_UTAN_LOSENORD=0)"
+  fi
 }
 
 # ── Steg 12: avdriftskontroll ──────────────────────────────────────────────────────────────
