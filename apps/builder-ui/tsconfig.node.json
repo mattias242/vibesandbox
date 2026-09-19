@@ -3,7 +3,7 @@
     "target": "ES2024",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2024"],
+    "lib": ["ES2024", "DOM"],
     "types": ["node"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -13,10 +13,8 @@
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
     "allowImportingTsExtensions": true,
-    "rewriteRelativeImportExtensions": false,
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["apps/*/src", "apps/*/test", "packages/*/src", "packages/*/test", "features/steg"],
-  "exclude": ["**/node_modules", "**/dist", "packages/app-template", "apps/builder-ui", "spikes"]
+  "include": ["vite.config.ts", "dev", "test"]
 }
