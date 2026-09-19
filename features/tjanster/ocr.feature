@@ -8,7 +8,6 @@ Egenskap: En app kan läsa texten i en uppladdad bild eller PDF
 
   Scenariona som laddar upp filer kräver filtjänsten och körs när den finns i samma gren.
 
-  @pågår
   Scenario: Textigenkänning kan inte slås på utan filtjänsten
     När plattformen startas med textigenkänning men utan filtjänsten
     Så vägrar plattformen starta och förklarar att båda måste slås på

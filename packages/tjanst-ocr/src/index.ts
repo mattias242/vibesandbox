@@ -1,8 +1,9 @@
 /**
- * Plattformstjänsten `ocr` (`/_api/ocr`): Textigenkänning (OCR) i uppladdade filer via Berget.
- * Under uppbyggnad. Tjänsten slås på med APP_SERVICES=ocr; innan den är klar finns ingen fabrik
- * och plattformen vägrar starta med den påslagen.
+ * Plattformstjänsten `ocr` (`/_api/ocr`): textigenkänning i uppladdade filer via Berget.
+ * Slås på med APP_SERVICES=files,ocr — filerna läses genom tjänsten `files`, så den måste vara på.
+ * Se tjanst.ts för flödet och motor.ts för motorerna hos Berget.
  */
 import type { AppServiceFactory } from '@vibesandbox/contracts';
+import { createOcrService } from './tjanst.ts';
 
-export const factory: AppServiceFactory | undefined = undefined;
+export const factory: AppServiceFactory | undefined = (dependencies) => createOcrService(dependencies);
