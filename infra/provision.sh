@@ -266,6 +266,15 @@ installera_paket() {
 # förrådets webbplats har tagits över.
 hamta_nyckel() {
   local url="$1" mal="$2" forvantat="$3" tmp gnupghome faktiskt
+  if ! har_kommando gpg; then
+    # I en torrkörning är gnupg ännu inte installerat (steg 1 hoppas över). gpg:s eget
+    # "command not found" går till /dev/null nedan, så utan den här raden dog skriptet tyst.
+    if (( DRY_RUN )); then
+      printf '  [dry-run] gpg saknas ännu — skulle hämta %s och kontrollera fingeravtryck %s när gnupg är installerat\n' "$url" "$forvantat"
+      return 0
+    fi
+    avbryt "gpg saknas, så fingeravtrycket för ${mal} går inte att kontrollera. Installera gnupg (steg 'uppdatering') först."
+  fi
   if [[ -s "$mal" ]]; then
     gnupghome="$(mktemp -d)"
     faktiskt="$(primarnycklar "$mal" "$gnupghome")"
@@ -470,6 +479,10 @@ las_konfiguration() {
     [[ "${!v}" =~ ^/[A-Za-z0-9._/-]+$ && "${!v}" != "/" && "/${!v}/" != *"/../"* && "/${!v}/" != *"/./"* ]] \
       || avbryt "${v} måste vara en absolut sökväg med bara A–Z, a–z, 0–9, '.', '_', '-' och '/', utan '..' och inte '/' (är '${!v}')."
   done
+  # Taggarna jämförs mot nodens faktiska taggar och skrivs till tillståndsfilen, som verify.sh
+  # läser in som kod. Minst en tagg: en otaggad server räknas som ägarens enhet i tailnetet.
+  [[ "$TAILSCALE_TAGS" =~ ^tag:[A-Za-z0-9-]+(,tag:[A-Za-z0-9-]+)*$ ]] \
+    || avbryt "TAILSCALE_TAGS måste vara en eller flera taggar, 'tag:namn[,tag:namn]' (är '${TAILSCALE_TAGS}')."
   kontrollera_losenordshash
   (( PLATFORM_CONTAINER_UID > 0 && PLATFORM_CONTAINER_UID < 65536 )) \
     || avbryt "PLATFORM_CONTAINER_UID måste ligga i 1–65535 (uid 0 i containern ska inte äga data)."
@@ -489,7 +502,7 @@ skriv_tillstand() {
     printf '# Skriven av provision.sh — läses av verify.sh. Innehåller inga hemligheter.\n'
     for v in OPS_USER PUBLIC_TCP_PORTS PUBLIC_UDP_PORTS OPEN_TAILSCALE_UDP LOCK_ROOT_PASSWORD \
       HARDEN_GUEST_AGENT INSTALL_GVISOR DOCKER_XFS_LOOP SWAPFILE_SIZE_GB VM_SWAPPINESS \
-      PLATFORM_ROOT DATA_USER DATA_UID DOCKREMAP_SUBID_BASE; do
+      PLATFORM_ROOT DATA_USER DATA_UID DOCKREMAP_SUBID_BASE TAILSCALE_TAGS; do
       printf '%s=%q\n' "$v" "${!v}"
     done
   )"
@@ -501,6 +514,20 @@ skriv_tillstand() {
 tailscale_uppe() {
   har_kommando tailscale && tailscale ip -4 >/dev/null 2>&1
 }
+
+# Nodens taggar enligt tailscaled, sorterade och kommaseparerade (tom rad = inga taggar).
+# Returnerar 1 om de inte går att läsa. Utan tagg räknas servern som en av ägarens egna enheter,
+# och då släpper ACL:en den vidare in i tailnetet — anslutning är alltså inte detsamma som klart.
+tailscale_taggar() {
+  local json
+  har_kommando python3 || return 1
+  json="$(tailscale status --json 2>/dev/null)" || return 1
+  python3 -c 'import json,sys
+s = json.load(sys.stdin).get("Self") or {}
+print(",".join(sorted(s.get("Tags") or [])))' <<<"$json" 2>/dev/null
+}
+
+normalisera_taggar() { tr ',' '\n' <<<"$1" | sed 's/[[:space:]]//g; /^$/d' | sort -u | paste -sd, -; }
 
 # Etablerade SSH-sessioner vars motpart ligger i tailnetet, en per rad: "<adress> <port>".
 # Det är ett starkare bevis än en flagga: någon har faktiskt loggat in den vägen.
@@ -1075,7 +1102,18 @@ EOF
   fi
 
   if tailscale_uppe; then
-    klart "ansluten till tailnetet som $(tailnet_adress)"
+    local taggar onskade
+    onskade="$(normalisera_taggar "$TAILSCALE_TAGS")"
+    if ! taggar="$(tailscale_taggar)"; then
+      avbryt "servern är ansluten till tailnetet, men dess taggar gick inte att läsa ('tailscale status --json' + python3). Utan att veta dem går det inte att avgöra om ACL:en håller den ute."
+    elif [[ "$taggar" != "$onskade" ]]; then
+      # Fel tagg (oftast: ingen alls, efter en inloggning för hand) ⇒ ACL:en behandlar servern som
+      # en av ägarens enheter och släpper den in i tailnetet. Skriptet byter inte identitet åt dig.
+      local besked="servern är redan ansluten till tailnetet med taggarna '${taggar:-‹inga›}', inte '${onskade}'. Utan rätt tagg räknas den som en av dina egna enheter och når hela tailnetet. Kör 'tailscale logout', ta bort maskinen i Tailscales adminkonsol och kör sedan fas 1 igen med en förtaggad engångsnyckel."
+      if (( DRY_RUN )); then varna "[dry-run] skulle avbryta här: ${besked}"; else avbryt "$besked"; fi
+    else
+      klart "ansluten till tailnetet som $(tailnet_adress) med taggarna ${taggar}"
+    fi
   else
     if (( DRY_RUN )); then
       printf '  [dry-run] skulle fråga efter auth-nyckeln (dold inmatning) eller läsa TAILSCALE_AUTHKEY_FILE, och sedan köra:\n'
@@ -1097,7 +1135,11 @@ EOF
         rm -f -- "$TAILSCALE_AUTHKEY_FILE"
         klart "nyckelfilen ${TAILSCALE_AUTHKEY_FILE} är raderad (engångsnyckeln är förbrukad)"
       fi
-      klart "ansluten som $(tailnet_adress)"
+      local efter
+      efter="$(tailscale_taggar)" || efter="‹gick inte att läsa›"
+      [[ "$efter" == "$(normalisera_taggar "$TAILSCALE_TAGS")" ]] \
+        || avbryt "'tailscale up' lyckades men noden har taggarna '${efter:-‹inga›}', inte '${TAILSCALE_TAGS}'. Kör 'tailscale logout' och ta bort maskinen i adminkonsolen innan något annat görs."
+      klart "ansluten som $(tailnet_adress) med taggarna ${efter}"
     fi
   fi
 }

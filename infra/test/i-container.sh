@@ -232,8 +232,8 @@ scenario_dryrun() {
   local n
   n="$(grep -c '^==> Steg' <<<"$UT")"
   if (( n == 12 )); then godkand "alla 12 steg redovisas"; else underkand "bara ${n} steg redovisades"; fi
-  if grep -vE '^(systemctl (is-enabled|is-active|list-timers|list-unit-files)|dpkg-query|tailscale ip|swapon --show[^ ]*|findmnt) ' "$ANROP" | grep -q .; then
-    underkand "dry-run körde ändrande kommandon:"; grep -vE '^(systemctl (is-enabled|is-active|list-timers|list-unit-files)|dpkg-query|tailscale ip|swapon --show[^ ]*|findmnt) ' "$ANROP" | head | sed 's/^/      | /'
+  if grep -vE '^(systemctl (is-enabled|is-active|list-timers|list-unit-files)|dpkg-query|tailscale (ip|status)|swapon --show[^ ]*|findmnt) ' "$ANROP" | grep -q .; then
+    underkand "dry-run körde ändrande kommandon:"; grep -vE '^(systemctl (is-enabled|is-active|list-timers|list-unit-files)|dpkg-query|tailscale (ip|status)|swapon --show[^ ]*|findmnt) ' "$ANROP" | head | sed 's/^/      | /'
   else
     godkand "bara läsande kommandon kördes"
   fi
@@ -241,6 +241,23 @@ scenario_dryrun() {
   pastar_inte "ingen brandväggstabell laddades" nft list table inet vibesandbox
   provision --dry-run --bekrafta-tailscale-ssh
   if (( KOD == 0 )); then godkand "dry-run med --bekrafta-tailscale-ssh avslutas med 0"; else underkand "kod ${KOD}"; fi
+
+  # Sett på en riktig värd: förrådsnyckeln fanns redan men gnupg gör det inte (installeras först
+  # i steg 1, vilket en torrkörning hoppar över). gpg:s "command not found" gick till /dev/null
+  # och skriptet dog tyst med 127 mitt i steg 3.
+  test_rubrik "--dry-run när en förrådsnyckel redan finns men gpg saknas"
+  local gpg_sokvag
+  gpg_sokvag="$(command -v gpg)"
+  mv "$gpg_sokvag" /tmp/gpg.undanstoppad
+  mkdir -p /usr/share/keyrings
+  printf 'inte en riktig nyckel\n' >/usr/share/keyrings/tailscale-archive-keyring.gpg
+  provision --dry-run
+  if (( KOD == 0 )); then godkand "dry-run avslutas med 0 trots att gpg saknas"; else underkand "dry-run gav kod ${KOD}"; visa_vid_fel; fi
+  if innehaller "$UT" "gpg saknas"; then godkand "torrkörningen säger att fingeravtrycket inte kunde kontrolleras"; else underkand "inget besked om att gpg saknas"; fi
+  n="$(grep -c '^==> Steg' <<<"$UT")"
+  if (( n == 12 )); then godkand "alla 12 steg redovisas ändå"; else underkand "bara ${n} steg redovisades"; fi
+  mv /tmp/gpg.undanstoppad "$gpg_sokvag"
+  rm -f /usr/share/keyrings/tailscale-archive-keyring.gpg
 }
 
 scenario_fas1() {
@@ -281,6 +298,7 @@ scenario_fas1() {
   if compgen -G '/run/vibesandbox-ts.*' >/dev/null; then underkand "nyckelfilen ligger kvar i /run"; else godkand "nyckelfilen är borttagen"; fi
   if grep -rq 'HEMLIG' /etc /var/log 2>/dev/null; then underkand "auth-nyckeln har hamnat på disk"; else godkand "auth-nyckeln finns inte i /etc eller loggen"; fi
   if grep -q 'tailscale up.*--ssh=false.*--accept-routes=false' "$ANROP"; then godkand "tailscale up: --ssh=false --accept-routes=false"; else underkand "tailscale up saknar spärrflaggor"; fi
+  if innehaller "$UT" "med taggarna tag:vibesandbox"; then godkand "noden kontrolleras ha taggen tag:vibesandbox efter anslutning"; else underkand "ingen kontroll av nodens tagg"; fi
 
   test_rubrik "Fas 1 en gång till: idempotens"
   local fore efter
@@ -297,6 +315,25 @@ scenario_fas1() {
   TAILSCALE_NYCKEL_FPR=0000000000000000000000000000000000000000 provision --steg tailscale
   if (( KOD != 0 )) && innehaller "$UT" "Installerar den INTE"; then godkand "avbryter vid fel fingeravtryck"; else underkand "fel fingeravtryck accepterades"; fi
   pastar_inte "ingen nyckel installerades" test -e /usr/share/keyrings/tailscale-archive-keyring.gpg
+  mv /tmp/ts-nyckel.bak /usr/share/keyrings/tailscale-archive-keyring.gpg
+
+  # Sett på en riktig värd: Tailscale installerat och inloggat för hand, utan tagg. Då räknas
+  # servern som en av ägarens enheter och når hela tailnetet — "ansluten" är inte "klart".
+  test_rubrik "Redan ansluten UTAN tagg ⇒ fas 1 stannar, torrkörningen säger till"
+  find "${STUBBKATALOG}/tillstand/tailscale-taggar" -delete
+  : >"$ANROP"
+  kor_fas1
+  if (( KOD != 0 )) && innehaller "$UT" "taggarna '‹inga›', inte 'tag:vibesandbox'"; then
+    godkand "fas 1 avbryter när noden saknar taggen"; else underkand "otaggad nod accepterades (kod ${KOD})"; visa_vid_fel 1; fi
+  if innehaller "$UT" "FAS 1 KLAR"; then underkand "fas 1 sade KLAR trots otaggad nod"; else godkand "inget FAS 1 KLAR med otaggad nod"; fi
+  if grep -q '^tailscale up' "$ANROP"; then underkand "skriptet bytte identitet på noden på egen hand"; else godkand "skriptet rör inte nodens identitet — ägaren loggar ut själv"; fi
+  provision --dry-run
+  if (( KOD == 0 )) && innehaller "$UT" "skulle avbryta här: servern är redan ansluten"; then
+    godkand "torrkörningen visar att fas 1 skulle stanna"; else underkand "torrkörningen sade inget (kod ${KOD})"; visa_vid_fel; fi
+  printf 'tag:annan' >"${STUBBKATALOG}/tillstand/tailscale-taggar"
+  kor_fas1
+  if (( KOD != 0 )) && innehaller "$UT" "taggarna 'tag:annan', inte 'tag:vibesandbox'"; then
+    godkand "fel tagg avvisas också"; else underkand "fel tagg accepterades (kod ${KOD})"; fi
 }
 
 scenario_angra() {
@@ -438,7 +475,7 @@ scenario_fas2() {
   if [[ "$fore" == "$efter" ]]; then godkand "inga filer ändrades (läge, ägare, tid, innehåll)"; else underkand "andra körningen ändrade filer:"; diff <(echo "$fore") <(echo "$efter") | head -n 20; fi
   if [[ "$fore_nft" == "$(nft -s list ruleset)" ]]; then godkand "regelverket är oförändrat"; else underkand "regelverket ändrades"; fi
   local andrande
-  andrande="$(grep -vE '^(systemctl (is-enabled|is-active|list-timers|list-unit-files)|sysctl -n|dpkg-query|tailscale ip|swapon --show[^ ]*|findmnt|ss |journalctl |docker info|dockerd --validate|apt-get (update|-y .*full-upgrade)|passwd -S)' "$ANROP" || true)"
+  andrande="$(grep -vE '^(systemctl (is-enabled|is-active|list-timers|list-unit-files)|sysctl -n|dpkg-query|tailscale (ip|status)|swapon --show[^ ]*|findmnt|ss |journalctl |docker info|dockerd --validate|apt-get (update|-y .*full-upgrade)|passwd -S)' "$ANROP" || true)"
   if [[ -z "$andrande" ]]; then godkand "inga ändrande kommandon utöver apt-uppdateringen"; else underkand "andra körningen körde:"; head <<<"$andrande" | sed 's/^/      | /'; fi
   if grep -q '^  → ' <<<"$(grep -v 'apt-get update' <<<"$UT")"; then underkand "utskriften visar åtgärder:"; grep '^  → ' <<<"$UT" | grep -v 'apt-get update' | head | sed 's/^/      | /'; else godkand "utskriften visar bara ✓"; fi
 

@@ -74,7 +74,7 @@ scenario_verify() {
   aldrig_ok getent anvandare 'docker-gruppen (är tom|finns inte)|medlemmar i sudo'
   aldrig_ok passwd anvandare 'lösenordsstatus'
   aldrig_ok sudo anvandare 'sudo -l'
-  aldrig_ok tailscale tailscale 'ansluten'
+  aldrig_ok tailscale tailscale 'ansluten|taggarna'
   aldrig_ok nft brandvagg 'tabellen|policy|SSH|spärren|regelverk'
   aldrig_ok sshd ssh '\(user='
   aldrig_ok ssh ssh 'provinloggning'
@@ -86,6 +86,21 @@ scenario_verify() {
   aldrig_ok stat kataloger '/srv'
   aldrig_ok id kataloger 'uid för'
   aldrig_ok python3 leverantor 'sammanslagen'
+
+  test_rubrik "Nodens tagg: utan den räknas servern som ägarens enhet och når hela tailnetet"
+  bara tailscale
+  if (( KOD == 0 )) && grep -q '✓ noden har taggarna tag:vibesandbox' <<<"$UT"; then godkand "rätt tagg ⇒ ✓"; else underkand "rätt tagg gav kod ${KOD}"; visa_vid_fel; fi
+  mv "${STUBBKATALOG}/tillstand/tailscale-taggar" /tmp/taggar.bak
+  bara tailscale
+  if (( KOD == 1 )) && grep -q "✗ noden har taggarna '‹inga›'" <<<"$UT"; then godkand "otaggad nod ⇒ ✗"; else underkand "otaggad nod gav kod ${KOD}"; visa_vid_fel 1; fi
+  printf 'tag:annan' >"${STUBBKATALOG}/tillstand/tailscale-taggar"
+  bara tailscale
+  if (( KOD == 1 )) && grep -q "✗ noden har taggarna 'tag:annan'" <<<"$UT"; then godkand "fel tagg ⇒ ✗"; else underkand "fel tagg gav kod ${KOD}"; visa_vid_fel 1; fi
+  mv /tmp/taggar.bak "${STUBBKATALOG}/tillstand/tailscale-taggar"
+  falla python3 saknas
+  bara tailscale
+  sluta_falla python3
+  if (( KOD == 1 )) && ! grep '✓' <<<"$UT" | grep -q taggarna; then godkand "python3 saknas ⇒ ✗, inget falskt ✓ på taggarna"; else underkand "python3 saknas gav kod ${KOD}"; fi
 
   test_rubrik "B7: provinloggning med lösenord mot loopback — det är DEMONEN som ska neka"
   bara ssh

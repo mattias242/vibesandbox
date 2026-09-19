@@ -118,8 +118,19 @@ case "$NAMN" in
   tailscale)
     case "${ord[0]:-}" in
       ip) [[ -e "$T/tailscale-uppe" ]] && { echo 100.64.0.5; exit 0; }; exit 1 ;;
+      status)
+        # Bara det skripten läser: Self.Tags, ur det 'up' fick som --advertise-tags. En nod som
+        # kom upp på annat sätt (filen tailscale-uppe utan tailscale-taggar) är otaggad.
+        [[ " $* " == *" --json "* ]] || exit 0
+        if [[ ! -e "$T/tailscale-uppe" ]]; then echo '{"BackendState":"NeedsLogin","Self":null}'; exit 0; fi
+        taggar=""
+        if [[ -s "$T/tailscale-taggar" ]]; then
+          taggar="$(tr ',' '\n' <"$T/tailscale-taggar" | sed '/^$/d; s/.*/"&"/' | paste -sd, -)"
+        fi
+        printf '{"BackendState":"Running","Self":{"HostName":"stubb","Tags":%s}}\n' "$([[ -n "$taggar" ]] && echo "[${taggar}]" || echo null)" ;;
       up)
         for a in "$@"; do
+          if [[ "$a" == --advertise-tags=* ]]; then printf '%s' "${a#--advertise-tags=}" >"$T/tailscale-taggar"; fi
           if [[ "$a" == --auth-key=file:* ]]; then
             fil="${a#--auth-key=file:}"
             [[ -s "$fil" ]] || { echo "nyckelfilen saknas" >&2; exit 1; }
