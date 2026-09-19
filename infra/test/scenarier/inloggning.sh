@@ -125,14 +125,15 @@ scenario_inloggning() {
   test_rubrik "B3: nyckeln tas aldrig från miljön"
   find "${STUBBKATALOG}/tillstand/tailscale-uppe" -delete
   : >"$ANROP"
-  TAILSCALE_AUTHKEY="tskey-auth-HEMLIG-MILJONYCKEL" provision --steg tailscale
+  # Nycklarna nedan är påhittade och isärskrivna så att GitHubs hemlighetsskanning inte larmar.
+  TAILSCALE_AUTHKEY="tskey""-auth-HEMLIG-MILJONYCKEL" provision --steg tailscale
   if (( KOD != 0 )) && innehaller "$UT" "TAILSCALE_AUTHKEY_FILE"; then godkand "TAILSCALE_AUTHKEY i miljön avvisas, med besked om rätt väg"; else underkand "nyckeln togs från miljön (kod ${KOD})"; fi
   pastar_inte "…utan att ansluta" test -e "${STUBBKATALOG}/tillstand/tailscale-uppe"
   pastar_inte "…utan att något barn hann ärva den" grep -q '^HEMLIGHET-I-MILJON' "$ANROP"
   if grep -q 'HEMLIG' <<<"$UT" || grep -rq 'HEMLIG' /var/log 2>/dev/null; then underkand "nyckeln ekades i utskriften eller loggen"; else godkand "nyckeln ekas varken i utskriften eller i loggen"; fi
 
   test_rubrik "B3: nyckelfilen måste vara en vanlig fil, ägd av root, utan rättigheter för andra"
-  printf 'tskey-auth-HEMLIG-FILNYCKEL' >/root/ts.nyckel
+  printf '%s' "tskey""-auth-HEMLIG-FILNYCKEL" >/root/ts.nyckel
   chmod 644 /root/ts.nyckel
   TAILSCALE_AUTHKEY_FILE=/root/ts.nyckel provision --steg tailscale
   if (( KOD != 0 )) && innehaller "$UT" "600"; then godkand "läge 644 avvisas"; else underkand "läge 644 godtogs"; fi
@@ -153,7 +154,7 @@ scenario_inloggning() {
   test_rubrik "B3: utan fil frågar skriptet — dold inmatning, ingenting på kommandoraden"
   find "${STUBBKATALOG}/tillstand/tailscale-uppe" -delete
   : >"$ANROP"; echo 2 >"${STUBBKATALOG}/tailscale-up-sov"
-  provision_pty "auth-nyckel=>skicka:tskey-auth-HEMLIG-PTYNYCKEL" \
+  provision_pty "auth-nyckel=>skicka:tskey""-auth-HEMLIG-PTYNYCKEL" \
     "ansluter till tailnetet=>kor:sleep 1; n=0; for p in /proc/[0-9]*; do c=\$(tr '\\0' ' ' <\$p/cmdline 2>/dev/null); [[ \$c == *pty-kor.py* ]] && continue; [[ \$c == *PTYNY[C]KEL* ]] && n=\$((n+1)); done; echo cmdline-träffar=\$n; stat -c 'nyckelfil %a %U' /run/vibesandbox-ts.* 2>&1" \
     -- --steg tailscale
   if (( KOD == 0 )) && [[ -e "${STUBBKATALOG}/tillstand/tailscale-uppe" ]]; then godkand "inmatad nyckel ⇒ ansluten"; else underkand "inmatning gav kod ${KOD}"; visa_vid_fel; fi
@@ -171,7 +172,7 @@ scenario_inloggning() {
   for s in "signal:TERM" "ctrlc"; do
     find "${STUBBKATALOG}/tillstand/tailscale-uppe" -delete 2>/dev/null
     echo 3 >"${STUBBKATALOG}/tailscale-up-sov"
-    provision_pty "auth-nyckel=>skicka:tskey-auth-HEMLIG-AVBRUTEN" "ansluter till tailnetet=>kor:sleep 1; ls /run/vibesandbox-ts.* >/dev/null 2>&1 && echo nyckelfilen-fanns" "=>${s}" -- --steg tailscale
+    provision_pty "auth-nyckel=>skicka:tskey""-auth-HEMLIG-AVBRUTEN" "ansluter till tailnetet=>kor:sleep 1; ls /run/vibesandbox-ts.* >/dev/null 2>&1 && echo nyckelfilen-fanns" "=>${s}" -- --steg tailscale
     if grep -q 'nyckelfilen-fanns' <<<"$UT" && (( KOD != 0 )); then godkand "${s}: avbrottet skedde medan nyckelfilen fanns (kod ${KOD})"; else underkand "${s}: avbrottet träffade inte fönstret (kod ${KOD})"; fi
     if compgen -G '/run/vibesandbox-ts.*' >/dev/null; then underkand "${s}: nyckelfilen ligger KVAR i /run"; else godkand "${s}: ingen nyckelfil finns kvar"; fi
   done
