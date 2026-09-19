@@ -2,14 +2,15 @@
  * Gemensam uppstart för `main.ts` (drift) och `dev.ts` (lokal utveckling): starta, logga EN rad
  * om att plattformen lyssnar, och stäng ordnat på SIGTERM/SIGINT.
  *
- * Loggen är JSON-rader på standard ut. Det enda som loggas per förfrågan är gatewayns
- * `GatewayLogEntry`, vars typ utesluter e-postadresser, huvuden, kroppar och sökvägar. Startraden
- * innehåller aldrig hemligheten och aldrig datakatalogens innehåll.
+ * Loggen är JSON-rader på standard ut, märkta med `source`. Varje del loggar bara sin egen snävt
+ * typade post (gatewayns, byggverktygets, identitetens), vars typer utesluter e-postadresser,
+ * huvuden, kroppar, sökvägar, önskemål och koder. Startraden innehåller aldrig en hemlighet och
+ * aldrig datakatalogens innehåll.
  */
-import type { GatewayLogEntry } from '@vibesandbox/gateway';
 import type { PlatformConfig } from './config.ts';
+import type { PlatformLogEntry } from './logg.ts';
 import { createPlatform } from './server.ts';
-import type { ListenInfo, Platform } from './server.ts';
+import type { ListenInfo, Platform, PlatformDependencies } from './server.ts';
 
 function writeLogLine(entry: Readonly<Record<string, unknown>>): void {
   process.stdout.write(`${JSON.stringify({ time: new Date().toISOString(), ...entry })}\n`);
@@ -20,11 +21,14 @@ export interface RunningPlatform {
   readonly listening: ListenInfo;
 }
 
-export async function startPlatform(config: PlatformConfig): Promise<RunningPlatform> {
-  const platform = createPlatform({
-    ...config,
-    logger: config.logger ?? ((entry: GatewayLogEntry) => writeLogLine({ ...entry })),
-  });
+export async function startPlatform(config: PlatformConfig, deps: PlatformDependencies = {}): Promise<RunningPlatform> {
+  const platform = createPlatform(
+    {
+      ...config,
+      logger: config.logger ?? ((entry: PlatformLogEntry) => writeLogLine({ ...entry })),
+    },
+    deps,
+  );
 
   let listening: ListenInfo;
   try {
@@ -63,7 +67,10 @@ export async function startPlatform(config: PlatformConfig): Promise<RunningPlat
     port: listening.port,
     baseDomain: config.baseDomain,
     appDomain: config.appDomain,
+    publicScheme: config.publicScheme,
     identityProvider: config.identity.provider,
+    builder: config.builder === undefined ? 'av' : 'på',
+    ...(config.builder === undefined ? {} : { llmModel: config.builder.llm.model, buildDriver: config.builder.build.driver }),
   });
 
   return { platform, listening };

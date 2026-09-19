@@ -1,13 +1,16 @@
 # vibesandbox i drift: en docker compose-stack på en enda värd (se deploy/README.md).
 #
-#   internet ─443─► caddy ──(nät "inre", internt)──► platform
-#                                                     │
+#   internet ─443─► caddy ──(nät "inre", internt)──► platform ──(volym byggjobb)──► build-worker
+#                                                     │                          (inget nät alls)
 #                                  egress ◄───────────┘  enda vägen ut, bara listade värdnamn
 #                                    │
 #                                 (nät "ut") ─► modelleverantör, mejltjänst
 #
 # Plattformen står ENBART på det interna nätet: den når varken internet, värden eller andra
 # containrar utöver proxyn. Varje tjänst får bara de hemligheter den själv behöver.
+#
+# AI-genererad appkod byggs av build-worker, som saknar nät, hemligheter och Docker-socket och
+# bara delar jobbkatalogen med plattformen (packages/build/README.md, drivrutinen spool).
 
 name: vibesandbox
 
@@ -94,6 +97,35 @@ services:
     networks: [inre]
     mem_limit: 1024m
     pids_limit: 256
+
+  build-worker:
+    <<: *hardening
+    # Egen, minimal avbild (images/build-worker): bara mallen, SDK:t, kontrakten, policyn och
+    # byggkedjan — ingen plattformskod, inga paket för mejl eller språkmodell. Allt i den ägs av
+    # root; opålitlig kod kan alltså inte skriva om byggkedjan. Plattformens avbild vore större
+    # och innehåller kod som aldrig ska finnas där opålitlig kod byggs.
+    build:
+      context: ..
+      dockerfile: images/build-worker/Dockerfile
+    image: vibesandbox-build-worker:lokal
+    command: ["node", "images/build-worker/spool-worker.ts"]
+    # Samma uid som plattformen: båda läser och skriver /jobs.
+    user: "10001:10001"
+    # Inget nät alls — inte ens det interna. Bygget behöver inget: beroendena finns i avbilden.
+    network_mode: none
+    # INGA hemligheter. Bara jobbkatalogen (standard /jobs) och byggkedjans egna gränser.
+    environment:
+      VIBESANDBOX_JOBS_DIR: /jobs
+    tmpfs: ["/tmp:rw,size=512m"]
+    volumes:
+      - byggjobb:/jobs
+    # Plattformen först: dess avbild äger /jobs som uid 10001, och det är den ägaren en ny
+    # namngiven volym ärver. (Byggavbilden har ingen /jobs.)
+    depends_on: [platform]
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    pids_limit: 256
+    cpus: 1.5
 
 networks:
   # Internt: ingen utgång från nätet. Här står plattformen, och hit når caddy och egress.
