@@ -1,0 +1,19 @@
+{
+  "name": "@vibesandbox/build",
+  "version": "0.0.0",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "description": "Bygger AI-genererad appkod med den låsta mallen: policy → typkontroll → bygge → kontroll av det byggda.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "image": "docker build -f ../../images/build-worker/Dockerfile -t vibesandbox/build-worker:dev ../.."
+  },
+  "dependencies": {
+    "@vibesandbox/app-template": "*",
+    "@vibesandbox/contracts": "*",
+    "@vibesandbox/policy": "*"
+  }
+}

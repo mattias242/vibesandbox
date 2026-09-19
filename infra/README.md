@@ -25,17 +25,20 @@ Stöds: Debian 13 (målet), Debian 12, Ubuntu 24.04. Allt annat vägras.
 ## Körordning
 
 Ordningen är ett säkerhetskrav: **man får aldrig låsa ute sig, och Docker får aldrig vara
-uppe utan brandvägg.** Skriptet upprätthåller den själv, men läs igenom innan du kör.
+uppe utan brandvägg.** Skriptet upprätthåller den själv, men det här är den officiella
+körordningen — följ den, i den här ordningen, första gången på en ny värd.
 
 ### 0. Innan du rör servern (manuellt, en gång)
 
-1. **Slå på 2FA på leverantörskontot.** Leverantörens panel kan köra root-skript i gästen via
+1. **Ta en ögonblicksbild (snapshot) i leverantörens panel.** Den är ångervägen om allt annat
+   går fel, också sådant som inget skript kan ångra.
+2. **Slå på 2FA på leverantörskontot.** Leverantörens panel kan köra root-skript i gästen via
    `qemu-guest-agent` — kontot *är* root på servern. Inget skript kan göra det här åt dig.
-2. Jämför serverns SSH-värdnyckel med den som leverantörens panel visar.
-3. Spara i lösenordshanteraren: ett nytt, starkt lösenord för `ops`. Det behövs för `sudo`
+3. Jämför serverns SSH-värdnyckel med den som leverantörens panel visar.
+4. Spara i lösenordshanteraren: ett nytt, starkt lösenord för `ops`. Det behövs för `sudo`
    och är **nödvägen** via leverantörens webbkonsol. Skapa hashen på din egen dator:
    `openssl passwd -6` — klartexten ska aldrig hamna på servern.
-4. **Tailnet-ACL** (i Tailscales adminkonsol). Servern kör opålitlig kod och ska bara vara
+5. **Tailnet-ACL** (i Tailscales adminkonsol). Servern kör opålitlig kod och ska bara vara
    *nåbar* från tailnetet, aldrig kunna *initiera* trafik in i det:
    - skapa taggen `tag:vibesandbox` med dig själv som `tagOwner`;
    - tillåt `dina enheter → tag:vibesandbox:22`;
@@ -45,9 +48,9 @@ uppe utan brandvägg.** Skriptet upprätthåller den själv, men läs igenom inn
    Har tailnetet kvar standardregeln *allow all* måste den bort först. Brandväggen spärrar
    dessutom containrars trafik mot `100.64.0.0/10`, men ACL:en är det som skyddar om själva
    värden tas över.
-5. Skapa en **engångs-auth-nyckel**, förtaggad med `tag:vibesandbox`, kort giltighetstid.
+6. Skapa en **engångs-auth-nyckel**, förtaggad med `tag:vibesandbox`, kort giltighetstid.
    Taggade noder har ingen nyckelutgång — bra, annars faller servern ur tailnetet efter 180 dagar.
-6. **DNS**, två poster hos DNS-värden, båda rena DNS-poster (ingen proxy — en DNS-värd som
+7. **DNS**, två poster hos DNS-värden, båda rena DNS-poster (ingen proxy — en DNS-värd som
    också agerar proxy terminerar TLS och hamnar i datavägen, se `docs/adr/0002`):
 
    | Namn | Typ | Värde |
@@ -58,54 +61,103 @@ uppe utan brandvägg.** Skriptet upprätthåller den själv, men läs igenom inn
    Wildcard-certifikatet hämtas med DNS-utmaning, så port 80 behövs aldrig. API-nyckeln till
    DNS-värden hör till `compose.yml` (skiva 6), inte hit.
 
-### 1. Fas 1 — uppdatering, driftanvändare, Tailscale
+### 1. Kontrollera före körning (på servern, som root, innan fas 1)
+
+Det här går inte att avgöra utan att titta på just den här värden. Inget av det stoppar körningen
+— skriptet hanterar fallen — men du ska veta svaret innan du börjar:
+
+| Kontroll | Varför |
+|---|---|
+| `systemctl is-enabled nftables.service` | Är den `enabled` från början laddas `/etc/nftables.conf` vid *varje* uppstart. Ett ångrat brandväggssteg återställer filen (A3), men det är därför det måste göra det. |
+| `tail -c1 /etc/fstab \| od -c` (ska visa `\n`) | En fil utan avslutande radbrytning rättas nu av skriptet, men gör den det inte har du en annan avvikelse att förstå. |
+| `cat /etc/subuid /etc/subgid` | Poster som överlappar `100000–165535` (dockremap) stoppar Docker-steget. Bättre att se dem nu. |
+| `ls /etc/sudoers.d/; grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d` | Lösenordsfri sudo är avdrift — `verify.sh` larmar. Avbildens standardanvändare (Ubuntu: `ubuntu`) har ofta en sådan. |
+| `tailscale version` efter fas 1, och ACL:en ovan | `tailscale up --auth-key=file:` och `--advertise-tags` måste fungera i installerad version och mot din ACL. |
+| `resolvectl status` (eller `/etc/resolv.conf`) | Är uppströms-DNS en RFC1918-adress tappar containrar DNS (de spärras mot privata nät). |
+| `systemctl is-enabled ssh.socket` (Ubuntu 24.04) | Socketaktiverad sshd: omladdning och lyssnare fungerar annorlunda. Testat bara mot `ssh.service`. |
+| `sudo -V \| grep -i use_pty` | Kör fas 2 i `tmux`: då spelar det ingen roll om `/dev/tty` dör när anslutningen gör det. |
+
+Kopiera sedan filerna och fyll i konfigurationen:
 
 ```sh
 scp -r infra root@203.0.113.10:/root/vibesandbox-infra        # från din dator
 ssh root@203.0.113.10
 cd /root/vibesandbox-infra
 cp provision.env.example provision.env && chmod 600 provision.env
-editor provision.env                                           # nyckel, lösenordshash
-
-./provision.sh --dry-run                                       # läs vad som skulle hända
-TAILSCALE_AUTHKEY=tskey-auth-… ./provision.sh                  # nyckeln via miljön, aldrig i fil
+editor provision.env              # din nyckel, din hash — EXEMPEL-värdena avvisas
+./provision.sh --dry-run          # läs vad som skulle hända
 ```
 
-Skriptet **stannar med flit** efter Tailscale och skriver ut vad du ska göra. Behåll
-root-sessionen öppen.
-
-### 2. Bevisa att vägen in via tailnetet fungerar
-
-Från din egen dator, i en ny terminal:
+### 2. Fas 1 — uppdatering, driftanvändare, Tailscale (root-sessionen ÖPPEN)
 
 ```sh
-ssh ops@<värd>          # MagicDNS-namnet, eller tailnet-adressen
-sudo -v                      # lösenordet ska fungera
+./provision.sh                    # frågar efter auth-nyckeln — dold inmatning
 ```
 
-### 3. Fas 2 — körs FRÅN tailnet-sessionen
+Auth-nyckeln ges **aldrig** på kommandoraden eller i miljön — där hamnar den i `ps`, sudo-loggen,
+skalhistoriken och varje barnprocess; skriptet vägrar om `TAILSCALE_AUTHKEY` är satt. Antingen svarar du på frågan, eller så
+lägger du nyckeln i en rootägd fil med läge 600 och sätter `TAILSCALE_AUTHKEY_FILE`; filen
+raderas efter lyckad anslutning. Den tillfälliga filen i `/run` som skriptet själv skapar raderas
+vad som än händer, också vid Ctrl-C.
+
+Fas 1 stänger **lösenordsinloggning över SSH för `ops`** (en egen dropin, `0-0-0-vibesandbox-ops.conf`)
+*innan* `ops` får sitt lösenord — annars vore `ops` ett lösenordsangripbart sudo-konto mot en
+publik port 22 i timmarna mellan fas 1 och fas 2. Skriptet **stannar med flit** efter Tailscale.
+Behåll root-sessionen öppen.
+
+### 3. Bevisa vägen in — och nödvägen — innan fas 2
+
+Alla tre, från din egen dator:
 
 ```sh
-cd /root/vibesandbox-infra   # via sudo -i, eller kopiera katalogen till ops
-sudo ./provision.sh --bekrafta-tailscale-ssh
+ssh ops@<värd>          # 1. MagicDNS-namnet eller tailnet-adressen — med NYCKEL
+sudo -v                      # 2. lösenordet ska fungera
 ```
 
-Skriptet kräver både flaggan **och** att det just nu finns en etablerad SSH-session från
-`100.64.0.0/10` — flaggan är ett löfte, sessionen är ett bevis.
+3. **Logga in som `ops` med lösenordet i leverantörens WEBBKONSOL.** Det är den vägen du har kvar
+   om allt annat går fel — pröva den nu, inte då.
 
-Två steg har **död mans grepp**: efter att brandväggen laddats och efter att sshd laddats om
-frågar skriptet efter `JA`. Öppna då en *ny* terminal och kontrollera att du kommer in. Svarar
-du inte inom 3 minuter — eller har sessionen dött — **ångras ändringen automatiskt** och
-root-låsningen görs aldrig. Svara inte JA på känn.
-
-### 4. Kontrollera
+### 4. Fas 2 — i `tmux`, från tailnet-sessionen
 
 ```sh
+tmux new -s fas2
+sudo -i
+cd /root/vibesandbox-infra
+./provision.sh --bekrafta-tailscale-ssh
+```
+
+Skriptet kräver flaggan, en etablerad SSH-session från `100.64.0.0/10` **och** raden
+`Accepted publickey for ops from 100.… port …` i sshd:s journal för just den sessionen —
+flaggan är ett löfte, sessionen och journalraden är bevis på att *nyckeln* fungerar.
+
+Två steg har **död mans grepp** (se *Ångra-mekanismen* nedan): efter att brandväggen laddats och
+efter att sshd laddats om frågar skriptet efter `JA`. Då:
+
+- öppna en **ny** terminal och logga in (`ssh ops@<värd>`, `sudo -v`) — svara `JA` först
+  när det har fungerat;
+- **tryck aldrig Ctrl-C vid frågan** för att "prova igen" — det ångrar ändringen (med flit), och
+  du får köra om steget;
+- använd aldrig `--ingen-bekraftelse` på en riktig värd.
+
+Svarar du inte inom 3 minuter, eller dör sessionen, ångras ändringen — och roots lösenord låses
+aldrig förrän SSH-steget är bekräftat.
+
+### 5. Kontrollera, starta om, kontrollera igen
+
+```sh
+# stäng alla sessioner som INTE går över tailnetet (root-sessionen från steg 1)
+sudo /usr/local/sbin/vibesandbox-verify
+sudo systemctl reboot
+# logga in igen över tailnetet
 sudo /usr/local/sbin/vibesandbox-verify
 ```
 
-`✓` rätt, `✗` avvikelse (slutkod 1), `⚠` medvetet val eller något att känna till. Kontrollen
-körs sedan varje timme av `vibesandbox-verify.timer`; avvikelser syns i
+Omstarten är en del av körordningen: först efter den vet du att brandväggen laddas vid
+uppstart, att Docker väntar på den, och att inget obekräftat låg kvar.
+
+`✓` rätt, `✗` avvikelse (slutkod 1), `⚠` medvetet val eller något att känna till. Ett kommando
+som misslyckas eller saknas ger aldrig `✓` — `verify.sh` bedömer slutkod och utdata var för sig.
+Kontrollen körs sedan varje timme av `vibesandbox-verify.timer`; avvikelser syns i
 `systemctl status vibesandbox-verify` och `journalctl -u vibesandbox-verify`.
 **TODO (skiva 6):** larm ut ur värden — låt tjänsten pinga en push-övervakning vid godkänd
 körning, så att både en avvikelse och en död värd märks.
@@ -119,22 +171,62 @@ sudo ./provision.sh --steg ssh --bekrafta-tailscale-ssh
 ```
 
 Körningen loggas i `/var/log/vibesandbox-provision.log`. Skriptet ignorerar SIGHUP, så ett
-steg körs klart även om SSH-sessionen dör.
+steg körs klart även om SSH-sessionen dör — men JA-frågan kräver en terminal, därav `tmux`.
 
 | Steg | Gör |
 |---|---|
 | `uppdatering` | `full-upgrade`; **avmaskar** det som behövs (apt-timrarna, `unattended-upgrades` m.fl.) och redovisar allt annat som är maskat; säkerhetsuppdateringar + omstart 04:00 |
-| `anvandare` | `ops`: sudo, **inte** docker-gruppen; nyckel och lösenordshash från konfigurationen |
-| `tailscale` | förråd med fingeravtryckskontroll; `tailscale up` med nyckeln via fil i `/run` |
-| `brandvagg` | nftables `inet vibesandbox`: INPUT drop, FORWARD drop, SSH bara på `tailscale0`, spärrar för containrar |
-| `ssh` | dropin `0-0-vibesandbox.conf` som sorteras först, Include-raden först i `sshd_config`; `sshd -t` + `sshd -T` före omladdning; låser roots lösenord |
+| `anvandare` | `ops`: sudo, **inte** docker-gruppen, **inga** underordnade uid/gid; nyckeln kontrolleras (exempelnyckeln avvisas); dropin som stänger lösenord över SSH för `ops` skrivs och verifieras med `sshd -T` **före** lösenordet, som sätts med `chpasswd -e` (hashen på stdin, aldrig i argv) |
+| `tailscale` | förråd med fingeravtryckskontroll; `tailscale up --auth-key=file:` med nyckeln ur dold inmatning eller en rootägd 600-fil |
+| `brandvagg` | nftables `inet vibesandbox`: INPUT drop, FORWARD drop, SSH bara på `tailscale0`, spärrar för containrar; kandidaten prövas med `nft -c` och skrivs atomiskt; **död mans grepp** |
+| `ssh` | dropin `0-0-vibesandbox.conf` som sorteras först, Include-raden först i `sshd_config` (atomiskt, prövat med `sshd -t -f`); `sshd -T` före omladdning; **död mans grepp**; bekräftelsemarkör; låser roots lösenord **bara** i bekräftat läge |
 | `leverantor` | cloud-init: egen sist sorterad fil, kontroll av det **sammanslagna** resultatet; ev. härdad gästagent |
-| `dockerdisk` | valfri XFS-volym för `/var/lib/docker` |
-| `gvisor` | valfri `runsc` med kontrollsumma |
-| `docker` | Dockers förråd, `daemon.json`, `dockremap` med låsta id:n; vägrar utan laddad brandvägg |
-| `system` | sysctl (egen sist sorterad fil, kontroll med `sysctl -n`, redovisar andra filer som sätter samma nycklar), swapfil, LLMNR av, tidssynk |
+| `dockerdisk` | valfri XFS-volym för `/var/lib/docker`; avbilden byggs under annat namn och byter namn först när `mkfs` är klar; fstab-tillägget prövas med `findmnt --verify` före bytet |
+| `gvisor` | valfri `runsc`; utan låst `GVISOR_SHA512` avbryts steget |
+| `docker` | Dockers förråd, `daemon.json` (validerad som tempfil före bytet), `dockremap` med låsta id:n och kontroll av överlapp i subuid/subgid; vägrar utan laddad brandvägg |
+| `system` | sysctl (egen sist sorterad fil, kontroll med `sysctl -n`, redovisar andra filer som sätter samma nycklar), swapfil (byggd under annat namn, kontrollerad med `blkid`), LLMNR av, tidssynk |
 | `kataloger` | `/srv/vibesandbox/{compose,data,backups}` |
 | `overvakning` | installerar `verify.sh` + timer |
+
+---
+
+## Ångra-mekanismen (död mans grepp)
+
+Brandväggs- och SSH-steget kan låsa ute ägaren. Därför gäller en ändring där bara när ägaren
+har svarat `JA` — och **varje annan utgång ångrar den**, också de där skriptet självt inte
+hinner göra någonting. Allt nedan sker *före* ändringen:
+
+1. `angra.sh` installeras som `/usr/local/sbin/vibesandbox-angra` och uppstartsenheten
+   `vibesandbox-angra-uppstart.service` aktiveras. Går något av det inte görs ingen ändring.
+2. En obekräftad ändring från en tidigare, avbruten körning ångras först.
+3. En ögonblicksbild av filerna som ska röras läggs i `/etc/vibesandbox/angra/<steg>/`
+   (root, läge 700). Fanns filen inte antecknas det, så att ångrandet tar bort den nya.
+4. Markören `obekraftad` skrivs, fällorna för INT/TERM/QUIT gäller, och en **transient timer**
+   armeras: `systemd-run --on-active=240s vibesandbox-angra <steg>`. Går den inte att armera
+   görs ingen ändring.
+
+Sedan görs ändringen och frågan ställs. Tre oberoende utlösare kör samma fristående skript:
+
+| Utlösare | Täcker |
+|---|---|
+| `provision.sh` självt (EXIT-fällan) | tidsgräns, fel svar, Ctrl-C, SIGTERM, död terminal |
+| den transienta timern (240 s, alltså efter skriptets egen tidsgräns på 180 s) | `kill -9`, OOM-dödaren, en tappad anslutning där skriptet hänger |
+| uppstartsenheten (före `nftables.service`, `ssh.service` och nätverket) | omstart i fönstret — transienta timrar överlever inte en omstart, markören gör det |
+
+**Markören är auktoriteten**, inte utlösarna: finns den ångras ändringen, saknas den görs
+ingenting. `JA` tar bort markören under samma lås som ångra-skriptet håller, så "bekräftat" och
+"ångrat" kan aldrig ske samtidigt; hann timern före gäller ångrandet, och skriptet säger det.
+
+Efter `JA` skrivs **bekräftelsemarkörer** — sha256 över filerna så som ägaren bekräftade dem
+(`/etc/vibesandbox/brandvagg.bekraftad`, `/etc/vibesandbox/ssh.bekraftad`). Saknas en markör eller
+stämmer den inte med filerna på disk (avbruten körning, eller någon har ändrat efteråt) görs hela
+kedjan om — `sshd -t`, omladdning, fråga — hur rätt `sshd -T` än ser ut. `passwd -l root` körs
+bara i bekräftat läge. En ögonblicksbild förbrukas av ett `JA` eller ett ångrande och kan aldrig
+återställas av en senare körning; ett ångrat brandväggssteg lägger tillbaka den senast
+*bekräftade* regeluppsättningen, eller tar bort både filen och tabellen om ingen fanns.
+
+`vibesandbox-angra` läser ingen konfiguration och ingen miljö, har hårdkodade målsökvägar och
+vägrar använda ett underlag som inte ligger i rootägda kataloger med läge 700.
 
 ---
 
@@ -145,15 +237,22 @@ steg körs klart även om SSH-sessionen dör.
 3. Beroende på vad som gått fel:
 
    ```sh
+   sudo vibesandbox-angra --alla                          # ångra det som INTE är bekräftat
    sudo tailscale status                                  # är tailnetet uppe?
    sudo nft delete table inet vibesandbox                 # brandväggen bort TILLFÄLLIGT
-   sudo rm /etc/ssh/sshd_config.d/0-0-vibesandbox.conf && sudo systemctl reload ssh
+   sudo mv /etc/ssh/sshd_config.d/0-0-vibesandbox.conf /root/ && sudo systemctl reload ssh
    ```
 
    Stoppa Docker (`sudo systemctl stop docker docker.socket`) **innan** du tar bort
    brandväggen — utan den står publicerade portar öppna.
-4. Rätta felet och kör om `provision.sh` med `--hoppa-over-sessionskontroll`
-   (från konsolen finns ingen SSH-session att hitta).
+4. Rätta felet och kör om steget från konsolen. Där finns ingen SSH-session att hitta, så
+   båda flaggorna behövs:
+
+   ```sh
+   sudo ./provision.sh --steg ssh --bekrafta-tailscale-ssh --hoppa-over-sessionskontroll
+   ```
+
+   JA-frågan ställs ändå. Är ögonblicksbilden från steg 0 närmaste vägen tillbaka: använd den.
 
 Med `HARDEN_GUEST_AGENT=1` kan panelen **inte** längre återställa lösenord eller lägga in
 nycklar. Då är `ops`-lösenordet den enda nödvägen före leverantörens räddningsläge — tappa inte bort det.
@@ -234,7 +333,7 @@ läget, och utpekande av vilka andra filer som ligger i vägen.**
 
 | Område | Vår fil vinner genom att | Facit | `verify.sh` larmar om |
 |---|---|---|---|
-| sshd | `0-0-vibesandbox.conf` sorteras **först** (första förekomsten vinner) och `Include` står före alla direktiv i `sshd_config` | `sshd -T` | avvikelse i `sshd -T`, *någon* dropin som sorteras före vår (även en ofarlig), eller att Include-raden inte står först |
+| sshd | `0-0-vibesandbox.conf` sorteras **först** (första förekomsten vinner) och `Include` står före alla direktiv i `sshd_config` | `sshd -T` | avvikelse i `sshd -T`, *någon* dropin som sorteras före vår (även en ofarlig — utom vår egen fas 1-fil för `ops`, som i stället kontrolleras på innehållet), att Include-raden inte står först, eller att den **körande** sshd erbjuder något annat än nyckel (provinloggning mot loopback) |
 | cloud-init | `zzz-vibesandbox.cfg` sorteras **sist** (sista värdet vinner) | cloud-inits egen sammanslagning | det sammanslagna resultatet, oavsett vilken fil som orsakar det |
 | sysctl | `zz-vibesandbox.conf` sorteras **sist** | `sysctl -n` | fel värde (med besked om vilka andra filer som sätter nyckeln), eller en fil som sorteras efter vår |
 | systemd | — | `systemctl list-unit-files --state=masked` | att något vi är beroende av är maskat; övrigt maskat redovisas |
@@ -303,6 +402,20 @@ Av tills spiken om gVisor + `userns-remap` + byggprestanda är gjord. Kräver en
 (`GVISOR_RELEASE=ÅÅÅÅMMDD`), aldrig `latest`. Lås även `GVISOR_SHA512`: summan som hämtas från
 samma server skyddar bara mot trasig hämtning. Värden saknar `/dev/kvm` ⇒ plattformen `systrap`.
 
+### Versionspinning av Docker och Tailscale — inte nu
+
+Docker och Tailscale installeras från respektive förråd (signeringsnyckelns fingeravtryck
+kontrolleras) och följer med i de automatiska uppdateringarna — inte låsta till en version.
+Avvägningen:
+
+| Lås versionen | Följ förrådet (valt) |
+|---|---|
+| samma version på varje värd; en flytt ger exakt samma läge | säkerhetsrättningar (runc, containerd, WireGuard) kommer inom ett dygn |
+| en uppgradering är ett medvetet, testat beslut | på en värd som kör opålitlig kod väger en ooppgraderad `runc` tyngre än en oväntad ändring |
+| kräver att någon faktiskt följer utgåvorna och flyttar låset | `AUTO_UPGRADE_DOCKER=0` stänger av Dockers automatiska uppgradering inför en större version |
+
+Tas upp igen när det finns en testmiljö som kan köra en ny version före produktionen.
+
 ### Värdens egen utgående trafik — TODO
 
 Gjort nu: värden kan inte leverera e-post direkt (tcp/25 avvisas) och containrar är spärrade
@@ -343,21 +456,24 @@ DNS-värden — då termineras TLS av en tredje part som hamnar i datavägen (`d
 
 **Från det här arbetet:** plattformen kör som `user: "10001:10001"` (se *Docker* ovan);
 byggcontainrar på `--internal`-nät med tmpfs och `size=`; bara portarna i `PUBLIC_*_PORTS`
-går att publicera; egress-proxyn enligt TODO ovan.
+går att publicera; egress-proxyn enligt TODO ovan; en container når **inte** värdens publika
+adress (hairpin mot :443 stoppas av brandväggen) — trafik mellan appar och plattformen går på det
+interna nätet.
 
 ---
 
 ## Tester
 
 ```sh
-infra/test/kor-tester.sh                    # alla scenarier, Debian 13, ~2 min
+infra/test/kor-tester.sh                    # alla scenarier, Debian 13, ~15 min
 BAS=debian:12 infra/test/kor-tester.sh      # även ubuntu:24.04
-infra/test/kor-tester.sh fas2 angra         # enskilda scenarier
-infra/test/tung-docker.sh                   # riktig Docker + riktig brandvägg, ~5 min, kräver nät
+infra/test/kor-tester.sh avbrott verify     # enskilda scenarier
+infra/test/tung-docker.sh                   # riktig Docker/brandvägg + riktig systemd, ~10 min, kräver nät
+infra/test/tung-docker.sh systemd           # bara ångra-mekanismen med systemd som PID 1
 ```
 
-Allt körs i lokala engångscontainrar (`docker run --rm`); inget rör en server.
-`shellcheck` körs i containern, så det behöver inte finnas på din dator.
+Allt körs i lokala engångscontainrar; inget rör en server. `shellcheck` körs i containern, så
+det behöver inte finnas på din dator.
 
 | Scenario | Visar |
 |---|---|
@@ -365,13 +481,34 @@ Allt körs i lokala engångscontainrar (`docker run --rm`); inget rör en server
 | `vagran` | vägrar utan root / fel OS / skrivbar env-fil; **ordningen**: ingen brandvägg utan bevisad tailnet-session, ingen Docker utan brandvägg, ingen SSH-härdning om `ops` inte kan bli root |
 | `dryrun` | `--dry-run` ändrar ingenting (läge, ägare, tid, innehåll) och kör bara läsande kommandon |
 | `fas1` | avmaskning före aktivering, `ops`, auth-nyckeln syns aldrig på kommandorad eller disk, fel fingeravtryck ⇒ avbrott; **körs två gånger** |
-| `angra` | död mans grepp ångrar brandvägg och SSH (även ändringen i `sshd_config`, byte för byte); en främmande dropin som vinner över vår ⇒ ingen härdning; `sshd_config` utan Include hanteras; trasig konfiguration laddas aldrig |
-| `fas2` | riktigt laddade nft-regler, riktig `sshd -T` med leverantörens dropins på plats, riktig cloud-init-sammanslagning; **hela körningen två gånger**; generisk avmaskning; `verify.sh` fångar 14 sorters avdrift, och `provision.sh` läker en omskriven `sshd_config` |
+| `angra` | död mans grepp utan terminal ångrar brandvägg och SSH (även `sshd_config`, byte för byte); en främmande dropin som vinner över vår ⇒ ingen härdning; trasig konfiguration laddas aldrig |
+| `avbrott` | **A1–A3:** Ctrl-C, SIGTERM och `kill -9` VID frågan (riktig pty); backstoppet körs som timern kör det — tom miljö, `provision.sh` borta, två gånger; uppstartsläget; underlag med fel rättigheter vägras; utan backstopp ingen ändring; JA stoppar timern; en gammal ögonblicksbild återställs aldrig; omkörning efter avbrott ställer frågan igen och låser inte root; ändrad fil efter bekräftelse ⇒ ny bekräftelse |
+| `fas2ja` | hela fas 2 med riktiga JA på båda frågorna: två backstopp armeras och stoppas, markörerna skrivs, andra körningen frågar inget |
+| `inloggning` | **B1–B3:** exempelnyckel och exempelhash avvisas, trasiga hashar avvisas; `ops` lösenord stängs över SSH *före* lösenordet (riktig `sshd -T`, Match-blockets avgränsning); beviset kräver `Accepted publickey for ops` för just den sessionen; nyckeln aldrig ur miljön, aldrig i någon `/proc/*/cmdline`, aldrig kvar i `/run` — inte heller efter SIGTERM/Ctrl-C mitt i `tailscale up` |
+| `filer` | **B4–B6, C:** radbrytning/säkerhetskopia/`findmnt --verify` vid tillägg i fstab/subuid/subgid; överlapp mot dockremap; `SSH_PORT` och 22 bland publika portar avvisas; env-filens ägare; `PLATFORM_ROOT`-injektion; halvfärdig XFS-avbild/swapfil; `daemon.json` valideras före bytet; gVisor utan kontrollsumma |
+| `verify` | **B7:** varje kontroll med sitt kommando i tre fellägen — tyst, saknas, och *rätt utdata men felkod* — ger aldrig `✓`; provinloggning mot en riktig sshd (en demon som startats med annan konfiguration än filerna fångas); sshd bland lyssnarna; `AuthorizedKeysCommand`; NOPASSWD; 20 körningar i rad med `pipefail` |
+| `fas2` | riktigt laddade nft-regler, riktig `sshd -T` med leverantörens dropins, riktig cloud-init-sammanslagning; **hela körningen två gånger**; `verify.sh` fångar 14 sorters avdrift |
 | `flaggor` | `HARDEN_GUEST_AGENT`, `DOCKER_XFS_LOOP` (riktig `mkfs.xfs`), extra/tomma portlistor, gVisor |
-| `tung-docker.sh` | Docker installerat från Dockers förråd av skriptet; `dockerd` startar med vår `daemon.json`; paket skickas genom reglerna från ett låtsat internet och ett låtsat tailnet — med kontrollkörning utan tabellen |
+| `tung-docker.sh` (docker) | Docker installerat av skriptet; `dockerd` med vår `daemon.json`; paket genom reglerna från ett låtsat internet och tailnet, IPv4 **och IPv6**, TCP och **UDP/443**, **169.254.169.254**, **hairpin mot :443** — med kontrollkörning utan tabellen |
+| `tung-docker.sh` (systemd) | systemd som PID 1: den transienta timern armeras och stoppas vid JA; efter `kill -9` löper den ut och ångrar; **omstart** med två obekräftade ändringar ⇒ uppstartsenheten ångrar båda, klart före `nftables.service` och `ssh.service` |
 
-**Går inte att testa i en container, och kräver därför extra granskning:** systemd (enheter,
-timrar, avmaskning, uppstartsordning `nftables` → `docker`), Tailscale mot ett riktigt tailnet,
-`sysctl`, swap, `mount` av XFS-avbilden, cgroup-drivrutinen `systemd`, AppArmor, en riktig
-`qemu-guest-agent`, omstart, och en verklig leverantörs filer (testerna använder neutrala
-efterbildningar under `test/fixturer/`).
+### Vad som fortfarande är OTESTAT
+
+Ärligt redovisat — det här kräver extra granskning, eller den första skarpa körningen enligt
+körordningen ovan (ögonblicksbild först):
+
+- **Omstartsordningen `nftables` → `docker`** på en riktig värd. Ångra → nftables → ssh är
+  prövad med riktig systemd; Docker finns inte i den containern.
+- **En riktig VM-omstart** (kärna, cloud-init som kör om, leverantörens avbild). Omstarten i
+  testet är en omstart av en container: samma systemd-ordning, men ingen kärna och ingen cloud-init.
+- **Tailscale mot ett riktigt tailnet**: `--auth-key=file:` i installerad version, taggen mot ACL:en,
+  och att `tailscale0` finns när brandväggen laddas.
+- **Ubuntu 24.04 med socketaktiverad sshd** (`ssh.socket`): omladdning och lyssnarkontrollen är
+  skrivna för det, men prövade bara mot `ssh.service`.
+- **SIGHUP och `/dev/tty` under `sudo` med `use_pty`** när anslutningen dör — därför `tmux`.
+- `sysctl`, swap, `mount` av XFS-avbilden, cgroup-drivrutinen `systemd`, AppArmor, en riktig
+  `qemu-guest-agent`, och en verklig leverantörs filer (testerna använder neutrala efterbildningar
+  under `test/fixturer/`).
+- **Hairpin mot :443** är prövad och *stoppas* — en container når inte plattformen via värdens
+  publika adress. Det är en följd av att input-kedjan släpper in ingenting från `docker0`/`br-*`;
+  plattformen ska nås via det interna nätet (krav till skiva 6).
