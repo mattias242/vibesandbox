@@ -15,7 +15,41 @@ T="${STUBBKATALOG}/tillstand"
 mkdir -p "$T"/{maskad,aktiverad,aktiv,paket}
 
 # Hemligheter får inte hamna i loggen — och testet kontrollerar just det.
-printf '%s %s\n' "$NAMN" "$*" >>"${STUBBKATALOG}/anrop.log"
+# (STUBB_INRE: ett inre anrop från felläget nedan — det yttre är redan loggat.)
+[[ -n "${STUBB_INRE:-}" ]] || printf '%s %s\n' "$NAMN" "$*" >>"${STUBBKATALOG}/anrop.log"
+
+# Läckagedetektor: en hemlighet som provision.sh har EXPORTERAT syns i varje barns miljö —
+# alltså även här. Testerna kontrollerar att den här raden aldrig skrivs.
+if tr '\0' '\n' </proc/self/environ 2>/dev/null | grep -qE '^(TAILSCALE_AUTHKEY|OPS_PASSWORD_HASH)=.'; then
+  printf 'HEMLIGHET-I-MILJON %s\n' "$NAMN" >>"${STUBBKATALOG}/anrop.log"
+fi
+
+# Kör det RIKTIGA kommandot med samma namn. Stubbarna ligger först i PATH (och systemctl även i
+# /usr/local/sbin, för ångra-skriptet som har fast PATH) ⇒ hoppa över de katalogerna.
+# Används av stubbar som bara ska LOGGA anropet, t.ex. för att visa att en hash aldrig står i argv.
+riktig() {
+  local egen p
+  egen="$(dirname "$0")"
+  p="$(PATH="$(tr ':' '\n' <<<"$PATH" | grep -vxF -e "$egen" -e /usr/local/sbin | paste -sd: -)" command -v "$NAMN")" \
+    || { echo "stubb: hittar inget riktigt ${NAMN}" >&2; exit 127; }
+  exec "$p" "$@"
+}
+
+# Felläge för VALFRITT kommando, även ett som annars körs på riktigt: testet länkar in stubben
+# under kommandots namn och skriver läget i $STUBBKATALOG/misslyckas/<namn>:
+#   tyst     ingen utdata, slutkod 1
+#   saknas   ingen utdata, slutkod 127 (som när kommandot inte finns)
+#   ljuger   den VANLIGA utdatan (stubbens eller det riktiga kommandots), men slutkod 1 —
+#            det svåraste fallet: allt ser rätt ut, bara slutkoden avslöjar felet
+if [[ -z "${STUBB_INRE:-}" && -f "${STUBBKATALOG}/misslyckas/${NAMN}" ]]; then
+  case "$(cat "${STUBBKATALOG}/misslyckas/${NAMN}")" in
+    saknas) echo "${NAMN}: command not found (framkallat av testet)" >&2; exit 127 ;;
+    ljuger) STUBB_INRE=1 "$0" "$@" || true ;;
+    *) : ;;
+  esac
+  echo "stubb: ${NAMN} misslyckas (framkallat av testet)" >&2
+  exit 1
+fi
 
 # Argument som inte är flaggor.
 ord=()
@@ -43,6 +77,15 @@ case "$NAMN" in
           if [[ " $* " == *" --now "* ]]; then touch "$T/aktiv/$e" "$T/aktiv/${e%.service}" "$T/aktiv/${e%.service}.service"; fi
         done ;;
       restart | start) for e in "${enheter[@]}"; do touch "$T/aktiv/$e"; done ;;
+      stop)
+        for e in "${enheter[@]}"; do
+          rm -f "$T/aktiv/$e"
+          # Kom ihåg att backstoppets timer stoppades — testet kräver det efter ett JA.
+          if [[ "$e" == vibesandbox-angra-*.timer ]]; then
+            mkdir -p "$T/backstopp"
+            touch "$T/backstopp/${e%.timer}.stoppad"
+          fi
+        done ;;
       list-timers)
         for e in "${enheter[@]}"; do
           [[ -e "$T/aktiv/$e" ]] && echo "Sat 2026-09-19 06:12:00 CEST 12h - - $e ${e%.timer}.service"
@@ -83,6 +126,8 @@ case "$NAMN" in
             stat -c '%a' "$fil" >"$T/tailscale-nyckelfil-lage"
           fi
         done
+        # Valfri fördröjning, så att ett test hinner avbryta MITT I anropet.
+        if [[ -e "${STUBBKATALOG}/tailscale-up-sov" ]]; then sleep "$(cat "${STUBBKATALOG}/tailscale-up-sov")"; fi
         touch "$T/tailscale-uppe" ;;
       *) : ;;
     esac ;;
@@ -102,7 +147,12 @@ case "$NAMN" in
       *) : ;;
     esac ;;
 
-  dockerd) : ;;
+  dockerd)
+    # Strömbrytare för felfallet: 'dockerd --validate' underkänner kandidaten.
+    if [[ " $* " == *" --validate "* && -e "${STUBBKATALOG}/dockerd-validate-fel" ]]; then
+      echo "unable to configure the Docker daemon with file: (framkallat av testet)" >&2
+      exit 1
+    fi ;;
 
   sysctl)
     if [[ "${1:-}" == "-n" ]]; then
@@ -124,11 +174,51 @@ case "$NAMN" in
     # Riktig förallokering skulle skriva gigabyte i containern; en gles fil räcker för testet.
     truncate -s "$2" "$3" ;;
 
-  mkswap) : ;;
+  # På riktigt (skriver bara ett huvud i den glesa filen) ⇒ blkid kan skilja färdig från halvfärdig.
+  mkswap) riktig "$@" ;;
+
+  # Bara loggning: argv ska gå att granska (en lösenordshash får aldrig stå där).
+  usermod | chpasswd) riktig "$@" ;;
+
+  systemd-run)
+    # Backstoppet: spara VAD timern skulle köra (ett argument per rad) och HUR läget såg ut när
+    # den armerades — testet kräver att den armeras FÖRE ändringen, inte efter.
+    enhet=""; kommando=(); i_kommando=0
+    for a in "$@"; do
+      if (( i_kommando )); then kommando+=("$a"); continue; fi
+      case "$a" in
+        --unit=*) enhet="${a#--unit=}" ;;
+        -*) : ;;
+        *) i_kommando=1; kommando+=("$a") ;;
+      esac
+    done
+    if [[ -e "${STUBBKATALOG}/systemd-run-misslyckas" ]]; then
+      echo "Failed to start transient timer unit (framkallat av testet)" >&2
+      exit 1
+    fi
+    mkdir -p "$T/backstopp"
+    printf '%s\n' "${kommando[@]}" >"$T/backstopp/${enhet}.kommando"
+    tabell=0; nft list table inet vibesandbox >/dev/null 2>&1 && tabell=1
+    dropin=0; [[ -e /etc/ssh/sshd_config.d/0-0-vibesandbox.conf ]] && dropin=1
+    printf 'backstopp-armerat enhet=%s tabell=%s dropin=%s\n' "$enhet" "$tabell" "$dropin" >>"${STUBBKATALOG}/anrop.log"
+    touch "$T/aktiv/${enhet}.timer" ;;
+
+  journalctl)
+    # sshd:s journal, styrd av en fil — se lat_tailnet_session_finnas i i-container.sh.
+    [[ -e "${STUBBKATALOG}/journalctl-misslyckas" ]] && exit 1
+    cat "${STUBBKATALOG}/journal" 2>/dev/null ;;
 
   mount) touch "$T/docker-monterad" ;;
 
   findmnt)
+    # --verify: riktig kontroll av fstab-kandidaten, med en strömbrytare för felfallet.
+    if [[ " $* " == *" --verify "* ]]; then
+      if [[ -e "${STUBBKATALOG}/findmnt-verify-fel" ]]; then
+        echo "findmnt: parse error (framkallat av testet)" >&2
+        exit 1
+      fi
+      riktig "$@"
+    fi
     [[ -e "$T/docker-monterad" ]] || exit 1
     if [[ "$*" == *FSTYPE* ]]; then echo xfs; else echo "rw,relatime,prjquota"; fi ;;
 
@@ -148,6 +238,9 @@ case "$NAMN" in
       cat "${STUBBKATALOG}/ss-lyssnare" 2>/dev/null
     fi ;;
 
-  *) echo "stubb: okänt kommando $NAMN" >&2; exit 127 ;;
+  *)
+    # Inre anrop från felläget 'ljuger' för ett kommando som annars körs på riktigt.
+    [[ -n "${STUBB_INRE:-}" ]] && riktig "$@"
+    echo "stubb: okänt kommando $NAMN" >&2; exit 127 ;;
 esac
 exit 0
