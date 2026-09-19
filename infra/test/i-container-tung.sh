@@ -39,6 +39,9 @@ echo 1 >/proc/sys/net/ipv4/ip_forward
 kor_fas1
 provision --bekrafta-tailscale-ssh --ingen-bekraftelse
 if (( KOD == 0 )); then godkand "provision.sh fas 1 + fas 2 med riktig apt (Docker installerat från Dockers förråd)"; else underkand "provision gav kod ${KOD}"; visa_vid_fel; fi
+# --ingen-bekraftelse låser aldrig root (B-2) — SSH-steget en gång till med ett riktigt JA.
+provision_pty "Skriv JA inom=>skicka:JA" -- --steg ssh --bekrafta-tailscale-ssh
+if (( KOD == 0 )) && [[ "$(passwd -S root | awk '{print $2}')" == "L" ]]; then godkand "SSH-steget med JA: roots lösenord är låst"; else underkand "root låstes inte efter JA (kod ${KOD})"; visa_vid_fel; fi
 pastar "docker-ce är installerat på riktigt" dpkg -s docker-ce
 printf '      | %s\n' "$(dockerd --version)"
 

@@ -87,6 +87,8 @@ forbered_vard() {
   # Ångra-skriptet har FAST PATH (det körs av en timer, utan vår miljö) och ser därför inte
   # stubbkatalogen. /usr/local/sbin står först i den fasta sökvägen ⇒ där når stubben det.
   ln -sf /infra/test/stubbar/stubb /usr/local/sbin/systemctl
+  # …och det ångra-skriptet använder när ett ångrande misslyckas: en ny timer, journalen, wall.
+  for k in systemd-run systemd-cat wall; do ln -sf /infra/test/stubbar/stubb "/usr/local/sbin/${k}"; done
 
   # Leverantörens egenheter, så som kartläggningen beskriver dem.
   for k in apt-daily.service apt-daily.timer apt-daily-upgrade.service apt-daily-upgrade.timer unattended-upgrades.service; do
@@ -379,8 +381,12 @@ scenario_fas2() {
     if grep -qix "$par" <<<"$t"; then godkand "effektivt: ${par}"; else underkand "effektivt läge saknar '${par}' (är: $(grep -i "^${par%% *} " <<<"$t"))"; fi
   done
   pastar "andras dropins ligger orörda kvar" cmp -s /infra/test/fixturer/ssh/00-leverantor-auth.conf /etc/ssh/sshd_config.d/00-leverantor-auth.conf
-  if [[ "$(passwd -S root | awk '{print $2}')" == "L" ]]; then godkand "roots lösenord är låst"; else underkand "root är inte låst"; fi
   if awk '/reload ssh/{r=NR} END{exit !r}' "$ANROP"; then godkand "sshd laddades om (inte omstartad)"; else underkand "sshd laddades aldrig om"; fi
+  # B-2: med --ingen-bekraftelse har ingen människa svarat JA ⇒ root låses inte.
+  if [[ "$(passwd -S root | awk '{print $2}')" != "L" ]] && innehaller "$FAS2_UT" 'roots lösenord låses INTE'; then
+    godkand "--ingen-bekraftelse: roots lösenord låses INTE, och skriptet säger det"; else underkand "root låstes med --ingen-bekraftelse, eller inget besked"; fi
+  provision_pty "Skriv JA inom=>skicka:JA" -- --steg ssh --bekrafta-tailscale-ssh
+  if (( KOD == 0 )) && [[ "$(passwd -S root | awk '{print $2}')" == "L" ]]; then godkand "SSH-steget med ett riktigt JA: roots lösenord är låst"; else underkand "root låstes inte efter JA (kod ${KOD})"; visa_vid_fel; fi
 
   test_rubrik "Leverantörens kanaler"
   local ci
@@ -481,6 +487,28 @@ scenario_fas2() {
   nft delete table inet vibesandbox
   avdrift "brandväggen är urladdad" "INTE laddad"
   nft -f /etc/nftables.conf; aterstalld
+
+  # C-5: filen på disk är det som laddas vid nästa uppstart — inte tabellen i kärnan.
+  cp -p /etc/nftables.conf /tmp/nft.bra
+  printf 'detta är ingen nft-regel\n' >>/etc/nftables.conf
+  avdrift "/etc/nftables.conf går inte att ladda (nft -c -f)" "nft -c -f"
+  avdrift "…och den stämmer inte med den bekräftade summan" "bekräftade"
+  cp -p /tmp/nft.bra /etc/nftables.conf; aterstalld
+  printf '# en kommentar\n' >>/etc/nftables.conf
+  avdrift "/etc/nftables.conf ändrad efter bekräftelsen (men giltig)" "bekräftade"
+  cp -p /tmp/nft.bra /etc/nftables.conf; aterstalld
+  mv /etc/vibesandbox/nft.sha256 /tmp/
+  avdrift "kontrollsumman för regelverket saknas efter bekräftelse ⇒ ✗, inte ⚠" "kontrollsumma"
+  mv /tmp/nft.sha256 /etc/vibesandbox/; aterstalld
+  mv /etc/vibesandbox/brandvagg.bekraftad /tmp/
+  avdrift "brandväggen saknar bekräftelsemarkör" "brandvagg.bekraftad"
+  mv /tmp/brandvagg.bekraftad /etc/vibesandbox/; aterstalld
+  mv /usr/local/sbin/vibesandbox-angra /tmp/
+  avdrift "ångra-skriptet saknas" "vibesandbox-angra "
+  mv /tmp/vibesandbox-angra /usr/local/sbin/; aterstalld
+  mv "${STUBBKATALOG}/tillstand/aktiverad/vibesandbox-angra-uppstart.service" /tmp/
+  avdrift "uppstartsenheten är inte aktiverad" "vibesandbox-angra-uppstart"
+  mv /tmp/vibesandbox-angra-uppstart.service "${STUBBKATALOG}/tillstand/aktiverad/"; aterstalld
 
   touch "${STUBBKATALOG}/tillstand/maskad/apt-daily-upgrade.timer"
   avdrift "uppdateringstimern maskas igen" "apt-daily-upgrade.timer är MASKAD"

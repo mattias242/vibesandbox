@@ -122,6 +122,12 @@ fas_efter() {
   local j
   j="$(journalctl -b --no-pager -o cat -u vibesandbox-angra-uppstart.service 2>/dev/null)"
   if grep -q 'brandvagg: ÅNGRAT' <<<"$j" && grep -q 'ssh: ÅNGRAT' <<<"$j"; then godkand "journalen: uppstartsenheten ångrade både brandvägg och SSH"; else underkand "journalen visar inte båda ångrandena:"; head -n 12 <<<"$j" | sed 's/^/      | /'; fi
+  # B-4: i uppstartsläget körs 'sshd -t' på riktigt — /run/sshd finns inte än och skapas först.
+  if grep -q 'uppstart: sshd -t godkänner' <<<"$j"; then godkand "journalen: uppstartsenheten körde 'sshd -t' före ssh.service, och den godkände"; else underkand "journalen visar ingen 'sshd -t' i uppstartsläget"; fi
+  # C-3: en tidsgräns, så att ett hängande ångrande inte stoppar uppstarten för alltid.
+  local tg
+  tg="$(systemctl show -p TimeoutStartUSec --value vibesandbox-angra-uppstart.service)"
+  if [[ "$tg" == "2min" ]]; then godkand "uppstartsenheten har TimeoutStartSec=120 (systemd: ${tg})"; else underkand "uppstartsenhetens tidsgräns är '${tg}'"; fi
   # Ordningen: ångrandet ska vara KLART innan nftables.service och ssh.service startar.
   local klar nft ssh
   klar="$(systemctl show -p ExecMainExitTimestampMonotonic --value vibesandbox-angra-uppstart.service)"

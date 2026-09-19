@@ -59,6 +59,9 @@ scenario_verify() {
   kor_fas1
   provision --bekrafta-tailscale-ssh --ingen-bekraftelse
   if (( KOD == 0 )); then godkand "förutsättning: fas 2 klar"; else underkand "fas 2 gav kod ${KOD}"; visa_vid_fel; fi
+  # --ingen-bekraftelse låser aldrig root (B-2) — SSH-steget en gång till med ett riktigt JA.
+  provision_pty "Skriv JA inom=>skicka:JA" -- --steg ssh --bekrafta-tailscale-ssh
+  if (( KOD == 0 )); then godkand "förutsättning: SSH bekräftat med JA (root låst)"; else underkand "SSH-steget med JA gav kod ${KOD}"; visa_vid_fel; fi
   if starta_sshd; then godkand "förutsättning: en riktig sshd lyssnar på loopback"; else underkand "sshd startade inte"; fi
 
   test_rubrik "B7: utgångsläget är rätt ⇒ 0"

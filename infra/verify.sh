@@ -304,7 +304,7 @@ kontroll_brandvagg() {
     fel "spärren för containrars trafik mot tailnet/privata nät saknas"
   fi
   # Helheten: exakt det regelverk som provision.sh laddade.
-  local summafil=/etc/vibesandbox/nft.sha256 summa
+  local summafil=/etc/vibesandbox/nft.sha256 summa bekraftad=/etc/vibesandbox/brandvagg.bekraftad
   if [[ -r "$summafil" ]]; then
     summa="$(sha256sum <<<"$tabell" | awk '{print $1}')"
     if [[ "$summa" == "$(cat "$summafil")" ]]; then
@@ -312,17 +312,47 @@ kontroll_brandvagg() {
     else
       fel "laddat regelverk AVVIKER från det provision.sh laddade (någon har ändrat reglerna)"
     fi
+  elif [[ -e "$bekraftad" ]]; then
+    # Efter en bekräftelse skrivs summan alltid. Saknas den går avdrift i kärnan inte att se.
+    fel "kontrollsumman för det laddade regelverket saknas (${summafil}) fast brandväggen är bekräftad — avdrift i kärnan går inte att upptäcka"
   else
     obs "ingen kontrollsumma för regelverket (${summafil} saknas)"
   fi
   forvanta "nftables.service" "$(enhet_lage_text nftables.service)" "enabled"
+  # Filen på disk är det som laddas vid NÄSTA uppstart — att tabellen i kärnan stämmer säger
+  # ingenting om den. Tre frågor: går den att ladda, är det den ägaren bekräftade, och
+  # raderar den andras regler?
+  local ut
   if [[ ! -r /etc/nftables.conf ]]; then
     fel "/etc/nftables.conf saknas — brandväggen laddas inte vid nästa uppstart"
-  elif grep -Eq '^\s*flush ruleset' /etc/nftables.conf; then
-    fel "/etc/nftables.conf innehåller 'flush ruleset' — en omladdning raderar Dockers regler"
   else
-    ok "/etc/nftables.conf saknar 'flush ruleset'"
+    if fanga ut nft -c -f /etc/nftables.conf; then
+      ok "/etc/nftables.conf går att ladda (nft -c -f)"
+    else
+      fel "/etc/nftables.conf går INTE att ladda ('nft -c -f': kod ${FANGAD_KOD}) — ingen brandvägg efter nästa uppstart, och Docker startar inte"
+    fi
+    if [[ ! -s "$bekraftad" ]]; then
+      fel "brandväggen har aldrig bekräftats (${bekraftad} saknas) — kör steget brandvagg och svara JA"
+    elif fanga ut sha256sum -c --status "$bekraftad"; then
+      ok "/etc/nftables.conf är den fil ägaren bekräftade (sha256, ${bekraftad})"
+    else
+      fel "/etc/nftables.conf stämmer INTE med den bekräftade summan (${bekraftad}) — ändrad efter bekräftelsen; laddas så vid nästa uppstart"
+    fi
+    if grep -Eq '^\s*flush ruleset' /etc/nftables.conf; then
+      fel "/etc/nftables.conf innehåller 'flush ruleset' — en omladdning raderar Dockers regler"
+    else
+      ok "/etc/nftables.conf saknar 'flush ruleset'"
+    fi
   fi
+  # Ångra-mekanismen måste finnas på plats innan nästa riskabla ändring — och uppstartsenheten
+  # är det enda som ångrar en obekräftad ändring efter en omstart.
+  local angra=/usr/local/sbin/vibesandbox-angra
+  if [[ -f "$angra" && -x "$angra" && ! -L "$angra" ]] && [[ "$(stat -c '%u' "$angra" 2>/dev/null)" == 0 ]]; then
+    ok "ångra-skriptet ${angra} finns, är körbart och ägs av root"
+  else
+    fel "ångra-skriptet ${angra} saknas, är inte körbart eller ägs inte av root"
+  fi
+  forvanta "vibesandbox-angra-uppstart.service" "$(enhet_lage_text vibesandbox-angra-uppstart.service)" "enabled"
   # En obekräftad ändring (JA-frågan besvarades aldrig) som ligger kvar ångras vid nästa omstart.
   local markor
   for markor in /etc/vibesandbox/angra/*/obekraftad; do
