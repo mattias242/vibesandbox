@@ -95,6 +95,13 @@ if grep -q 'HEMLIG' <<<"$UT"; then underkand "en hemlighet syns i utdata"; else 
 K=/srv/vibesandbox/compose
 if i_vard "test -f ${K}/app/deploy/compose.yml && [ \"\$(stat -c %u ${K}/app/deploy/compose.yml)\" = 0 ]"; then
   godkand "den committade versionen ligger i ${K}/app, ägd av root"; else underkand "appen saknas eller ägs inte av root"; fi
+# Containrarna kör som andra användare än root (Caddy, node som uid 10001) och läser byggkontextens
+# filer: allt måste vara läsbart för alla, kataloger genomsökbara, skript fortsatt körbara.
+# (Missat först — mellanlagringen hos ops har umask 077, och allt blev 600/700 på värden.)
+if [[ "$(i_vard "stat -c %a ${K}/app/deploy/Caddyfile ${K}/app/apps/platform/src ${K}/app/deploy/driftsatt.sh" 2>/dev/null | paste -sd' ' -)" == "644 755 755" ]]; then
+  godkand "filer 644, kataloger 755, skript förblir körbara"; else underkand "fel lägen: $(i_vard "stat -c '%a %n' ${K}/app/deploy/Caddyfile ${K}/app/apps/platform/src ${K}/app/deploy/driftsatt.sh" 2>/dev/null | paste -sd' ' -)"; fi
+if [[ -z "$(i_vard "find ${K}/app ! -perm -o=r" 2>/dev/null)" ]]; then
+  godkand "inget i appen är oläsbart för andra"; else underkand "oläsbara filer i appen: $(i_vard "find ${K}/app ! -perm -o=r | head -n 3" | paste -sd' ' -)"; fi
 if [[ "$(i_vard "cat ${K}/app/VERSION" 2>/dev/null)" == "$(git rev-parse --short HEAD)" ]]; then
   godkand "VERSION är HEAD"; else underkand "VERSION stämmer inte med HEAD"; fi
 if i_vard "test ! -e ${K}/app/.env && test ! -e ${K}/app/referens && test ! -e ${K}/app/vault"; then
