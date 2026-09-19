@@ -11,15 +11,22 @@
  * ADR 0002: `appDomain` och `previewDomain` får vara SAMMA domän. Publicerad app och
  * förhandsvisning skiljs då enbart på prefixet `p-`. Ingen förväxling är möjlig: ett app-id är
  * exakt 26 tecken ur ett alfabet utan bindestreck, så `p-<id>` (28 tecken, med bindestreck) kan
- * aldrig vara ett app-id. Reserverade namn (`bygg`, `login`, `<id>--c`), apex och allt annat
- * faller utanför båda mönstren och är ogiltiga.
+ * aldrig vara ett app-id. Reserverade namn (`login`, `<id>--c`), apex och allt annat faller
+ * utanför mönstren och är ogiltiga.
+ *
+ * Byggverktyget (`bygg.<previewDomain>`, ADR 0002) är en TREDJE sort med en egen typ,
+ * `BuilderHost`, som saknar app-id — den kan alltså aldrig nå `resolveTenant` och aldrig bli ett
+ * `TenantContext`. Den känns bara igen när gatewayn har ett byggverktyg; annars är `bygg.` ett
+ * okänt värdnamn som allt annat. `bygg` (4 tecken) kan inte krocka med ett app-id (26 tecken).
  */
-import { isAppId } from '@vibesandbox/contracts';
+import { BUILDER_HOST_LABEL, isAppId } from '@vibesandbox/contracts';
 import type { AppId, TenantKind } from '@vibesandbox/contracts';
 
 export interface HostDomains {
   readonly appDomain: string;
   readonly previewDomain: string;
+  /** Känn igen byggverktygets värd `bygg.<previewDomain>`. Utan detta är den ett okänt värdnamn. */
+  readonly builder?: boolean;
 }
 
 export interface ParsedHost {
@@ -29,7 +36,14 @@ export interface ParsedHost {
   readonly hostname: string;
 }
 
-export type HostParser = (hostHeader: string | undefined) => ParsedHost | 'ogiltigt';
+/** Byggverktygets värd. Inget app-id: det finns ingen app att slå upp, och inget att förväxla. */
+export interface BuilderHost {
+  readonly kind: 'builder';
+  /** Alltid `bygg.<previewDomain>`, härlett ur konfigurationen — aldrig ekat ur indata. */
+  readonly hostname: string;
+}
+
+export type HostParser = (hostHeader: string | undefined) => ParsedHost | BuilderHost | 'ogiltigt';
 
 /** Samma alfabet och längd som `APP_ID_PATTERN` i kontraktet; `isAppId` kontrollerar en gång till. */
 const APP_ID_SOURCE = '[0-9a-hjkmnp-tv-z]{26}';
@@ -68,6 +82,9 @@ export function createHostParser(domains: HostDomains): HostParser {
   // radbrytning, som i en del andra regex-dialekter.
   const published = new RegExp(`^(${APP_ID_SOURCE})\\.${escapeRegExp(domains.appDomain)}${PORT_SOURCE}$`);
   const draft = new RegExp(`^p-(${APP_ID_SOURCE})\\.${escapeRegExp(domains.previewDomain)}${PORT_SOURCE}$`);
+  const builderHostname = `${BUILDER_HOST_LABEL}.${domains.previewDomain}`;
+  const builder =
+    domains.builder === true ? new RegExp(`^${escapeRegExp(builderHostname)}${PORT_SOURCE}$`) : undefined;
 
   const build = (id: string | undefined, kind: TenantKind, hostname: string): ParsedHost | 'ogiltigt' =>
     id !== undefined && isAppId(id) ? { appId: id, kind, hostname } : 'ogiltigt';
@@ -82,11 +99,13 @@ export function createHostParser(domains: HostDomains): HostParser {
     const draftMatch = draft.exec(hostHeader);
     if (draftMatch) return build(draftMatch[1], 'draft', `p-${draftMatch[1]}.${domains.previewDomain}`);
 
+    if (builder?.test(hostHeader) === true) return { kind: 'builder', hostname: builderHostname };
+
     return 'ogiltigt';
   };
 }
 
 /** Bekväm engångsform av `createHostParser`, för tester och granskning. */
-export function parseHost(hostHeader: string | undefined, domains: HostDomains): ParsedHost | 'ogiltigt' {
+export function parseHost(hostHeader: string | undefined, domains: HostDomains): ParsedHost | BuilderHost | 'ogiltigt' {
   return createHostParser(domains)(hostHeader);
 }

@@ -1,0 +1,24 @@
+# Bara det som behövs för att bygga avbilderna. Hemligheter, data och internt material
+# får aldrig hamna i en avbild.
+**/node_modules
+**/dist
+.git
+.github
+.claude
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+data
+**/data
+referens
+vault
+spikes
+infra
+deploy
+features
+docs
+coverage
+**/*.log
+.DS_Store

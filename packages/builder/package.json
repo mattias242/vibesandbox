@@ -1,0 +1,14 @@
+{
+  "name": "@vibesandbox/builder",
+  "version": "0.0.0",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "description": "Byggverktygets backend: HTTP-gränssnittet, apparnas ägarskap och konversationer, jobbkön som kör agenten, delning och byggverktygets egna statiska filer.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@vibesandbox/contracts": "*"
+  }
+}
