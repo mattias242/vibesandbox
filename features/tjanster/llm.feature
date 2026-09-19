@@ -1,5 +1,5 @@
 # language: sv
-@tjanst-llm @pågår
+@tjanst-llm
 Egenskap: En app kan låta en språkmodell skriva text åt användaren
   En app kan be plattformens språkmodell om en text — en sammanfattning av ett ärende, en
   klarspråkad version av ett brev, en klassificering. Appen når inte internet själv; plattformen
