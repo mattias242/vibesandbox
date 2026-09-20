@@ -120,6 +120,8 @@ kontrollera_utlagt() {
     godkand "serverns .env har läge 600 och ägs av root"; else underkand "serverns .env har fel läge/ägare"; fi
   if i_vard "grep -qx 'BERGET_API_KEY=test-berget-HEMLIG' ${K}/.env && ! grep -q '^LEVERANTOR' ${K}/.env"; then
     godkand "serverns .env har tillåtelselistans nycklar"; else underkand "serverns .env har fel innehåll"; fi
+  if i_vard "grep -qx 'APP_VERSION=$(git rev-parse --short HEAD)' ${K}/.env"; then
+    godkand "serverns .env säger vilken version som lades ut"; else underkand "APP_VERSION saknas eller är fel i serverns .env"; fi
   if i_vard "test ! -e /home/ops/.driftsatt"; then
     godkand "inget ligger kvar i ops hemkatalog"; else underkand "mellanlagringen ligger kvar hos ops"; fi
 

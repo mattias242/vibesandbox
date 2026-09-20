@@ -93,6 +93,9 @@ BERGET_API_KEY=${berget}
 LLM_MODEL=zai-org/GLM-5.3-Flash
 LLM_REASONING_EFFORT=low
 DATA_ROOT=/srv/vibesandbox/data
+# Vilken version som lades ut. Byggverktyget visar den, så att en webbläsare som kör något
+# gammalt syns direkt. Skrivs vid varje driftsättning — därför här och inte i den lokala .env.
+APP_VERSION=$(git rev-parse --short HEAD)
 EOF
 }
 
