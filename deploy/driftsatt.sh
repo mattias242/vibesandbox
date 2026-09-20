@@ -60,6 +60,13 @@ lokalt_varde() {
   awk -v n="$namn" 'index($0, n "=") == 1 { v = substr($0, length(n) + 2); sub(/\r$/, "", v); gsub(/^["'\'']|["'\'']$/, "", v); print v; exit }' "$LOKAL_ENV"
 }
 
+# Tjänsternas inställningar ur den lokala .env: APP_SERVICES och varje SVC_<NAMN>. Bara rader med
+# ett giltigt namn följer med — en felskriven rad ska inte tyst hamna i serverns .env.
+tjansternas_installningar() {
+  [ -f "$LOKAL_ENV" ] || return 0
+  awk '/^APP_SERVICES=/ || /^SVC_[A-Z0-9_]+=/ { sub(/\r$/, ""); print }' "$LOKAL_ENV"
+}
+
 # Skriver serverns .env på standard ut. Tillåtelselista: allt annat i den lokala .env stannar lokalt.
 serverns_env() {
   local cloudflare berget mailgun acme identitet
@@ -96,6 +103,7 @@ DATA_ROOT=/srv/vibesandbox/data
 # Vilken version som lades ut. Byggverktyget visar den, så att en webbläsare som kör något
 # gammalt syns direkt. Skrivs vid varje driftsättning — därför här och inte i den lokala .env.
 APP_VERSION=$(git rev-parse --short HEAD)
+$(tjansternas_installningar)
 EOF
 }
 

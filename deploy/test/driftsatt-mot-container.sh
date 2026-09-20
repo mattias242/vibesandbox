@@ -67,6 +67,11 @@ BERGET_API_KEY=test-berget-HEMLIG
 MAILGUN_API_KEY=test-mailgun-HEMLIG
 ACME_MAIL=drift@example.org
 IDENTITY_SECRET=test-identitet-HEMLIG-minst-trettiotva-tecken
+APP_SERVICES=roles,notify
+SVC_LLM_MODEL=en/modell
+SVC_NOTIFY_PER_USER_HOUR=7
+LEVERANTOR_API_KEY=test-leverantor-HEMLIG
+SVC_TRASIG NAMN=nej
 EOF
 
 # Containerns docker-nät räknas som "tailnet" i testet — värdens skript läser den rootägda filen.
@@ -120,6 +125,10 @@ kontrollera_utlagt() {
     godkand "serverns .env har läge 600 och ägs av root"; else underkand "serverns .env har fel läge/ägare"; fi
   if i_vard "grep -qx 'BERGET_API_KEY=test-berget-HEMLIG' ${K}/.env && ! grep -q '^LEVERANTOR' ${K}/.env"; then
     godkand "serverns .env har tillåtelselistans nycklar"; else underkand "serverns .env har fel innehåll"; fi
+  if i_vard "grep -qx 'APP_SERVICES=roles,notify' ${K}/.env && grep -qx 'SVC_LLM_MODEL=en/modell' ${K}/.env && grep -qx 'SVC_NOTIFY_PER_USER_HOUR=7' ${K}/.env"; then
+    godkand "påslagna tjänster och deras SVC_-inställningar följer med"; else underkand "APP_SERVICES eller SVC_-inställningarna följde inte med"; fi
+  if i_vard "! grep -q 'TRASIG' ${K}/.env"; then
+    godkand "en rad som inte är ett giltigt SVC_-namn följer inte med"; else underkand "en trasig SVC_-rad följde med"; fi
   if i_vard "grep -qx 'APP_VERSION=$(git rev-parse --short HEAD)' ${K}/.env"; then
     godkand "serverns .env säger vilken version som lades ut"; else underkand "APP_VERSION saknas eller är fel i serverns .env"; fi
   if i_vard "test ! -e /home/ops/.driftsatt"; then
