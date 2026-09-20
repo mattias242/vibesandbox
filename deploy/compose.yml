@@ -88,6 +88,8 @@ services:
       MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
       MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
       MAIL_FROM: ${MAIL_FROM:-}
+      # Vart återkopplingen på byggverktyget går. Tom = den skrivs som filer i datakatalogen.
+      PLATFORM_OWNER_EMAIL: ${PLATFORM_OWNER_EMAIL:-}
       BUILD_DRIVER: spool
       BUILD_JOBS_DIR: /jobs
       # Vilken version som är utlagd. Rotsteget sätter den från app/VERSION; tom lokalt.
