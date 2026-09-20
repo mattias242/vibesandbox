@@ -225,3 +225,63 @@ describe('Identity-H med ToUnicode', () => {
     expect(text(pdf)).toBe('åäö');
   });
 });
+
+describe('sammansatta typsnitt med inbäddad CMap', () => {
+  const ENBYTES_CMAP = [
+    'begincmap',
+    '1 begincodespacerange',
+    '<00> <FF>',
+    'endcodespacerange',
+    '1 begincidrange',
+    '<41> <5A> 1',
+    'endcidrange',
+    'endcmap',
+  ].join('\n');
+
+  const ENBYTES_TOUNICODE = [
+    'begincmap',
+    '1 begincodespacerange',
+    '<00> <FF>',
+    'endcodespacerange',
+    '1 beginbfrange',
+    '<41> <43> [<00E5> <00E4> <00F6>]',
+    'endbfrange',
+    'endcmap',
+  ].join('\n');
+
+  const NEDSTIGANDE_CID = '<< /Type /Font /Subtype /CIDFontType0 /BaseFont /X >>';
+
+  it('läser en byte per teckenkod när typsnittets egen CMap säger så', () => {
+    // Ett Type0-typsnitt är inte alltid tvåbyteskodat. Läser man två byte i taget här blir hela
+    // texten obegriplig — precis vad som hände med ett riktigt EU-dokument innan kodrymderna
+    // började användas.
+    const pdf = enkelPdf({
+      innehall: 'BT /F1 12 Tf 72 720 Td (ABC) Tj ET',
+      typsnitt:
+        '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding 8 0 R /DescendantFonts [7 0 R] /ToUnicode 6 0 R >>',
+      extra: [
+        { dict: '', data: b(ENBYTES_TOUNICODE) },
+        NEDSTIGANDE_CID,
+        {
+          dict: '/Type /CMap /CMapName /Egen /CIDSystemInfo << /Registry (X) /Ordering (Y) /Supplement 0 >>',
+          data: b(ENBYTES_CMAP),
+        },
+      ],
+    });
+    expect(text(pdf)).toBe('åäö');
+  });
+
+  it('tar kodrymden ur ToUnicode när typsnittet inte har någon egen CMap', () => {
+    const pdf = enkelPdf({
+      innehall: 'BT /F1 12 Tf 72 720 Td (ABC) Tj ET',
+      typsnitt:
+        '<< /Type /Font /Subtype /Type0 /BaseFont /X /DescendantFonts [7 0 R] /ToUnicode 6 0 R >>',
+      extra: [{ dict: '', data: b(ENBYTES_TOUNICODE) }, NEDSTIGANDE_CID],
+    });
+    expect(text(pdf)).toBe('åäö');
+  });
+
+  it('håller fast vid två byte när kodrymden är tvåbytes', () => {
+    expect(text(identityPdf('002400250026'))).toBe('ABC');
+  });
+});

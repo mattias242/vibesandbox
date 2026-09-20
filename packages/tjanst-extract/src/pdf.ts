@@ -945,22 +945,53 @@ class Ut {
 // Typsnitt
 // ---------------------------------------------------------------------------
 
+/** Ett intervall av teckenkoder med en viss byteslängd, ur en CMaps `codespacerange`. */
+interface Kodrymd {
+  readonly byte: number;
+  readonly lo: number;
+  readonly hi: number;
+}
+
 interface Typsnitt {
-  /** Sant för sammansatta typsnitt (Type0): två byte per teckenkod. */
-  readonly tvaByte: boolean;
+  /** Byte per teckenkod när kodrymderna inte säger något annat: 1 för enkla, 2 för Type0. */
+  readonly standardByte: number;
+  /** Kodrymderna ur typsnittets CMap. Bara sammansatta typsnitt har dem. */
+  readonly rymder: readonly Kodrymd[] | null;
   /** ToUnicode-CMap när den finns; den är alltid mest tillförlitlig. */
   readonly tillTecken: Map<number, string> | null;
   /** Kodtabell för enkla typsnitt (bas-encoding + /Differences). */
   readonly tabell: (string | null)[] | null;
 }
 
-const STANDARDTYPSNITT: Typsnitt = { tvaByte: false, tillTecken: null, tabell: STANDARD };
+const STANDARDTYPSNITT: Typsnitt = { standardByte: 1, rymder: null, tillTecken: null, tabell: STANDARD };
 
 function avkoda(typsnitt: Typsnitt, kod: number): string | null {
   const viaCmap = typsnitt.tillTecken?.get(kod);
   if (viaCmap !== undefined) return viaCmap;
-  if (typsnitt.tvaByte) return null; // ingen ToUnicode: gissa aldrig på en CID
+  // Ett sammansatt typsnitt utan ToUnicode har ingen kodtabell: gissa aldrig på en CID.
   return typsnitt.tabell?.[kod] ?? null;
+}
+
+/**
+ * Nästa teckenkod. Ett enkelt typsnitt har alltid en byte per kod. Ett sammansatt har den
+ * längd dess kodrymder anger — `Identity-H` är två byte, men en inbäddad CMap kan lika gärna
+ * beskriva enbytes-koder, och då blir texten obegriplig om man läser två i taget.
+ */
+function nastaKod(typsnitt: Typsnitt, bytes: Uint8Array, i: number): { kod: number; steg: number } {
+  const rymder = typsnitt.rymder;
+  if (rymder !== null) {
+    for (let langd = 1; langd <= 4 && i + langd <= bytes.length; langd++) {
+      let kod = 0;
+      for (let k = 0; k < langd; k++) kod = kod * 256 + (bytes[i + k] ?? 0);
+      for (const rymd of rymder) {
+        if (rymd.byte === langd && kod >= rymd.lo && kod <= rymd.hi) return { kod, steg: langd };
+      }
+    }
+  }
+  const steg = Math.max(1, Math.min(typsnitt.standardByte, bytes.length - i));
+  let kod = 0;
+  for (let k = 0; k < steg; k++) kod = kod * 256 + (bytes[i + k] ?? 0);
+  return { kod, steg };
 }
 
 // ---------------------------------------------------------------------------
@@ -1472,12 +1503,20 @@ class Doc {
   byggTypsnitt(d: Map<string, Varde> | null): Typsnitt {
     if (d === null) return STANDARDTYPSNITT;
     const subtyp = taNamn(d.get('Subtype'));
-    const tillTecken = this.laddaToUnicode(d);
+    const unicode = this.laddaCmap(d.get('ToUnicode'));
+    const tillTecken = unicode === null ? null : unicode.karta;
 
     if (subtyp === 'Type0') {
-      // Identity-H och övriga tvåbyteskodningar. Utan ToUnicode går koderna inte att översätta,
-      // och då hoppas de över i stället för att gissas.
-      return { tvaByte: true, tillTecken, tabell: null };
+      // Utan ToUnicode går koderna inte att översätta, och då hoppas de över i stället för att
+      // gissas. Kodrymderna tas i första hand ur typsnittets egen CMap, i andra hand ur ToUnicode.
+      const egen = this.laddaCmap(d.get('Encoding'));
+      const rymder =
+        egen !== null && egen.rymder.length > 0
+          ? egen.rymder
+          : unicode !== null && unicode.rymder.length > 0
+            ? unicode.rymder
+            : null;
+      return { standardByte: 2, rymder, tillTecken, tabell: null };
     }
 
     const enc = this.los(d.get('Encoding'));
@@ -1506,11 +1545,12 @@ class Doc {
         }
       }
     }
-    return { tvaByte: false, tillTecken, tabell };
+    return { standardByte: 1, rymder: null, tillTecken, tabell };
   }
 
-  laddaToUnicode(d: Map<string, Varde>): Map<number, string> | null {
-    const stm = this.los(d.get('ToUnicode'));
+  /** Läser en CMap-ström: `ToUnicode`, eller en `/Encoding` som är inbäddad i filen. */
+  laddaCmap(varde: Varde | undefined): Cmap | null {
+    const stm = this.los(varde);
     if (!arStrom(stm)) return null;
     const data = this.stromData(stm);
     if (data === null) return null;
@@ -1539,8 +1579,14 @@ function hexTillText(bytes: Uint8Array): string {
   return ut;
 }
 
-function tolkaCmap(data: Uint8Array, doc: Doc): Map<number, string> {
+interface Cmap {
+  readonly karta: Map<number, string>;
+  readonly rymder: Kodrymd[];
+}
+
+function tolkaCmap(data: Uint8Array, doc: Doc): Cmap {
   const karta = new Map<number, string>();
+  const rymder: Kodrymd[] = [];
   const lx = new Lexer(data);
   const stack: Varde[] = [];
   let poster = 0;
@@ -1552,13 +1598,20 @@ function tolkaCmap(data: Uint8Array, doc: Doc): Map<number, string> {
     if (v === undefined) break;
     if (typeof v === 'object' && v !== null && 't' in v && v.t === 'op') {
       const op = v.v;
-      if (op === 'endbfchar') {
+      if (op === 'endcodespacerange') {
+        for (let i = 0; i + 1 < stack.length && rymder.length < 256; i += 2) {
+          const lo = taStrang(stack[i]);
+          const hi = taStrang(stack[i + 1]);
+          if (lo === null || hi === null || lo.length === 0 || lo.length > 4) continue;
+          rymder.push({ byte: lo.length, lo: hexTillKod(lo), hi: hexTillKod(hi) });
+        }
+      } else if (op === 'endbfchar') {
         for (let i = 0; i + 1 < stack.length; i += 2) {
           const kod = taStrang(stack[i]);
           const mal = taStrang(stack[i + 1]);
           if (kod === null || mal === null) continue;
           karta.set(hexTillKod(kod), hexTillText(mal));
-          if (++poster > MAX_CMAP_POSTER) return karta;
+          if (++poster > MAX_CMAP_POSTER) return { karta, rymder };
         }
       } else if (op === 'endbfrange') {
         for (let i = 0; i + 2 < stack.length; i += 3) {
@@ -1574,7 +1627,7 @@ function tolkaCmap(data: Uint8Array, doc: Doc): Map<number, string> {
             for (let k = 0; k <= slut - start && k < malLista.length; k++) {
               const s = taStrang(malLista[k]);
               if (s !== null) karta.set(start + k, hexTillText(s));
-              if (++poster > MAX_CMAP_POSTER) return karta;
+              if (++poster > MAX_CMAP_POSTER) return { karta, rymder };
             }
             continue;
           }
@@ -1586,7 +1639,7 @@ function tolkaCmap(data: Uint8Array, doc: Doc): Map<number, string> {
           const prefix = bas.slice(0, -1);
           for (let k = 0; k <= slut - start; k++) {
             karta.set(start + k, prefix + String.fromCharCode((sista + k) & 0xffff));
-            if (++poster > MAX_CMAP_POSTER) return karta;
+            if (++poster > MAX_CMAP_POSTER) return { karta, rymder };
           }
         }
       }
@@ -1597,7 +1650,7 @@ function tolkaCmap(data: Uint8Array, doc: Doc): Map<number, string> {
     stack.push(v);
     if (stack.length > 100_000) stack.splice(0, 50_000);
   }
-  return karta;
+  return { karta, rymder };
 }
 
 // ---------------------------------------------------------------------------
@@ -1637,10 +1690,10 @@ function efterFlytt(lage: Textlage, ut: Ut): void {
 }
 
 function visaText(doc: Doc, bytes: Uint8Array, lage: Textlage, ut: Ut): void {
-  const steg = lage.typsnitt.tvaByte ? 2 : 1;
-  for (let i = 0; i + steg <= bytes.length; i += steg) {
+  for (let i = 0; i < bytes.length; ) {
     if ((i & 1023) === 0) doc.klocka();
-    const kod = steg === 2 ? ((bytes[i] ?? 0) << 8) | (bytes[i + 1] ?? 0) : (bytes[i] ?? 0);
+    const { kod, steg } = nastaKod(lage.typsnitt, bytes, i);
+    i += steg;
     const tecken = avkoda(lage.typsnitt, kod);
     if (tecken === null || tecken.length === 0) continue;
     ut.text(tecken);
