@@ -69,13 +69,16 @@ tjansternas_installningar() {
 
 # Skriver serverns .env på standard ut. Tillåtelselista: allt annat i den lokala .env stannar lokalt.
 serverns_env() {
-  local cloudflare berget mailgun acme identitet
+  local cloudflare berget mailgun acme identitet agare
   cloudflare="$(lokalt_varde CLOUDFLARE_API_TOKEN)"
   berget="$(lokalt_varde BERGET_API_KEY)"
   mailgun="$(lokalt_varde MAILGUN_API_KEY)"
   acme="$(lokalt_varde ACME_EMAIL)"
   [ -n "$acme" ] || acme="$(lokalt_varde ACME_MAIL)"
   identitet="$(lokalt_varde IDENTITY_SECRET)"
+  # Vart återkopplingen på byggverktyget går. Valfri: utan den skrivs den som filer under
+  # datakatalogen, och då är den i praktiken osedd. Ingen hemlighet, men den hör till driften.
+  agare="$(lokalt_varde PLATFORM_OWNER_EMAIL)"
   local saknas=()
   [ -n "$cloudflare" ] || saknas+=(CLOUDFLARE_API_TOKEN)
   [ -n "$berget" ] || saknas+=(BERGET_API_KEY)
@@ -103,6 +106,7 @@ DATA_ROOT=/srv/vibesandbox/data
 # Vilken version som lades ut. Byggverktyget visar den, så att en webbläsare som kör något
 # gammalt syns direkt. Skrivs vid varje driftsättning — därför här och inte i den lokala .env.
 APP_VERSION=$(git rev-parse --short HEAD)
+$([ -n "$agare" ] && printf 'PLATFORM_OWNER_EMAIL=%s' "$agare")
 $(tjansternas_installningar)
 EOF
 }
