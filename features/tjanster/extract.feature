@@ -54,8 +54,7 @@ Egenskap: En app kan hämta texten ur en bifogad fil
     När Anna ber appen "Diariet" hämta texten ur anteckningen
     Så får hon svaret "ogiltig begäran"
 
-  # @pågår tills den riktiga pdf.ts finns i grenen.
-  @tjanst-files @tjanst-extract @pågår
+  @tjanst-files @tjanst-extract
   Scenario: En inskannad PDF saknar text att hämta och hänvisar vidare
     Givet att appen "Diariet" är publicerad
     Och att Anna är inloggad
