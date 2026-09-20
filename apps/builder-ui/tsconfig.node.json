@@ -5,6 +5,8 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2024", "DOM"],
     "types": ["node"],
+    /* Testerna renderar vyer till märkspråk (servicesGuide, startPage) och importerar alltså .tsx. */
+    "jsx": "react-jsx",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
