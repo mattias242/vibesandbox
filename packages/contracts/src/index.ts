@@ -842,6 +842,11 @@ export const BUILDER_API_PREFIX = '/_api/builder';
 export interface BuilderMe {
   readonly displayName: string;
   readonly canBuild: boolean;
+  /**
+   * Plattformstjänsterna som är påslagna, i plattformens ordning. Byggverktygets guide "Vad kan
+   * min app göra?" visar bara dem — ingen ska bli lovad något som svarar 404.
+   */
+  readonly services: readonly AppServiceName[];
 }
 
 export interface BuilderAppSummary {

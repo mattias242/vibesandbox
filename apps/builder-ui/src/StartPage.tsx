@@ -1,8 +1,10 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import type { BuilderAppSummary } from '@vibesandbox/contracts';
+import { appendToChat, registerChatInput } from './chatInput.ts';
 import { api, errorMessage, sessionFlash } from './client.ts';
 import { formatUpdated } from './format.ts';
 import { appHash } from './route.ts';
+import { GuideLink } from './ServicesGuide.tsx';
 import { SAFETY_POINTS, SUGGESTIONS } from './texts.ts';
 
 export function StartPage() {
@@ -12,6 +14,22 @@ export function StartPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const hintId = useId();
   const errorId = useId();
+
+  // Guidens knapp "Använd" klistrar in exemplet här, i rutan som syns.
+  useEffect(
+    () =>
+      registerChatInput((example) => {
+        setText((current) => appendToChat(current, example));
+        setError(null);
+        requestAnimationFrame(() => {
+          const field = textareaRef.current;
+          if (field === null) return;
+          field.focus();
+          field.setSelectionRange(field.value.length, field.value.length);
+        });
+      }),
+    [],
+  );
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -46,6 +64,9 @@ export function StartPage() {
         </h1>
         <p id={hintId} className="hint">
           Skriv i vanligt språk — en mening räcker för att börja.
+        </p>
+        <p className="guide-cue">
+          <GuideLink />
         </p>
         <textarea
           id="wish-text"

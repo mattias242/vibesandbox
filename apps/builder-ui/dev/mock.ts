@@ -18,6 +18,7 @@ import {
   BUILDER_API_PREFIX,
   CSRF_HEADER,
   type AgentEvent,
+  type AppServiceName,
   type ApiErrorBody,
   type ApiErrorCode,
   type BuilderAppDetail,
@@ -51,6 +52,13 @@ interface MockJob {
   summary: string;
   settled: boolean;
 }
+
+/**
+ * Påslagna tjänster i utvecklingsläget, så att guiden "Vilka tjänster finns som appen kan använda?"
+ * visar något. Bytt lista ⇒ andra rubriker i guiden. Påminnelser kräver mejl, och att läsa text i
+ * bilder kräver filer — samma regel som i plattformen.
+ */
+const MOCK_SERVICES: AppServiceName[] = ['files', 'notify', 'llm', 'ocr', 'schedule', 'history'];
 
 const apps = new Map<string, MockApp>();
 const jobs = new Map<string, MockJob>();
@@ -178,7 +186,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
 
-  if (method === 'GET' && path === '/me') return send(res, 200, { displayName: 'Anna', canBuild: true });
+  if (method === 'GET' && path === '/me') return send(res, 200, { displayName: 'Anna', canBuild: true, services: MOCK_SERVICES });
 
   if (path === '/apps') {
     if (method === 'GET') {

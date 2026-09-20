@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { BuilderMe } from '@vibesandbox/contracts';
 import { api, errorMessage } from './client.ts';
 import { parseRoute, type Route } from './route.ts';
+import { GuideLink, OpenGuideProvider, ServicesGuide } from './ServicesGuide.tsx';
 import { StartPage } from './StartPage.tsx';
 import { Workspace } from './Workspace.tsx';
 
@@ -19,6 +20,7 @@ export function App() {
   const route = useRoute();
   const [me, setMe] = useState<BuilderMe | null>(null);
   const [meError, setMeError] = useState<string | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
 
   useEffect(() => {
     api.me().then(setMe, (error: unknown) => setMeError(errorMessage(error)));
@@ -30,8 +32,11 @@ export function App() {
     window.scrollTo(0, 0);
   }, [route.view, route.view === 'app' ? route.appId : '']);
 
+  // Guiden går att öppna så snart vi vet vilka tjänster som är påslagna, och bara för den som bygger.
+  const canOpenGuide = me !== null && me.canBuild;
+
   return (
-    <>
+    <OpenGuideProvider open={canOpenGuide ? () => setGuideOpen(true) : null}>
       {/* Inte en vanlig #-länk: fragmentet är vyns adress, och #main skulle byta vy. */}
       <a
         className="skip-link"
@@ -48,7 +53,10 @@ export function App() {
           <a className="brand" href="#/">
             Bygg en app
           </a>
-          {me !== null && <span className="who">Inloggad som {me.displayName}</span>}
+          <span className="topbar-end">
+            <GuideLink short />
+            {me !== null && <span className="who">Inloggad som {me.displayName}</span>}
+          </span>
         </div>
       </header>
       <main id="main" tabIndex={-1}>
@@ -75,6 +83,7 @@ export function App() {
           <StartPage />
         )}
       </main>
-    </>
+      {me !== null && <ServicesGuide open={guideOpen} services={me.services} onClose={() => setGuideOpen(false)} />}
+    </OpenGuideProvider>
   );
 }

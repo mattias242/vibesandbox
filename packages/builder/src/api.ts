@@ -15,6 +15,7 @@
 import { randomBytes } from 'node:crypto';
 import { BUILDER_API_PREFIX, DataApiError, isAppId } from '@vibesandbox/contracts';
 import type {
+  AppServiceName,
   BuilderAppDetail,
   BuilderAppMember,
   BuilderAppSummary,
@@ -47,6 +48,8 @@ export interface ApiDependencies {
   readonly invitations: InvitationService;
   readonly urls: BuilderUrls;
   readonly openUrl: (identity: Identity, targetUrl: string) => string;
+  /** Påslagna plattformstjänster, redan kontrollerade och i plattformens ordning. */
+  readonly services: readonly AppServiceName[];
   readonly log: BuilderLogger;
   readonly now: () => Date;
 }
@@ -399,7 +402,7 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
     const identity = request.identity;
 
     if (route.kind === 'me') {
-      const me: BuilderMe = { displayName: displayName(identity), canBuild: canBuild(identity) };
+      const me: BuilderMe = { displayName: displayName(identity), canBuild: canBuild(identity), services: deps.services };
       return json(200, me);
     }
     if (!canBuild(identity)) throw new ApiProblem('forbidden', 'Du har inte behörighet att bygga appar.');

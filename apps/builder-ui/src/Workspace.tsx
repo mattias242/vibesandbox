@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import type { AgentEvent, BuilderAppDetail, BuilderJobStatus } from '@vibesandbox/contracts';
 import { ApiError } from './api.ts';
+import { appendToChat, registerChatInput } from './chatInput.ts';
 import { api, errorMessage, sessionFlash, sleep } from './client.ts';
 import { JobSteps } from './JobSteps.tsx';
 import { OpenLink } from './OpenLink.tsx';
 import { followJob } from './polling.ts';
+import { GuideLink } from './ServicesGuide.tsx';
 import { SharePanel } from './SharePanel.tsx';
 import { summarizeJob } from './steps.ts';
 
@@ -191,6 +193,22 @@ function ChangeForm({
   const hintId = useId();
   const errorId = useId();
 
+  // Guidens knapp "Använd" klistrar in exemplet här, i rutan som syns. Inget skickas.
+  useEffect(
+    () =>
+      registerChatInput((example) => {
+        setText((current) => appendToChat(current, example));
+        setError(null);
+        requestAnimationFrame(() => {
+          const field = textareaRef.current;
+          if (field === null) return;
+          field.focus();
+          field.setSelectionRange(field.value.length, field.value.length);
+        });
+      }),
+    [],
+  );
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     const wish = text.trim();
@@ -228,6 +246,9 @@ function ChangeForm({
       </label>
       <p id={hintId} className="hint">
         {running ? 'Du kan skriva nästa önskemål medan appen byggs, och skicka det när den är klar.' : 'Beskriv ändringen i vanligt språk.'}
+      </p>
+      <p className="guide-cue">
+        <GuideLink />
       </p>
       <textarea
         id="change-text"

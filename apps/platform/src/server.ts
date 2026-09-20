@@ -149,6 +149,7 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
   const mailer = deps.appServiceOverrides?.mailer ?? platformMailer(config);
   const berget =
     deps.appServiceOverrides?.berget ??
+    config.berget ??
     (config.builder === undefined ? undefined : { baseUrl: config.builder.llm.baseUrl, apiKey: config.builder.llm.apiKey });
 
   // Ordningen är vald så att ett fel lämnar så lite som möjligt öppet: det som kan kasta utan
@@ -198,6 +199,7 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
         ui: { directory: builderConfig.uiDirectory },
         urls: { preview: addresses.preview, published: addresses.published },
         openUrl: identity.openUrl,
+        services: config.appServices?.enabled ?? [],
         logger: (entry) => log({ source: 'builder', ...entry }),
       });
       const openBuilder = builder;

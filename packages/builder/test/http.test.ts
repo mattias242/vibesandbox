@@ -22,7 +22,7 @@ describe('GET /me', () => {
   it('ger visningsnamn ur adressens lokala del och att Anna får bygga', async () => {
     const svar = await anropa(m.builder, ANNA, 'GET', api('/me'));
     expect(svar.status).toBe(200);
-    expect(svar.json).toEqual({ displayName: 'anna', canBuild: true });
+    expect(svar.json).toEqual({ displayName: 'anna', canBuild: true, services: [] });
     expect(svar.headers['Cache-Control']).toBe('no-store');
     expect(svar.headers['Content-Type']).toBe('application/json; charset=utf-8');
   });
@@ -30,7 +30,7 @@ describe('GET /me', () => {
   it('fungerar även för den som bara får titta — men canBuild är falskt', async () => {
     const svar = await anropa(m.builder, VERA, 'GET', api('/me'));
     expect(svar.status).toBe(200);
-    expect(svar.json).toEqual({ displayName: 'vera', canBuild: false });
+    expect(svar.json).toEqual({ displayName: 'vera', canBuild: false, services: [] });
   });
 
   it('admin får bygga', async () => {
@@ -41,6 +41,43 @@ describe('GET /me', () => {
   it('visar aldrig hela adressen', async () => {
     const svar = await anropa(m.builder, ANNA, 'GET', api('/me'));
     expect(svar.text).not.toContain('@');
+  });
+});
+
+describe('GET /me — påslagna tjänster för guiden "Vilka tjänster finns som appen kan använda?"', () => {
+  it('givet att inga tjänster är påslagna, så är listan tom', async () => {
+    const svar = await anropa(m.builder, ANNA, 'GET', api('/me'));
+    expect(svar.json.services).toEqual([]);
+  });
+
+  it('givet påslagna tjänster, så får byggaren dem i plattformens ordning och utan dubbletter', async () => {
+    await m.builder.close();
+    m.builder = m.starta({ services: ['search', 'files', 'llm', 'files'] });
+    const svar = await anropa(m.builder, ANNA, 'GET', api('/me'));
+    expect(svar.status).toBe(200);
+    expect(svar.json.services).toEqual(['files', 'llm', 'search']);
+  });
+
+  it('även den som inte får bygga ser vilka tjänster som finns', async () => {
+    await m.builder.close();
+    m.builder = m.starta({ services: ['notify'] });
+    const svar = await anropa(m.builder, VERA, 'GET', api('/me'));
+    expect(svar.json).toEqual({ displayName: 'vera', canBuild: false, services: ['notify'] });
+  });
+
+  it('listan läses vid start: att ändra den insända listan efteråt ändrar inte svaret', async () => {
+    await m.builder.close();
+    const tjanster: ('files' | 'notify')[] = ['files'];
+    m.builder = m.starta({ services: tjanster });
+    tjanster.push('notify');
+    const svar = await anropa(m.builder, ANNA, 'GET', api('/me'));
+    expect(svar.json.services).toEqual(['files']);
+  });
+
+  it('en okänd tjänst är ett programmeringsfel och stoppar starten', async () => {
+    await m.builder.close();
+    expect(() => m.starta({ services: ['files', 'kaffe'] as never })).toThrow(TypeError);
+    m.builder = m.starta();
   });
 });
 

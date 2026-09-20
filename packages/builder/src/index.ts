@@ -12,8 +12,8 @@
  * som gränssnitt, och kopplas ihop av `apps/platform`.
  */
 import { resolve } from 'node:path';
-import { API_PREFIX } from '@vibesandbox/contracts';
-import type { Agent, BuilderHandler, Identity, InvitationService, PlatformRequest, SourceFiles } from '@vibesandbox/contracts';
+import { API_PREFIX, APP_SERVICE_NAMES } from '@vibesandbox/contracts';
+import type { Agent, AppServiceName, BuilderHandler, Identity, InvitationService, PlatformRequest, SourceFiles } from '@vibesandbox/contracts';
 import { createApi } from './api.ts';
 import { grantOwnersOnStartup } from './atkomst.ts';
 import type { BuilderUrls } from './api.ts';
@@ -51,6 +51,11 @@ export interface BuilderOptions {
   readonly clock?: () => Date;
   /** Hur länge en tur får pågå innan den avbryts och kön går vidare. Standard 20 minuter. */
   readonly jobTimeoutMs?: number;
+  /**
+   * Plattformstjänsterna som är påslagna (`APP_SERVICES`). Byggverktyget skapar dem inte — det
+   * berättar bara om dem i `/me`, så att guiden bara lovar det som finns. Standard: inga.
+   */
+  readonly services?: readonly AppServiceName[];
 }
 
 export interface Builder extends BuilderHandler {
@@ -66,6 +71,8 @@ export function createBuilder(options: BuilderOptions): Builder {
   const now = options.clock ?? (() => new Date());
   const jobTimeoutMs = options.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
   if (!Number.isSafeInteger(jobTimeoutMs) || jobTimeoutMs <= 0) throw new TypeError('jobTimeoutMs måste vara ett positivt heltal.');
+
+  const services = enabledServices(options.services ?? []);
 
   const db = openBuilderDatabase(resolve(options.dataDir));
   let storage;
@@ -93,6 +100,7 @@ export function createBuilder(options: BuilderOptions): Builder {
     invitations: options.invitations,
     urls: options.urls,
     openUrl: options.openUrl,
+    services,
     log,
     now,
   });
@@ -126,4 +134,16 @@ export function createBuilder(options: BuilderOptions): Builder {
       return closing;
     },
   };
+}
+
+/**
+ * En kopia i plattformens ordning (`APP_SERVICE_NAMES`), utan dubbletter. Ett okänt namn är ett
+ * fel i den som startar byggverktyget — hellre stopp vid start än en guide som lovar fel sak.
+ */
+function enabledServices(names: readonly AppServiceName[]): readonly AppServiceName[] {
+  const known: readonly string[] = APP_SERVICE_NAMES;
+  for (const name of names) {
+    if (!known.includes(name)) throw new TypeError(`Okänd plattformstjänst: ${String(name)}.`);
+  }
+  return Object.freeze(APP_SERVICE_NAMES.filter((name) => names.includes(name)));
 }

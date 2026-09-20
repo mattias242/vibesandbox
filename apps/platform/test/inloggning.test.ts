@@ -48,7 +48,7 @@ describe('E-postinloggning till byggverktyget', () => {
 
     const me = await anna.api(BYGG, 'GET', '/_api/builder/me', { origin: null });
     expect(me.status).toBe(200);
-    expect(JSON.parse(me.body) as BuilderMe).toEqual({ displayName: 'anna', canBuild: true });
+    expect(JSON.parse(me.body) as BuilderMe).toEqual({ displayName: 'anna', canBuild: true, services: [] });
 
     // Webbgränssnittet serveras nu i stället för en omdirigering.
     const ui = await anna.oppna(BYGG, '/');
