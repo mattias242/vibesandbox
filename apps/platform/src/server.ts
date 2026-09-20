@@ -200,6 +200,7 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
         urls: { preview: addresses.preview, published: addresses.published },
         openUrl: identity.openUrl,
         services: config.appServices?.enabled ?? [],
+        ...(config.version === undefined ? {} : { version: config.version }),
         logger: (entry) => log({ source: 'builder', ...entry }),
       });
       const openBuilder = builder;

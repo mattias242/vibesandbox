@@ -50,6 +50,7 @@ export interface ApiDependencies {
   readonly openUrl: (identity: Identity, targetUrl: string) => string;
   /** Påslagna plattformstjänster, redan kontrollerade och i plattformens ordning. */
   readonly services: readonly AppServiceName[];
+  readonly version?: string;
   readonly log: BuilderLogger;
   readonly now: () => Date;
 }
@@ -402,7 +403,12 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
     const identity = request.identity;
 
     if (route.kind === 'me') {
-      const me: BuilderMe = { displayName: displayName(identity), canBuild: canBuild(identity), services: deps.services };
+      const me: BuilderMe = {
+        displayName: displayName(identity),
+        canBuild: canBuild(identity),
+        services: deps.services,
+        ...(deps.version === undefined ? {} : { version: deps.version }),
+      };
       return json(200, me);
     }
     if (!canBuild(identity)) throw new ApiProblem('forbidden', 'Du har inte behörighet att bygga appar.');

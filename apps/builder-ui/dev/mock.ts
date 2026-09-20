@@ -186,7 +186,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
 
-  if (method === 'GET' && path === '/me') return send(res, 200, { displayName: 'Anna', canBuild: true, services: MOCK_SERVICES });
+  if (method === 'GET' && path === '/me') return send(res, 200, { displayName: 'Anna', canBuild: true, services: MOCK_SERVICES, version: 'lokal-dev' });
 
   if (path === '/apps') {
     if (method === 'GET') {

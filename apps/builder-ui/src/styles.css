@@ -905,3 +905,11 @@ main:focus-visible {
     padding: 1.5rem 2rem 3rem;
   }
 }
+
+/* Versionen längst ned: syns, men tar ingen plats från arbetet. */
+.version {
+  padding: 1rem;
+  color: var(--muted, #5c5c57);
+  font-size: 0.8rem;
+  text-align: center;
+}

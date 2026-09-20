@@ -17,6 +17,7 @@ import {
   allGuideTexts,
   guideFor,
   type Capability,
+  versionText,
 } from '../src/formagor.ts';
 
 const titles = (list: readonly Capability[]): string[] => list.map((capability) => capability.title);
@@ -250,5 +251,16 @@ describe('det här kan appar inte göra', () => {
     expect(without).not.toMatch(/påminnelser/);
     expect(withReminders).toMatch(/när ingen har appen öppen/);
     expect(withReminders).toMatch(/påminnelser/);
+  });
+});
+
+describe('versionsraden', () => {
+  it('visar den driftsatta versionen när servern angett en', () => {
+    expect(versionText('a1b2c3d')).toBe('Version a1b2c3d');
+  });
+
+  it('visar ingenting när servern inte vet — hellre tyst än en gissning', () => {
+    expect(versionText(undefined)).toBeNull();
+    expect(versionText('')).toBeNull();
   });
 });

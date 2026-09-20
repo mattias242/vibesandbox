@@ -82,6 +82,10 @@ echo "== Skriver serverns .env (bara root kan läsa den)"
 (umask 077; cp "${M}/env" "${K}/.env.ny"); chown 0:0 "${K}/.env.ny"; chmod 600 "${K}/.env.ny"; mv -f "${K}/.env.ny" "${K}/.env"
 rm -rf "$M"
 
+# Versionen som just lagts ut följer med in i plattformen, så att byggverktyget kan visa den:
+# en webbläsare som kör något gammalt ska gå att upptäcka utan att någon gissar.
+APP_VERSION="$(tr -cd 'A-Za-z0-9._-' <"${K}/app/VERSION" | cut -c1-40)"
+export APP_VERSION
 C=(docker compose --project-name vibesandbox --project-directory "${K}/app/deploy" -f "${K}/app/deploy/compose.yml" --env-file "${K}/.env")
 echo "== Bygger och startar stacken (första gången tar det några minuter)"
 "${C[@]}" up -d --build --remove-orphans --wait --wait-timeout 300

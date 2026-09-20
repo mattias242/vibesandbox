@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { BuilderMe } from '@vibesandbox/contracts';
 import { api, errorMessage } from './client.ts';
+import { versionText } from './formagor.ts';
 import { parseRoute, type Route } from './route.ts';
 import { GuideLink, OpenGuideProvider, ServicesGuide } from './ServicesGuide.tsx';
 import { StartPage } from './StartPage.tsx';
@@ -84,6 +85,12 @@ export function App() {
         )}
       </main>
       {me !== null && <ServicesGuide open={guideOpen} services={me.services} onClose={() => setGuideOpen(false)} />}
+      {/* Versionen sist på sidan: liten, men gör ett felsökningssamtal kortare. */}
+      {versionText(me?.version) !== null && (
+        <footer className="version">
+          <span>{versionText(me?.version)}</span>
+        </footer>
+      )}
     </OpenGuideProvider>
   );
 }

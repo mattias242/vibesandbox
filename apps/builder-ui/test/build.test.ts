@@ -131,6 +131,14 @@ describe('det byggda gränssnittet', () => {
       expect(policy).not.toMatch(/script-src[^;]*unsafe-(?:inline|eval)/);
     });
 
+    it('index.html visar något även om skriptet aldrig startar — en vit sida ska vara omöjlig', () => {
+      const root = /<div id="root"[^>]*>([\s\S]*?)<\/div>/.exec(html)?.[1] ?? '';
+      expect(root.replace(/<[^>]*>/g, '').trim().length).toBeGreaterThan(20);
+      expect(root).toMatch(/Ladda om/i);
+      // Reservinnehållet får inte i sin tur kräva ett skript.
+      expect(root).not.toMatch(/<script/i);
+    });
+
     it('index.html har inga inline-skript: varje <script> har src och saknar innehåll', () => {
       const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)];
       expect(scripts.length).toBeGreaterThan(0);
@@ -148,7 +156,14 @@ describe('det byggda gränssnittet', () => {
     });
 
     it('index.html pekar bara på egna filer under roten, som finns i bygget', () => {
-      const references = [...html.matchAll(/\b(?:src|href)="([^"]*)"/g)].map((match) => match[1] ?? '');
+      // Länkar i reservinnehållet (<a href>) är navigering, inte filer: de pekar på egna sidor
+      // under roten. Allt som HÄMTAS ska ligga i bygget under /assets/.
+      const links = [...html.matchAll(/<a\b[^>]*\shref="([^"]*)"/g)].map((match) => match[1] ?? '');
+      for (const link of links) expect(link).toMatch(/^\/[^/\\]*$/);
+
+      const references = [...html.matchAll(/\b(?:src|href)="([^"]*)"/g)]
+        .map((match) => match[1] ?? '')
+        .filter((reference) => !links.includes(reference));
       expect(references.length).toBeGreaterThan(0);
       for (const reference of references) {
         expect(reference).toMatch(/^\/assets\//);

@@ -56,6 +56,8 @@ export interface BuilderOptions {
    * berättar bara om dem i `/me`, så att guiden bara lovar det som finns. Standard: inga.
    */
   readonly services?: readonly AppServiceName[];
+  /** Driftsatt version (`APP_VERSION`), visas i gränssnittet. */
+  readonly version?: string;
 }
 
 export interface Builder extends BuilderHandler {
@@ -101,6 +103,7 @@ export function createBuilder(options: BuilderOptions): Builder {
     urls: options.urls,
     openUrl: options.openUrl,
     services,
+    ...(options.version === undefined ? {} : { version: options.version }),
     log,
     now,
   });

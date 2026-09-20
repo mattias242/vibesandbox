@@ -12,6 +12,14 @@
 import { APP_SERVICE_NAMES, type AppServiceName } from '@vibesandbox/contracts';
 
 export const GUIDE_TITLE = 'Vilka tjänster finns som appen kan använda?';
+
+/**
+ * Raden längst ned: vilken version som körs. Servern vet det bara när driftsättningen angett
+ * den (`APP_VERSION`); utan den står det ingenting alls — en gissad version vore värre än tyst.
+ */
+export function versionText(version: string | undefined): string | null {
+  return version === undefined || version === '' ? null : `Version ${version}`;
+}
 /** Där den fulla frågan inte får plats, till exempel i rubrikraden. */
 export const GUIDE_LINK_SHORT = 'Tjänster för appar';
 

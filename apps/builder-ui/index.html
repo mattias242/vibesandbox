@@ -12,7 +12,18 @@
     <title>Bygg en app</title>
   </head>
   <body>
-    <div id="root"></div>
+    <!--
+      Reservinnehåll: React byter ut det när byggverktyget startar. Det står kvar om skriptet
+      inte laddas eller kraschar — en helt vit sida går då inte att få, och den som ringer om
+      ett fel har något att berätta. Ingen stilmall och inget skript krävs för att visa det.
+    -->
+    <div id="root">
+      <p style="max-width: 32rem; margin: 3rem auto; padding: 0 1rem; font: 17px/1.5 system-ui, sans-serif">
+        Byggverktyget startar …
+        <br />
+        Händer ingenting? <a href="/">Ladda om sidan</a>. Kvarstår det, hör av dig till den som gav dig tillgång.
+      </p>
+    </div>
     <noscript>Byggverktyget behöver JavaScript för att fungera.</noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>

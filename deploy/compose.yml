@@ -90,6 +90,8 @@ services:
       MAIL_FROM: ${MAIL_FROM:-}
       BUILD_DRIVER: spool
       BUILD_JOBS_DIR: /jobs
+      # Vilken version som är utlagd. Rotsteget sätter den från app/VERSION; tom lokalt.
+      APP_VERSION: ${APP_VERSION:-}
     volumes:
       - ${DATA_ROOT:-/srv/vibesandbox/data}:/data
       - byggjobb:/jobs

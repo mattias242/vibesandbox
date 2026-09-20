@@ -847,6 +847,11 @@ export interface BuilderMe {
    * min app göra?" visar bara dem — ingen ska bli lovad något som svarar 404.
    */
   readonly services: readonly AppServiceName[];
+  /**
+   * Versionen som är driftsatt, när driftsättningen angett en (`APP_VERSION`). Visas i
+   * byggverktyget: en webbläsare som kör något gammalt ska gå att upptäcka direkt.
+   */
+  readonly version?: string;
 }
 
 export interface BuilderAppSummary {

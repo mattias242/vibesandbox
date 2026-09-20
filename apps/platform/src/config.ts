@@ -68,6 +68,12 @@ export interface PlatformConfig {
    * byggverktyget; saknas den används byggverktygets språkmodell om den finns.
    */
   readonly berget?: { readonly baseUrl: string; readonly apiKey: string };
+  /**
+   * Vilken version som är driftsatt (`APP_VERSION`, sätts av driftsättningen till commitens
+   * korta hash). Visas i byggverktyget: en tom sida eller ett gammalt gränssnitt i en webbläsare
+   * ska gå att se direkt, utan att någon behöver gissa.
+   */
+  readonly version?: string;
   /** Sätts inte ur miljön. Finns för tester som behöver en liten kvot för att gå fort. */
   readonly limits?: TenantLimits;
   /** Sätts inte ur miljön. Standard är tyst; `main.ts` skickar in en som skriver JSON-rader. */
@@ -197,6 +203,10 @@ export function loadConfig(env: Environment): PlatformConfig {
   const builder = loadBuilder(env, production, problems);
   const appServices = loadAppServices(env, problems);
   const berget = loadBerget(env, production, problems);
+  const version = env['APP_VERSION'];
+  if (version !== undefined && version !== '' && !/^[A-Za-z0-9._-]{1,40}$/.test(version)) {
+    problems.push('APP_VERSION ska vara högst 40 tecken: bokstäver, siffror, punkt, bindestreck eller understreck.');
+  }
 
   if (problems.length > 0) throw new ConfigError(problems);
 
@@ -212,6 +222,7 @@ export function loadConfig(env: Environment): PlatformConfig {
     ...(builder === undefined ? {} : { builder }),
     ...(appServices.length === 0 ? {} : { appServices: { enabled: appServices, env } }),
     ...(berget === undefined ? {} : { berget }),
+    ...(version === undefined || version === '' ? {} : { version }),
   };
 }
 

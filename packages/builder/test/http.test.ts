@@ -58,6 +58,13 @@ describe('GET /me — påslagna tjänster för guiden "Vilka tjänster finns som
     expect(svar.json.services).toEqual(['files', 'llm', 'search']);
   });
 
+  it('/me säger vilken version som är driftsatt, när driftsättningen angett en', async () => {
+    await m.builder.close();
+    m.builder = m.starta({ version: 'a1b2c3d' });
+    const svar = await anropa(m.builder, ANNA, 'GET', api('/me'));
+    expect(svar.json.version).toBe('a1b2c3d');
+  });
+
   it('även den som inte får bygga ser vilka tjänster som finns', async () => {
     await m.builder.close();
     m.builder = m.starta({ services: ['notify'] });
