@@ -236,6 +236,24 @@ describe('Plattformstjänster för appar', () => {
     expect(svar.kropp).not.toContain('hemlig intern detalj');
   });
 
+  it.each([
+    [507, 'quota_exceeded'],
+    [503, 'unavailable'],
+    [429, 'rate_limited'],
+  ])('tjänstens %i med koden %s når appen oförändrad', async (status, kod) => {
+    const tjanst = skapaTjanst('filer', () => ({
+      status,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: { code: kod, message: 'Klarspråk.' } }),
+    }));
+    const { appId, port } = await starta([tjanst]);
+
+    const svar = await anropa({ port, host: vardnamnForApp(appId), path: '/_api/filer' });
+
+    expect(svar.status).toBe(status);
+    expect(json(svar)).toEqual({ error: { code: kod, message: 'Klarspråk.' } });
+  });
+
   it('ett svar med en status utanför allowlistan blir 500', async () => {
     const tjanst = skapaTjanst('filer', () => ({ status: 302, headers: {}, body: '' }));
     const { appId, port } = await starta([tjanst]);

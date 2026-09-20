@@ -225,7 +225,7 @@ Then(/^har sökleverantören inte fått se telefonnumret "([^"]+)"$/, function (
 });
 
 const BESKED: ReadonlyMap<string, { status: number; kod: ApiErrorBody['error']['code'] }> = new Map([
-  ['sökningen inte går att använda just nu', { status: 503, kod: 'internal' }],
+  ['sökningen inte går att använda just nu', { status: 503, kod: 'unavailable' }],
   ['det blev för många sökningar', { status: 429, kod: 'rate_limited' }],
   ['appens sökkvot för i dag är slut', { status: 429, kod: 'quota_exceeded' }],
 ]);

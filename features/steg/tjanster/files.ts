@@ -149,15 +149,17 @@ Given(
 Given(/^att appen "([^"]+)" har fyllt sitt utrymme för filer$/, async function (this: Varld, app: string) {
   const person = this.senastInloggad;
   assert.ok(person !== undefined, 'Steget förutsätter att någon är inloggad.');
-  // Nästan en hel fil i taget tills appen säger nej; det ska ske inom kvoten delat med filstorleken.
-  const storlek = MAX_FIL_MB * 1024 * 1024 - 1024;
+  // Så stora filer som möjligt tills appen säger nej, sedan hälften så stora, och så vidare: när
+  // inte ens den minsta filen får plats är utrymmet verkligen slut — inte bara nästan.
+  const minsta = PNG.length;
+  let storlek = MAX_FIL_MB * 1024 * 1024 - 1024;
   for (let forsok = 0; ; forsok += 1) {
-    assert.ok(forsok <= (KVOT_MB / MAX_FIL_MB) * 2 + 2, 'Appens utrymme för filer tog aldrig slut.');
+    assert.ok(forsok <= (KVOT_MB / MAX_FIL_MB) * 2 + 60, 'Appens utrymme för filer tog aldrig slut.');
     const svar = await laddaUpp(this, person, app, `fyllnad-${forsok}.png`, stor(storlek), 'image/png');
-    if (svar.status !== 201) {
-      assert.equal(svar.status, 507, `Oväntat svar medan appen fylldes: ${svar.status} ${svar.kropp.slice(0, 200)}`);
-      break;
-    }
+    if (svar.status === 201) continue;
+    assert.equal(svar.status, 507, `Oväntat svar medan appen fylldes: ${svar.status} ${svar.kropp.slice(0, 200)}`);
+    if (storlek === minsta) break;
+    storlek = Math.max(minsta, Math.floor(storlek / 2));
   }
 });
 

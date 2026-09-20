@@ -82,11 +82,10 @@ function error(code: ApiErrorCode, message: string, status: number = API_ERROR_S
 }
 
 /**
- * Fel från språkmodellen ⇒ 503. Kontraktet saknar en felkod för "tjänsten är tillfälligt borta",
- * så koden är `internal` men statusen 503 — det som avgör för appen är meddelandet och statusen.
+ * Fel från språkmodellen ⇒ 503 `unavailable`: tillfälligt borta, försök igen.
  */
 function unavailable(message: string): AppServiceResponse {
-  return error('internal', message, 503);
+  return error('unavailable', message, 503);
 }
 
 /** Grov och hellre för hög: svenska ligger kring 3–4 tecken per token. Plus lite per meddelande. */

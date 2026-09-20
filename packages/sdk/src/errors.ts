@@ -29,5 +29,6 @@ export const DEFAULT_MESSAGES: Readonly<Record<SdkErrorCode, string>> = {
   too_large: 'Det du försöker spara är för stort.',
   rate_limited: 'Det blev för många anrop på kort tid. Vänta en stund och försök igen.',
   internal: 'Något gick fel hos plattformen. Försök igen om en stund.',
+  unavailable: 'Tjänsten svarar inte just nu. Försök igen om en stund.',
   network: 'Det gick inte att nå plattformen. Kontrollera din anslutning och försök igen.',
 };

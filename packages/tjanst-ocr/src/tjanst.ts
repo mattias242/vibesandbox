@@ -174,8 +174,7 @@ export function createOcrService(dependencies: AppServiceDependencies, options: 
         failure: failure.failure,
         ...(failure.status === undefined ? {} : { status: failure.status }),
       });
-      // 503 finns inte bland ApiErrorCode; koden är `internal` och statusen säger "försök igen".
-      return error('internal', MESSAGES.unavailable, 503);
+      return error('unavailable', MESSAGES.unavailable, 503);
     }
 
     store.settle(reserved.reservation, Math.max(pages, output.pageCount));

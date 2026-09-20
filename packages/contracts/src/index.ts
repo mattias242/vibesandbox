@@ -235,7 +235,9 @@ export type ApiErrorCode =
   | 'quota_exceeded'
   | 'too_large'
   | 'rate_limited'
-  | 'internal';
+  | 'internal'
+  /** En plattformstjänst når inte sin leverantör just nu (t.ex. språkmodellen). Försök igen senare. */
+  | 'unavailable';
 
 export interface ApiErrorBody {
   readonly error: {
@@ -256,6 +258,7 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = {
   too_large: 413,
   rate_limited: 429,
   internal: 500,
+  unavailable: 503,
 };
 
 // ── Data-API: det gatewayn anropar ──────────────────────────────────────────────

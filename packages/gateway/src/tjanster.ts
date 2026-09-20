@@ -27,7 +27,7 @@ const WRITING_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'DELETE']);
 
 /** Inga omdirigeringar: en tjänst ska aldrig kunna skicka webbläsaren någon annanstans. */
 const ALLOWED_STATUSES: ReadonlySet<number> = new Set([
-  200, 201, 202, 204, 400, 403, 404, 405, 409, 413, 415, 422, 429, 500, 501, 503,
+  200, 201, 202, 204, 400, 403, 404, 405, 409, 413, 415, 422, 429, 500, 501, 503, 507,
 ]);
 
 const ALLOWED_RESPONSE_HEADERS: ReadonlySet<string> = new Set(['content-type', 'cache-control', 'content-disposition']);

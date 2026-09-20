@@ -194,7 +194,7 @@ function mask(text: string): string {
   try {
     return maskPersonalData(text).text;
   } catch {
-    throw new SearchFailure(503, 'internal', MESSAGES.unavailable);
+    throw new SearchFailure(503, 'unavailable', MESSAGES.unavailable);
   }
 }
 
@@ -243,10 +243,10 @@ export function createSearchService(options: SearchServiceOptions): AppService {
       result = await embedder.embed(texts);
     } catch (error) {
       log({ level: 'warn', event: 'search_provider_error', app: appId.slice(0, 8), reason: error instanceof EmbeddingError ? error.code : 'unexpected' });
-      throw new SearchFailure(503, 'internal', MESSAGES.unavailable);
+      throw new SearchFailure(503, 'unavailable', MESSAGES.unavailable);
     }
     db.addTokens(appId, day(), Number.isFinite(result.tokens) && result.tokens >= 0 ? result.tokens : estimateTokens(texts));
-    if (result.vectors.length !== texts.length) throw new SearchFailure(503, 'internal', MESSAGES.unavailable);
+    if (result.vectors.length !== texts.length) throw new SearchFailure(503, 'unavailable', MESSAGES.unavailable);
     return result.vectors.map(normalize);
   }
 

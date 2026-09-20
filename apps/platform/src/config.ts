@@ -63,6 +63,11 @@ export interface PlatformConfig {
    * miljön: varje tjänst läser sina egna `SVC_<NAMN>_…` och vägrar starta om något fattas.
    */
   readonly appServices?: { readonly enabled: readonly AppServiceName[]; readonly env: Environment };
+  /**
+   * Berget för plattformstjänsterna (`BERGET_API_KEY`, valfri `BERGET_BASE_URL`). Oberoende av
+   * byggverktyget; saknas den används byggverktygets språkmodell om den finns.
+   */
+  readonly berget?: { readonly baseUrl: string; readonly apiKey: string };
   /** Sätts inte ur miljön. Finns för tester som behöver en liten kvot för att gå fort. */
   readonly limits?: TenantLimits;
   /** Sätts inte ur miljön. Standard är tyst; `main.ts` skickar in en som skriver JSON-rader. */
@@ -191,6 +196,7 @@ export function loadConfig(env: Environment): PlatformConfig {
   const identity = loadIdentity(env, production, problems, required);
   const builder = loadBuilder(env, production, problems);
   const appServices = loadAppServices(env, problems);
+  const berget = loadBerget(env, production, problems);
 
   if (problems.length > 0) throw new ConfigError(problems);
 
@@ -205,6 +211,7 @@ export function loadConfig(env: Environment): PlatformConfig {
     identity: identity as IdentityConfig,
     ...(builder === undefined ? {} : { builder }),
     ...(appServices.length === 0 ? {} : { appServices: { enabled: appServices, env } }),
+    ...(berget === undefined ? {} : { berget }),
   };
 }
 
@@ -329,6 +336,37 @@ function loadAppServices(env: Environment, problems: string[]): AppServiceName[]
     }
   }
   return APP_SERVICE_NAMES.filter((name) => wanted.has(name));
+}
+
+const DEFAULT_BERGET_BASE_URL = 'https://api.berget.ai/v1';
+
+function loadBerget(env: Environment, production: boolean, problems: string[]): { baseUrl: string; apiKey: string } | undefined {
+  const apiKey = env['BERGET_API_KEY'];
+  if (apiKey === undefined || apiKey === '') return undefined;
+  const before = problems.length;
+  // Medvetet utan värdet i meddelandet: det är en nyckel.
+  if (apiKey.length < 8 || hasControlCharacters(apiKey)) problems.push('BERGET_API_KEY ser inte ut som en API-nyckel.');
+  const baseUrl = env['BERGET_BASE_URL'] === undefined || env['BERGET_BASE_URL'] === '' ? DEFAULT_BERGET_BASE_URL : env['BERGET_BASE_URL'];
+  let parsed: URL | undefined;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    parsed = undefined;
+  }
+  if (
+    parsed === undefined ||
+    (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.search !== '' ||
+    parsed.hash !== '' ||
+    !/^https?:\/\//.test(baseUrl)
+  ) {
+    problems.push('BERGET_BASE_URL ska vara en http- eller https-adress utan inloggningsuppgifter och utan frågesträng.');
+  } else if (production && parsed.protocol !== 'https:') {
+    problems.push('BERGET_BASE_URL ska vara en https-adress när NODE_ENV=production.');
+  }
+  return problems.length === before ? { baseUrl, apiKey } : undefined;
 }
 
 function loadBuilder(env: Environment, production: boolean, problems: string[]): BuilderConfig | undefined {

@@ -89,10 +89,6 @@ Egenskap: Filer och bilagor i appar
     När Anna laddar upp en fil med skadlig kod i appen "Bokningar"
     Så får hon svaret "ogiltig begäran"
 
-  # @senare: tjänsten svarar 507 `quota_exceeded` enligt kontraktets API_ERROR_STATUS, men
-  # gatewayns allowlista för tjänsters statuskoder saknar 507 och gör om svaret till 500.
-  # Taggen tas bort när gatewayn släpper igenom 507 (stegen finns redan).
-  @senare
   Scenario: När appens utrymme för filer är slut tas inga fler filer emot
     Givet att appen "Bokningar" har fyllt sitt utrymme för filer
     När Anna laddar upp bilden "en-till.png" i appen "Bokningar"

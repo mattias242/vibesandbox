@@ -222,3 +222,40 @@ describe('Plattformstjänsterna i en riktig server', () => {
     expect(stangd).toBe(true);
   });
 });
+
+describe('Berget för tjänsterna', () => {
+  it('BERGET_API_KEY räcker — tjänsterna behöver inte byggverktyget', () => {
+    const config = loadConfig(miljo({ BERGET_API_KEY: 'berget-nyckel-123456' }));
+    expect(config.builder).toBeUndefined();
+    expect(config.berget).toEqual({ baseUrl: 'https://api.berget.ai/v1', apiKey: 'berget-nyckel-123456' });
+  });
+
+  it('BERGET_BASE_URL byter adress, och måste vara https i drift', () => {
+    expect(loadConfig(miljo({ BERGET_API_KEY: 'berget-nyckel-123456', BERGET_BASE_URL: 'https://eu.example.org/v1' })).berget?.baseUrl).toBe(
+      'https://eu.example.org/v1',
+    );
+    let text = '';
+    try {
+      loadConfig(miljo({ NODE_ENV: 'production', BERGET_API_KEY: 'berget-nyckel-123456', BERGET_BASE_URL: 'http://eu.example.org/v1' }));
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      text = String((e as Error).message);
+    }
+    expect(text).toMatch(/BERGET_BASE_URL.*https/);
+  });
+
+  it('utan nyckel finns ingen Berget', () => {
+    expect(loadConfig(miljo()).berget).toBeUndefined();
+  });
+
+  it('nyckeln syns aldrig i ett felmeddelande', () => {
+    let text = '';
+    try {
+      loadConfig(miljo({ BERGET_API_KEY: 'berget-nyckel-123456', BERGET_BASE_URL: 'inte en adress' }));
+    } catch (e) {
+      text = String((e as Error).message);
+    }
+    expect(text).not.toBe('');
+    expect(text).not.toContain('berget-nyckel-123456');
+  });
+});

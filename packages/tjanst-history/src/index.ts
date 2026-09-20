@@ -59,13 +59,8 @@ function errorResponse(status: number, code: ApiErrorCode, message: string): App
   return json(status, { error: { code, message } });
 }
 
-/**
- * Status för ett fel från lagringen. Gatewayn släpper bara igenom en allowlist av statusar, och
- * 507 (`quota_exceeded`) finns inte i den — den skulle bli 500. Koden och klarspråket följer med
- * oförändrade; bara statusen blir 409, "går inte just nu i appens nuvarande läge".
- */
+/** Status för ett fel från lagringen: samma som data-API:t ger. */
 function statusFor(code: ApiErrorCode): number {
-  if (code === 'quota_exceeded') return 409;
   return API_ERROR_STATUS[code];
 }
 

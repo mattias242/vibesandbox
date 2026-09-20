@@ -154,7 +154,7 @@ describe('JSON-läget', () => {
   it.each(['Kategorin är belysning.', '{"a": 1', '', '{"a":1} och lite text'])('avvisar %j i klarspråk', async (text) => {
     const svar = await medModell(createFakeProvider([text])).handle(forfragan({ json: { prompt: 'x', format: 'json' } }));
     expect(svar.status).toBe(503);
-    expect(felkod(svar)).toBe('internal');
+    expect(felkod(svar)).toBe('unavailable');
     expect(felmeddelande(svar)).toMatch(/Språkmodellen/);
     expect(allText(svar)).not.toContain('Kategorin');
   });

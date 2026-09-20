@@ -318,7 +318,7 @@ describe('fel hos leverantören', () => {
     inbaddare.fel = new EmbeddingError('unavailable');
     const svar = await sok({ query: 'cykel' });
     expect(svar.status).toBe(503);
-    expect(felkod(svar)).toBe('internal');
+    expect(felkod(svar)).toBe('unavailable');
     expect((json(svar.body)['error'] as { message: string }).message).toMatch(/sökningen/i);
   });
 

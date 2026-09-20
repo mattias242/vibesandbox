@@ -21,6 +21,7 @@ const STATUS: Readonly<Record<BuilderErrorCode, number>> = {
   too_large: 413,
   rate_limited: 429,
   internal: 500,
+  unavailable: 503,
 };
 
 const JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } as const;
