@@ -12,6 +12,11 @@
  * `Identity-H` med `ToUnicode`-CMap. Går en teckenkod inte att översätta hoppas tecknet över —
  * ett tappat tecken är bättre än ett påhittat.
  *
+ * Var orden slutar står inte i filen. Därför läses glyfbredderna (`/Widths`, `/W`, `/DW`) och
+ * pennans position följs genom texten: ett mellanslag skrivs bara när nästa textposition ligger
+ * tydligt framför pennan. Utan den mätningen blir en fil som sätter ut varje bokstav för sig
+ * (vilket många verktyg gör) ett enda långt mellanrum mellan varje tecken.
+ *
  * Målet är läsbar löptext, inte exakt layout. Sidor kommer i ordning med tom rad emellan.
  */
 import { inflateSync, constants as zlibKonstanter } from 'node:zlib';
@@ -74,8 +79,19 @@ const MAX_XREF_LED = 64;
 const MAX_CMAP_POSTER = 200_000;
 /** Hur många operationer en innehållsström får innehålla. */
 const MAX_OPERATIONER = 5_000_000;
-/** Under detta värde blir en TJ-justering ett mellanslag (tusendelar av textrutan). */
-const TJ_MELLANSLAG = -100;
+/** Hur många breddposter ett typsnitt får bidra med (`/Widths`, `/W`). */
+const MAX_BREDDER = 65_536;
+/**
+ * Hur långt framför pennan nästa textposition måste ligga för att det ska vara ett ordmellanrum,
+ * mätt i em. Måttet är relativt teckenstorleken — ett fast tal skulle bli fel så fort texten
+ * byter storlek.
+ *
+ * Värdet är mätt mot riktiga filer, inte valt på känsla: kerning håller sig i praktiken under
+ * 0,1 em, medan sättare som pressar ihop vid rak marginal kommer ned till 0,2 em för ett
+ * mellanslag (TeX skriver då `-200` i en TJ-lista). Gränsen ligger mitt emellan, så att båda
+ * sidorna har marginal.
+ */
+const ORDMELLANRUM_EM = 0.15;
 /** Hur stor vertikal förflyttning som räknas som en ny rad (i textrummets enheter). */
 const RADBYTE_GRANS = 0.5;
 
@@ -952,6 +968,23 @@ interface Kodrymd {
   readonly hi: number;
 }
 
+/** Ett intervall av koder som delar bredd — `/W`-formen `cfirst clast w`. */
+interface Breddintervall {
+  readonly lo: number;
+  readonly hi: number;
+  readonly w: number;
+}
+
+/** Glyfbredderna som filen anger, i typsnittets egen skala (normalt tusendelar av em). */
+interface Bredder {
+  /** Bredd per teckenkod (enkla typsnitt) eller per CID (sammansatta). */
+  readonly enskilda: Map<number, number>;
+  /** Sorterade och överlappsfria, så att uppslagningen kan halvera sig fram. */
+  readonly intervall: readonly Breddintervall[];
+  /** `/MissingWidth` respektive `/DW`. `null` betyder att filen inte anger någon. */
+  readonly standard: number | null;
+}
+
 interface Typsnitt {
   /** Byte per teckenkod när kodrymderna inte säger något annat: 1 för enkla, 2 för Type0. */
   readonly standardByte: number;
@@ -961,15 +994,85 @@ interface Typsnitt {
   readonly tillTecken: Map<number, string> | null;
   /** Kodtabell för enkla typsnitt (bas-encoding + /Differences). */
   readonly tabell: (string | null)[] | null;
+  /** Breddtabellen, eller `null` när filen inte anger någon och bredden måste uppskattas. */
+  readonly bredder: Bredder | null;
+  /**
+   * Vad en breddenhet är värd i textrummet vid teckenstorleken 1. Nästan alltid 1/1000, men ett
+   * Type3-typsnitt anger sitt eget glyfrum med `/FontMatrix` och kan ha vilken skala som helst.
+   */
+  readonly breddskala: number;
 }
 
-const STANDARDTYPSNITT: Typsnitt = { standardByte: 1, rymder: null, tillTecken: null, tabell: STANDARD };
+const STANDARDTYPSNITT: Typsnitt = {
+  standardByte: 1,
+  rymder: null,
+  tillTecken: null,
+  tabell: STANDARD,
+  bredder: null,
+  breddskala: 0.001,
+};
 
 function avkoda(typsnitt: Typsnitt, kod: number): string | null {
   const viaCmap = typsnitt.tillTecken?.get(kod);
   if (viaCmap !== undefined) return viaCmap;
   // Ett sammansatt typsnitt utan ToUnicode har ingen kodtabell: gissa aldrig på en CID.
   return typsnitt.tabell?.[kod] ?? null;
+}
+
+/** Smala glyfer i ett vanligt proportionellt typsnitt. */
+const SMALA_GLYFER = new Set([...".,;:'`!|()[]{}iljIft-·"].map((c) => c.charCodeAt(0)));
+/** Breda glyfer i samma typsnitt. */
+const BREDA_GLYFER = new Set([...'mMWw@%—…'].map((c) => c.charCodeAt(0)));
+
+/**
+ * Uppskattad glyfbredd i tusendelar av em, för de typsnitt som inte har någon breddtabell alls
+ * (de fjorton standardtypsnitten får sina mått ur läsarens egna typsnittsfiler, som vi inte har).
+ *
+ * Siffrorna är ungefärliga medelvärden ur Helvetica-klassen. De blir aldrig exakta, men felet
+ * behöver bara vara mindre än ett halvt mellanslag för att gränsen ska hamna rätt — och en platt
+ * gissning på 500 för alla tecken hade gett systematiskt fel på både `i` och `m`.
+ */
+function uppskattadBredd(tecken: string | null): number {
+  if (tecken === null || tecken.length === 0) return 500;
+  const k = tecken.charCodeAt(0);
+  if (k === 32) return 278;
+  if (SMALA_GLYFER.has(k)) return 300;
+  if (BREDA_GLYFER.has(k)) return 880;
+  if (k >= 0x41 && k <= 0x5a) return 680; // versaler
+  return 540;
+}
+
+function sokBreddintervall(intervall: readonly Breddintervall[], kod: number): number | null {
+  let lo = 0;
+  let hi = intervall.length - 1;
+  while (lo <= hi) {
+    const mitt = (lo + hi) >> 1;
+    const post = intervall[mitt];
+    if (post === undefined) break;
+    if (kod < post.lo) hi = mitt - 1;
+    else if (kod > post.hi) lo = mitt + 1;
+    else return post.w;
+  }
+  return null;
+}
+
+/**
+ * Glyfens bredd i em: 1 betyder att glyfen är precis lika bred som teckenstorleken. Det är det
+ * mått pennan flyttas med, och det enda som gör skillnad mellan kerning och ordmellanrum.
+ */
+function glyfbredd(typsnitt: Typsnitt, kod: number, tecken: string | null): number {
+  const bredder = typsnitt.bredder;
+  if (bredder !== null) {
+    const exakt = bredder.enskilda.get(kod);
+    if (exakt !== undefined) return exakt * typsnitt.breddskala;
+    const iIntervall = sokBreddintervall(bredder.intervall, kod);
+    if (iIntervall !== null) return iIntervall * typsnitt.breddskala;
+    if (bredder.standard !== null) return bredder.standard * typsnitt.breddskala;
+    // Breddtabell finns men täcker inte koden, och /MissingWidth saknas. Standardvärdet är då
+    // noll enligt specifikationen — men en penna som står stilla skapar mellanslag på måfå,
+    // så här uppskattas bredden i stället.
+  }
+  return uppskattadBredd(tecken) / 1000;
 }
 
 /**
@@ -1002,9 +1105,18 @@ type XrefPost = { k: 1; off: number } | { k: 2; strom: number; index: number };
 
 interface Textlage {
   typsnitt: Typsnitt;
+  /** Teckenstorleken ur `Tf`. 0 betyder att inget `Tf` setts och att skalan är okänd. */
+  storlek: number;
+  /** `Tc` — extra avstånd efter varje glyf, i textrummets enheter. */
+  teckenavstand: number;
+  /** `Tw` — extra avstånd efter en enbyteskod 32. */
+  ordavstand: number;
+  /** `Tz` — vågrät skalning i procent. */
+  skalning: number;
   tm: number[];
   tlm: number[];
   ledning: number;
+  /** Var pennan står efter den senast visade glyfen — inte var den senaste glyfen började. */
   sistX: number;
   sistY: number;
   harText: boolean;
@@ -1516,7 +1628,9 @@ class Doc {
           : unicode !== null && unicode.rymder.length > 0
             ? unicode.rymder
             : null;
-      return { standardByte: 2, rymder, tillTecken, tabell: null };
+      const nedstigande = taLista(this.los(d.get('DescendantFonts')));
+      const bredder = this.lasCidBredder(taOrdbok(this.los(nedstigande?.[0])));
+      return { standardByte: 2, rymder, tillTecken, tabell: null, bredder, breddskala: 0.001 };
     }
 
     const enc = this.los(d.get('Encoding'));
@@ -1545,7 +1659,80 @@ class Doc {
         }
       }
     }
-    return { standardByte: 1, rymder: null, tillTecken, tabell };
+    // Ett Type3-typsnitt anger själv hur stort dess glyfrum är; alla andra räknar i tusendelar.
+    let breddskala = 0.001;
+    if (subtyp === 'Type3') {
+      const matris = taLista(this.los(d.get('FontMatrix')));
+      const a = matris === null ? null : taTal(this.los(matris[0]));
+      if (a !== null && a > 0) breddskala = a;
+    }
+    return { standardByte: 1, rymder: null, tillTecken, tabell, bredder: this.lasEnklaBredder(d), breddskala };
+  }
+
+  /** `/FirstChar` + `/Widths`, med `/FontDescriptor /MissingWidth` för koder utanför tabellen. */
+  lasEnklaBredder(d: Map<string, Varde>): Bredder | null {
+    const lista = taLista(this.los(d.get('Widths')));
+    const beskrivning = taOrdbok(this.los(d.get('FontDescriptor')));
+    const saknad = taTal(this.hamta(beskrivning, 'MissingWidth'));
+    if (lista === null || lista.length === 0) {
+      // Bara /MissingWidth är ingen breddtabell — då är uppskattningen bättre än ett enda tal.
+      return null;
+    }
+    const forsta = taTal(this.los(d.get('FirstChar')));
+    const start = forsta === null ? 0 : Math.trunc(forsta);
+    const enskilda = new Map<number, number>();
+    const antal = Math.min(lista.length, MAX_BREDDER);
+    for (let i = 0; i < antal; i++) {
+      const w = taTal(this.los(lista[i]));
+      if (w !== null) enskilda.set(start + i, w);
+    }
+    return { enskilda, intervall: [], standard: saknad };
+  }
+
+  /**
+   * `/W` i det nedstigande typsnittet, i båda formerna: `c [w1 w2 …]` och `cfirst clast w`.
+   * Koder utanför tabellen får `/DW`, vars standardvärde är 1000.
+   *
+   * Koden används som CID rakt av. Det stämmer för `Identity-H`, som är det alla verktyg skriver;
+   * en CMap som avbildar koder på andra CID:n skulle kräva dess `cidrange`, som inte läses här.
+   */
+  lasCidBredder(nd: Map<string, Varde> | null): Bredder | null {
+    if (nd === null) return null;
+    const dw = taTal(this.hamta(nd, 'DW'));
+    const w = taLista(this.hamta(nd, 'W'));
+    const enskilda = new Map<number, number>();
+    const intervall: Breddintervall[] = [];
+    let poster = 0;
+    for (let i = 0; w !== null && i < w.length && poster < MAX_BREDDER; ) {
+      const c = taTal(this.los(w[i]));
+      if (c === null) {
+        i++;
+        continue;
+      }
+      const nasta = this.los(w[i + 1]);
+      const breddlista = taLista(nasta);
+      if (breddlista !== null) {
+        const start = Math.trunc(c);
+        for (let k = 0; k < breddlista.length && poster < MAX_BREDDER; k++, poster++) {
+          const bredd = taTal(this.los(breddlista[k]));
+          if (bredd !== null) enskilda.set(start + k, bredd);
+        }
+        i += 2;
+        continue;
+      }
+      const slut = taTal(nasta);
+      const bredd = taTal(this.los(w[i + 2]));
+      if (slut !== null && bredd !== null && Math.trunc(slut) >= Math.trunc(c)) {
+        intervall.push({ lo: Math.trunc(c), hi: Math.trunc(slut), w: bredd });
+        poster++;
+        i += 3;
+        continue;
+      }
+      i++;
+    }
+    // Sorterade intervall krävs av den halverande uppslagningen.
+    intervall.sort((a, b) => a.lo - b.lo);
+    return { enskilda, intervall, standard: dw ?? 1000 };
   }
 
   /** Läser en CMap-ström: `ToUnicode`, eller en `/Encoding` som är inbäddad i filen. */
@@ -1670,10 +1857,34 @@ function matrisGanger(a: readonly number[], b: readonly number[]): number[] {
   ];
 }
 
+/** Vågrät skalning som faktor. `Tz` kan vara noll eller negativ i trasiga filer. */
+function skalfaktor(lage: Textlage): number {
+  return Math.max(0, lage.skalning) / 100;
+}
+
 /**
- * Efter en förflyttning: nedåt (eller uppåt) är ny rad, i sidled är ett mellanslag. Utan
- * glyfbredder går det inte att mäta ett verkligt avstånd, och ett mellanslag för mycket är
- * lättare att läsa än två ihopskrivna ord.
+ * En em i textrummets enheter. Per definition är det teckenstorleken, oavsett vilken skala
+ * typsnittets breddtabell råkar vara skriven i — `breddskala` har redan räknat om bredderna till
+ * em. Noll betyder att inget `Tf` har setts och att ingenting går att mäta.
+ */
+function emIText(lage: Textlage): number {
+  return lage.storlek * skalfaktor(lage);
+}
+
+/** Flyttar pennan `tx` enheter framåt längs textens baslinje. */
+function flyttaPenna(lage: Textlage, tx: number): void {
+  const tm = lage.tm;
+  tm[4] = (tm[4] ?? 0) + tx * (tm[0] ?? 0);
+  tm[5] = (tm[5] ?? 0) + tx * (tm[1] ?? 0);
+}
+
+/**
+ * Efter en förflyttning: ligger den nya positionen tydligt *framför* pennan är det ett
+ * ordmellanrum, annars är det bara glyfvis placering eller kerning och ska inte ge något tecken
+ * alls. Nedåt eller uppåt är ny rad, som förut.
+ *
+ * Skillnaden mot att bara mäta om positionen ändrats är hela poängen: många verktyg sätter ut
+ * varje bokstav för sig med eget `Td` eller `Tm`, och då ändras positionen vid varenda glyf.
  */
 function efterFlytt(lage: Textlage, ut: Ut): void {
   const x = lage.tm[4] ?? 0;
@@ -1683,22 +1894,37 @@ function efterFlytt(lage: Textlage, ut: Ut): void {
     lage.sistY = y;
     return;
   }
+  const em = emIText(lage);
+  // Utan känd teckenstorlek finns ingen skala att mäta i; då gäller den trubbiga gamla gränsen.
+  const framatgrans = em > 0 ? ORDMELLANRUM_EM * em : RADBYTE_GRANS;
+  // Ett hopp bakåt är aldrig ett mellanrum. Det är kerning, ett omtag över samma glyfer, eller
+  // en ligatur som räknats bredare än den ritas — inget av det ska synas i texten.
   if (Math.abs(y - lage.sistY) > RADBYTE_GRANS) ut.rad();
-  else if (Math.abs(x - lage.sistX) > RADBYTE_GRANS) ut.mellanslag();
+  else if (x - lage.sistX > framatgrans) ut.mellanslag();
   lage.sistX = x;
   lage.sistY = y;
 }
 
 function visaText(doc: Doc, bytes: Uint8Array, lage: Textlage, ut: Ut): void {
+  const typsnitt = lage.typsnitt;
+  const th = skalfaktor(lage);
   for (let i = 0; i < bytes.length; ) {
     if ((i & 1023) === 0) doc.klocka();
-    const { kod, steg } = nastaKod(lage.typsnitt, bytes, i);
+    const { kod, steg } = nastaKod(typsnitt, bytes, i);
     i += steg;
-    const tecken = avkoda(lage.typsnitt, kod);
-    if (tecken === null || tecken.length === 0) continue;
-    ut.text(tecken);
-    lage.harText = true;
+    const tecken = avkoda(typsnitt, kod);
+    // Pennan flyttas även för en glyf som inte gick att översätta. Annars skulle nästa
+    // textposition se ut som ett hopp framåt och ge ett mellanslag på måfå.
+    const ordavstand = steg === 1 && kod === 32 ? lage.ordavstand : 0;
+    const tx = (glyfbredd(typsnitt, kod, tecken) * lage.storlek + lage.teckenavstand + ordavstand) * th;
+    if (tecken !== null && tecken.length > 0) {
+      ut.text(tecken);
+      lage.harText = true;
+    }
+    flyttaPenna(lage, tx);
   }
+  lage.sistX = lage.tm[4] ?? 0;
+  lage.sistY = lage.tm[5] ?? 0;
 }
 
 /** Hoppar över en inbäddad bild (`BI … ID <binärt> EI`) utan att tolka en enda bildbyte. */
@@ -1732,6 +1958,10 @@ function korInnehall(
   const stack: Varde[] = [];
   const lage: Textlage = {
     typsnitt: STANDARDTYPSNITT,
+    storlek: 0,
+    teckenavstand: 0,
+    ordavstand: 0,
+    skalning: 100,
     tm: [1, 0, 0, 1, 0, 0],
     tlm: [1, 0, 0, 1, 0, 0],
     ledning: 0,
@@ -1777,12 +2007,22 @@ function korInnehall(
         break;
       case 'Tf': {
         const namn = taNamn(stack[stack.length - 2]);
+        lage.storlek = tal(1);
         if (namn !== null && typsnittsordbok !== null) {
           const post = typsnittsordbok.get(namn);
           if (post !== undefined) lage.typsnitt = doc.typsnitt(post);
         }
         break;
       }
+      case 'Tc':
+        lage.teckenavstand = tal(1);
+        break;
+      case 'Tw':
+        lage.ordavstand = tal(1);
+        break;
+      case 'Tz':
+        lage.skalning = tal(1);
+        break;
       case 'TL':
         lage.ledning = tal(1);
         break;
@@ -1814,6 +2054,9 @@ function korInnehall(
         break;
       }
       case '"': {
+        // `aw ac sträng "` sätter ordavstånd och teckenavstånd innan raden skrivs.
+        lage.ordavstand = tal(3);
+        lage.teckenavstand = tal(2);
         flytta(0, -lage.ledning);
         const s = taStrang(stack[stack.length - 1]);
         if (s !== null) visaText(doc, s, lage, ut);
@@ -1829,7 +2072,21 @@ function korInnehall(
               continue;
             }
             const just = taTal(post);
-            if (just !== null && just < TJ_MELLANSLAG && lage.harText) ut.mellanslag();
+            if (just === null) continue;
+            // Justeringen är tusendelar av en em och drar nästa glyf framåt när den är negativ.
+            // Den ska därför mätas mot em, inte mot ett fast tal: 0,1 em är kerning oavsett om
+            // texten är satt i 8 eller 24 punkter.
+            const em = emIText(lage);
+            if (em <= 0) {
+              // Ingen teckenstorlek satt: då går bara tusendelarna att jämföra, inte avståndet.
+              if (-just > ORDMELLANRUM_EM * 1000 && lage.harText) ut.mellanslag();
+              continue;
+            }
+            const framat = (-just / 1000) * lage.storlek * skalfaktor(lage);
+            flyttaPenna(lage, framat);
+            lage.sistX = lage.tm[4] ?? 0;
+            lage.sistY = lage.tm[5] ?? 0;
+            if (framat > ORDMELLANRUM_EM * em && lage.harText) ut.mellanslag();
           }
         }
         break;
