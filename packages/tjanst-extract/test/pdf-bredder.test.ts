@@ -8,7 +8,7 @@
  * `/W` och `/DW` för sammansatta, och en uppskattning när filen inte anger några alls.
  */
 import { describe, expect, it } from 'vitest';
-import { extractPdfText } from '../src/pdf.ts';
+import { extractPdfText, hexTillText } from '../src/pdf.ts';
 import type { PdfLimits } from '../src/pdf.ts';
 import { b, enkelPdf } from './pdf-bygg.ts';
 
@@ -246,5 +246,15 @@ describe('sammansatt typsnitt med /W och /DW', () => {
       '1 0 0 1 110 720 Tm <0002> Tj', // hopp på 5,6 — ett ordmellanrum
     ].join(' ');
     expect(text(type0Pdf(`BT /F1 12 Tf ${rader} ET`))).toBe('ABCDA B');
+  });
+});
+
+describe('teckenkoder som inte betyder något', () => {
+  it('en ToUnicode som pekar på NUL ger inget tecken alls — hellre tappat än påhittat', () => {
+    // Google Docs ligaturer kan peka på U+0000. En NUL i texten ställer till det längre fram
+    // (SQLite, JSON, sökning), och den betyder ingenting för läsaren.
+    expect(hexTillText(Uint8Array.from([0x00, 0x00]))).toBe('');
+    expect(hexTillText(Uint8Array.from([0x00, 0x6b, 0x00, 0x00, 0x00, 0x61]))).toBe('ka');
+    expect(hexTillText(Uint8Array.from([0x00, 0x6b]))).toBe('k');
   });
 });

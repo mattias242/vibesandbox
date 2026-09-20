@@ -1755,13 +1755,23 @@ function hexTillKod(bytes: Uint8Array): number {
   return v;
 }
 
-/** Hex-strängen i en bfchar/bfrange är UTF-16BE, ibland flera kodenheter (ligaturer). */
-function hexTillText(bytes: Uint8Array): string {
+/**
+ * Hex-strängen i en bfchar/bfrange är UTF-16BE, ibland flera kodenheter (ligaturer).
+ *
+ * NUL hoppas över: Google Docs ligaturer pekar ibland på U+0000, och ett NUL-tecken betyder
+ * ingenting för en läsare men ställer till det längre fram (lagring, sökning, klartext).
+ * Samma regel som i övrigt här: hellre ett tappat tecken än ett påhittat.
+ */
+export function hexTillText(bytes: Uint8Array): string {
   if (bytes.length === 0) return '';
-  if (bytes.length === 1) return String.fromCharCode(bytes[0] ?? 0);
+  if (bytes.length === 1) {
+    const kod = bytes[0] ?? 0;
+    return kod === 0 ? '' : String.fromCharCode(kod);
+  }
   let ut = '';
   for (let i = 0; i + 1 < bytes.length; i += 2) {
-    ut += String.fromCharCode(((bytes[i] ?? 0) << 8) | (bytes[i + 1] ?? 0));
+    const kod = ((bytes[i] ?? 0) << 8) | (bytes[i + 1] ?? 0);
+    if (kod !== 0) ut += String.fromCharCode(kod);
   }
   return ut;
 }
