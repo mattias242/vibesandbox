@@ -249,6 +249,25 @@ describe('extractPdfText: trasiga filer', () => {
     }
   });
 
+  it('kastar encrypted även när slutposten är en xref-ström', () => {
+    const pdf = byggPdfXrefStrom(
+      [
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+        { dict: '', data: b(textInnehall('hemligt')) },
+      ],
+      { slutpost: '/Encrypt 9 0 R' },
+    );
+    try {
+      extractPdfText(pdf, GRANSER);
+      expect.unreachable('skulle ha kastat');
+    } catch (fel) {
+      expect((fel as PdfError).reason).toBe('encrypted');
+    }
+  });
+
   it('läser filen ändå när xref-tabellen pekar fel', () => {
     // Varje offset ligger sju byte fel: tabellen är oanvändbar och skanningen får ta över.
     expect(text(enkelPdfMedForskjutenXref())).toBe('Trots trasig xref');
