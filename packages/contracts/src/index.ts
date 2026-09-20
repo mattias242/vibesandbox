@@ -754,7 +754,7 @@ export type AppServiceFactory = (dependencies: AppServiceDependencies) => AppSer
  * Alla tjänster plattformen känner till, i den ordning de skapas (en tjänst kan bara använda
  * det som skapats före den). Namnet är också sökvägen: `/_api/<namn>`.
  */
-export const APP_SERVICE_NAMES = ['files', 'notify', 'roles', 'llm', 'ocr', 'history', 'schedule', 'transcribe', 'search'] as const;
+export const APP_SERVICE_NAMES = ['files', 'notify', 'roles', 'llm', 'extract', 'ocr', 'history', 'schedule', 'transcribe', 'search'] as const;
 export type AppServiceName = (typeof APP_SERVICE_NAMES)[number];
 
 // ── Byggverktygets värd i gatewayn ──────────────────────────────────────────────

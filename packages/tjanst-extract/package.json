@@ -1,0 +1,14 @@
+{
+  "name": "@vibesandbox/tjanst-extract",
+  "version": "0.0.0",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "description": "Text ur uppladdade filer: Word, Excel, PowerPoint och PDF med textlager. Läses på servern, inget lämnar plattformen.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@vibesandbox/contracts": "*"
+  }
+}

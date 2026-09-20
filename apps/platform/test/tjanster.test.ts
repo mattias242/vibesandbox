@@ -15,6 +15,7 @@ import { signTestIdentity } from '@vibesandbox/gateway';
 import { ConfigError, loadConfig } from '../src/config.ts';
 import type { PlatformConfig } from '../src/config.ts';
 import { createPlatform } from '../src/server.ts';
+import { APP_SERVICE_FACTORIES } from '../src/tjanster.ts';
 import type { Platform } from '../src/server.ts';
 
 const HEMLIGHET = 'en-hemlighet-som-bara-finns-i-testerna-0123456789';
@@ -298,7 +299,9 @@ describe('Tomma inställningar (så skickar compose dem)', () => {
         listenHost: '127.0.0.1',
         publicScheme: 'http',
         identity: { provider: 'test', testSecret: HEMLIGHET },
-        appServices: { enabled: [...APP_SERVICE_NAMES], env: tomma },
+        // Bara de tjänster som ÄR byggda: en tjänst utan fabrik vägrar plattformen starta med,
+        // och det prövas i ett eget test.
+        appServices: { enabled: APP_SERVICE_NAMES.filter((namn) => namn in APP_SERVICE_FACTORIES), env: tomma },
       },
       {
         appServiceOverrides: {

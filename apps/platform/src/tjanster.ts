@@ -22,6 +22,7 @@ import type {
   AppServiceName,
   TenantStore,
 } from '@vibesandbox/contracts';
+import { factory as extract } from '@vibesandbox/tjanst-extract';
 import { factory as files } from '@vibesandbox/tjanst-files';
 import { factory as history } from '@vibesandbox/tjanst-history';
 import { factory as llm } from '@vibesandbox/tjanst-llm';
@@ -35,7 +36,7 @@ import type { PlatformLogger } from './logg.ts';
 
 /** De byggda tjänsterna. Ett paket som ännu inte är klart exporterar `undefined`. */
 export const APP_SERVICE_FACTORIES: Readonly<Partial<Record<AppServiceName, AppServiceFactory>>> = Object.fromEntries(
-  Object.entries({ files, notify, roles, llm, ocr, history, schedule, transcribe, search }).filter(([, f]) => f !== undefined),
+  Object.entries({ files, notify, roles, llm, extract, ocr, history, schedule, transcribe, search }).filter(([, f]) => f !== undefined),
 );
 
 export interface AppServiceSetup {

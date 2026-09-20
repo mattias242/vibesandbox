@@ -22,6 +22,7 @@
     "@vibesandbox/gateway": "*",
     "@vibesandbox/identity": "*",
     "@vibesandbox/llm": "*",
+    "@vibesandbox/tjanst-extract": "*",
     "@vibesandbox/tjanst-files": "*",
     "@vibesandbox/tjanst-history": "*",
     "@vibesandbox/tjanst-llm": "*",

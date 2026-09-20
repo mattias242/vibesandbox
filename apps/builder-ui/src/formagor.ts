@@ -204,6 +204,24 @@ export const SERVICE_CAPABILITIES: Readonly<Record<AppServiceName, ServiceCapabi
       'Det kan ta upp till en minut att få svar. Det finns en gräns för hur mycket appen får fråga per timme och per dygn.',
     ],
   },
+  extract: {
+    key: 'extract',
+    title: 'Läsa texten i en bifogad fil',
+    about:
+      'Appen kan hämta texten ur en uppladdad fil — Word, Excel, PowerPoint och PDF. Texten kan visas, sparas och sökas i, utan att någon behöver skriva av den för hand.',
+    examples: [
+      'Låt mig bifoga en fil och visa texten ur den.',
+      'Spara texten ur varje bifogad fil så att den går att söka i.',
+      'Hämta texten ur PDF:en och gör en kort sammanfattning av den.',
+    ],
+    requires: ['files'],
+    goodToKnow: [
+      'Texten hämtas inne i plattformen. Varken filen eller texten skickas vidare någon annanstans.',
+      'En inskannad fil, alltså en bild av ett papper, innehåller ingen text att hämta. Då behövs "Läsa text i bilder och kvitton".',
+      'Texten kommer utan färger, tabeller och bilder. Ordningen kan bli en annan i filer med flera spalter.',
+    ],
+  },
+
   ocr: {
     key: 'ocr',
     title: 'Läsa text i bilder och kvitton',
