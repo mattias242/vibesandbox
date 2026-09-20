@@ -639,7 +639,8 @@ const STANDARD_HOG = [
   0, 0, 0, 0, 0x00e6, 0, 0, 0, 0x0131, 0, 0, 0x0142, 0x00f8, 0x0153, 0x00df, 0, 0, 0, 0,
 ];
 
-function byggTabell(hog: readonly number[], standardLag: boolean): (string | null)[] {
+/** Bygger en kodtabell: ASCII i botten och `hog` inlagd från `start` och uppåt. */
+function byggTabell(hog: readonly number[], start: number, standardLag: boolean): (string | null)[] {
   const tab: (string | null)[] = new Array<string | null>(256).fill(null);
   for (let i = 32; i <= 126; i++) tab[i] = String.fromCharCode(i);
   if (standardLag) {
@@ -649,13 +650,13 @@ function byggTabell(hog: readonly number[], standardLag: boolean): (string | nul
   }
   for (let i = 0; i < hog.length; i++) {
     const v = hog[i] ?? 0;
-    if (v > 0) tab[0x80 + i] = String.fromCodePoint(v);
+    if (v > 0) tab[start + i] = String.fromCodePoint(v);
   }
   return tab;
 }
 
 const WINANSI = (() => {
-  const tab = byggTabell(CP1252_HOG, false);
+  const tab = byggTabell(CP1252_HOG, 0x80, false);
   for (let i = 0xa0; i <= 0xff; i++) tab[i] = String.fromCharCode(i);
   // WinAnsi ritar hårt mellanslag och mjukt bindestreck som vanligt mellanslag respektive
   // bindestreck; det är också så texten ska läsas.
@@ -664,8 +665,8 @@ const WINANSI = (() => {
   return tab;
 })();
 
-const MACROMAN = byggTabell(MACROMAN_HOG, false);
-const STANDARD = byggTabell(STANDARD_HOG, true);
+const MACROMAN = byggTabell(MACROMAN_HOG, 0x80, false);
+const STANDARD = byggTabell(STANDARD_HOG, 0xa0, true);
 
 function basTabell(namn: string | null): (string | null)[] {
   if (namn === 'WinAnsiEncoding') return WINANSI;
