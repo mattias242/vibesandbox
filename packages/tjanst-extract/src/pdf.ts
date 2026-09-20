@@ -1880,8 +1880,14 @@ export function extractPdfText(bytes: Uint8Array, limits: PdfLimits): PdfText | 
   }
 
   const text = ut.varde();
-  if (text.trim().length === 0) return null; // inskannad PDF: bara bilder
-  return { text, pages: Math.max(1, sidorMedText), truncated: ut.avkortad };
+  // Tom text betyder inskannad PDF — men bara om det inte var teckengränsen som stoppade oss.
+  // Den skillnaden är viktig för anroparen: det ena är en bild, det andra är en för lång text.
+  if (text.trim().length === 0 && !ut.avkortad) return null;
+  return {
+    text,
+    pages: text.length > 0 ? Math.max(1, sidorMedText) : sidorMedText,
+    truncated: ut.avkortad,
+  };
 }
 
 function samlaInnehall(doc: Doc, sida: Map<string, Varde>): Uint8Array[] {
