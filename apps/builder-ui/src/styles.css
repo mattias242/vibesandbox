@@ -2,6 +2,14 @@
  * Ett lugnt, sakligt verktyg för offentlig sektor: mörkblå rubrikrad, mycket luft, systemtypsnitt
  * (inga typsnitt utifrån). Färgerna håller WCAG AA mot sin bakgrund; kontrasten står vid varje
  * par som inte är självklart.
+ *
+ * Bredderna: tre ramar (--page, --shell, --wide) som rubrikraden följer, så att logotypen står i
+ * samma kant som innehållet under. På stor skärm läggs saker bredvid varandra i stället för att
+ * texten sträcks ut — brödtext blir inte läsbarare av att raden blir längre.
+ *
+ * Måtten: textstorlekar i rem, så att de följer rotens procentsats och därmed användarens egen
+ * webbläsarinställning. Klickytor i px, eftersom 44 px är ett fysiskt krav (WCAG 2.5.5) som inte
+ * ska krympa när texten gör det. `test/styles.test.ts` låser båda reglerna.
  */
 :root {
   --navy: #0b2e59; /* rubrikrad; vit text 13,6:1 */
@@ -18,11 +26,25 @@
   --error-bg: #fbeceb;
   --focus: #f2b600;
   --radius: 8px;
+  --tap: 44px; /* minsta klickyta, WCAG 2.5.5. Fysiskt mått: skalar inte med textstorleken. */
+  --page: 49rem; /* smal läsvy: startsidans spalt, fel- och laddmeddelanden */
+  --shell: 96rem; /* rubrikraden och startsidan i två spalter */
+  --wide: 108rem; /* arbetsytan, där förhandsvisningen vill ha all plats den kan få */
+  --pad: 1.25rem; /* sidmarginal — samma i alla tre ramarna, annars driver de isär */
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  font-size: 100%;
+  /* 93,75 % av webbläsarens grundstorlek = 15 px. Procent, inte px: den som ställt in en större
+     text i sin webbläsare ska fortfarande få den. */
+  font-size: 93.75%;
   line-height: 1.5;
   color: var(--ink);
   background: var(--white);
+}
+
+/* Mer luft i kanterna så snart skärmen räcker till. */
+@media (min-width: 60rem) {
+  :root {
+    --pad: 2rem;
+  }
 }
 
 *,
@@ -115,9 +137,9 @@ main:focus-visible {
 }
 
 .topbar-inner {
-  max-width: 72rem;
+  max-width: var(--shell);
   margin: 0 auto;
-  padding: 0.9rem 1.25rem;
+  padding: 0.9rem var(--pad);
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem 1.5rem;
@@ -143,12 +165,15 @@ main:focus-visible {
 
 /* ── Sidor ── */
 .page {
-  max-width: 46rem;
+  max-width: var(--page);
   margin: 0 auto;
-  padding: 2.5rem 1.25rem 4rem;
+  padding: 2.5rem var(--pad) 4rem;
 }
 
+/* Startsidan är den enda vyn som har nog med innehåll för två spalter — den får den breda ramen.
+   Fel-, ladd- och behörighetsvyerna använder .page som den är och förblir en smal kolumn. */
 .page-start {
+  max-width: var(--shell);
   padding-top: 3.5rem;
 }
 
@@ -219,7 +244,7 @@ main:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.75rem;
+  min-height: var(--tap);
   padding: 0.5rem 1.1rem;
   border-radius: var(--radius);
   border: 2px solid var(--blue);
@@ -253,7 +278,7 @@ main:focus-visible {
 }
 
 .button-small {
-  min-height: 2.25rem;
+  min-height: 36px;
   padding: 0.25rem 0.8rem;
   font-size: 0.95rem;
 }
@@ -273,7 +298,7 @@ main:focus-visible {
   color: var(--ink);
   font-weight: 400;
   border-radius: 999px;
-  min-height: 2.5rem;
+  min-height: 40px;
 }
 
 /* ── Meddelanden ── */
@@ -374,7 +399,7 @@ main:focus-visible {
 }
 
 .badge {
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   padding: 0.1rem 0.55rem;
   border-radius: 999px;
   background: var(--surface);
@@ -412,14 +437,59 @@ main:focus-visible {
   margin-top: 0.5rem;
 }
 
-/* ── Arbetsytan ── */
-.workspace {
-  max-width: 90rem;
-  margin: 0 auto;
-  padding: 1.5rem 1.25rem 4rem;
+/* ── Startsidan i två spalter ──
+ * Först när skärmen räcker till för att båda spalterna ska bli rymliga: vid 60rem hade
+ * högerspalten blivit ~390 px, vilket är trångt för raderna i Mina appar.
+ */
+.start-columns {
   display: grid;
   gap: 2rem;
   grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 72rem) {
+  .start-columns {
+    grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
+    gap: 2.5rem 3rem;
+    align-items: start;
+  }
+
+  /* Placeringen SPEGLAR ordningen i DOM: skrivrutan uppe till vänster, Mina appar i
+     högerspalten, Trygghet under skrivrutan. Inga order- eller dense-trick — de hade fått
+     tangentbordet att hoppa någon annanstans än ögat. `test/startPage.test.ts` låser ordningen. */
+  .start-columns .wish {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .start-columns .my-apps {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    margin-top: 0;
+  }
+
+  .start-columns .safety {
+    grid-column: 1;
+    grid-row: 2;
+    margin-top: 0;
+  }
+}
+
+/* ── Arbetsytan ── */
+.workspace {
+  max-width: var(--wide);
+  margin: 0 auto;
+  padding: 1.5rem var(--pad) 4rem;
+  display: grid;
+  gap: 2rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Rubrikraden följer vyn under sig, så att logotypen står i samma kant som innehållet.
+   :has() i stället för en klass på ett omslag: rubrikraden är syskon till <main>, och en
+   route-beroende klass i App.tsx hade varit mer kod för exakt samma sak. */
+body:has(.workspace) .topbar-inner {
+  max-width: var(--wide);
 }
 
 @media (min-width: 60rem) {
@@ -431,6 +501,14 @@ main:focus-visible {
   .preview-column {
     position: sticky;
     top: 1rem;
+  }
+}
+
+/* På mycket bred skärm behöver konversationen inte mer plats — förhandsvisningen gör det. */
+@media (min-width: 100rem) {
+  .workspace {
+    grid-template-columns: minmax(22rem, 1fr) minmax(0, 2fr);
+    gap: 3rem;
   }
 }
 
@@ -472,7 +550,7 @@ main:focus-visible {
 }
 
 .message-who {
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   font-weight: 600;
   color: var(--muted);
 }
@@ -513,7 +591,7 @@ main:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   font-weight: 700;
   margin-top: 0.05rem;
 }
@@ -628,6 +706,15 @@ main:focus-visible {
   background: var(--white);
 }
 
+/* Ramen växer med spalten. Taket hålls nere av att kolumnen är sticky: blir ramen plus
+   rubriken plus publiceringsraden högre än fönstret går det inte att rulla ned till
+   Publicera medan kolumnen sitter fast. */
+@media (min-width: 100rem) {
+  .preview-frame {
+    height: min(72vh, 52rem);
+  }
+}
+
 .preview-empty {
   min-height: 16rem;
   display: flex;
@@ -710,9 +797,11 @@ main:focus-visible {
 
 .input {
   font: inherit;
+  /* 16,5 px: under 16 px zoomar iOS Safari in hela sidan vid fokus. Samma som .wish-text. */
+  font-size: 1.1rem;
   flex: 1 1 14rem;
   min-width: 0;
-  min-height: 2.75rem;
+  min-height: var(--tap);
   padding: 0.5rem 0.75rem;
   border: 2px solid var(--muted);
   border-radius: var(--radius);
@@ -756,7 +845,7 @@ main:focus-visible {
 
 .topbar-end .link-button {
   color: var(--white);
-  min-height: 2.75rem;
+  min-height: var(--tap);
 }
 
 .topbar-end .link-button:hover {
@@ -769,7 +858,7 @@ main:focus-visible {
 }
 
 .guide-cue .link-button {
-  min-height: 2.75rem;
+  min-height: var(--tap);
   text-align: left;
 }
 
@@ -898,7 +987,7 @@ main:focus-visible {
 
 @media (min-width: 48rem) {
   .guide {
-    width: min(46rem, 100%);
+    width: min(50rem, 100%);
   }
 
   .guide-inner {
@@ -910,6 +999,6 @@ main:focus-visible {
 .version {
   padding: 1rem;
   color: var(--muted, #5c5c57);
-  font-size: 0.8rem;
+  font-size: 0.875rem;
   text-align: center;
 }
