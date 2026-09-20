@@ -8,6 +8,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { APP_SERVICE_NAMES } from '@vibesandbox/contracts';
 import type { AppId, AppServiceDependencies, AppServiceFactory, AppServiceName } from '@vibesandbox/contracts';
 import { createControl } from '@vibesandbox/control';
 import { signTestIdentity } from '@vibesandbox/gateway';
@@ -220,6 +221,94 @@ describe('Plattformstjänsterna i en riktig server', () => {
     await platform.close();
     platform = undefined;
     expect(stangd).toBe(true);
+  });
+});
+
+const COMPOSE_SVC_NAMN: readonly string[] = [
+  'SVC_FILES_MAX_FILE_MB',
+  'SVC_FILES_QUOTA_MB',
+  'SVC_FILES_CLAMD',
+  'SVC_NOTIFY_PER_USER_HOUR',
+  'SVC_NOTIFY_PER_USER_DAY',
+  'SVC_NOTIFY_PER_APP_HOUR',
+  'SVC_NOTIFY_PER_APP_DAY',
+  'SVC_LLM_MODEL',
+  'SVC_LLM_REASONING_EFFORT',
+  'SVC_LLM_TOKENS_PER_APP_DAY',
+  'SVC_LLM_TOKENS_PER_USER_HOUR',
+  'SVC_LLM_TIMEOUT_MS',
+  'SVC_OCR_MODEL',
+  'SVC_OCR_PAGES_PER_APP_DAY',
+  'SVC_OCR_PAGES_PER_USER_HOUR',
+  'SVC_OCR_MAX_FILE_BYTES',
+  'SVC_OCR_MAX_PIXELS',
+  'SVC_OCR_MAX_PDF_PAGES',
+  'SVC_OCR_TIMEOUT_MS',
+  'SVC_HISTORY_RETENTION_DAYS',
+  'SVC_SCHEDULE_MAX_PER_APP',
+  'SVC_SCHEDULE_MAX_PER_USER',
+  'SVC_SCHEDULE_MAX_DAYS_AHEAD',
+  'SVC_SCHEDULE_TICK_MS',
+  'SVC_TRANSCRIBE_MODEL',
+  'SVC_TRANSCRIBE_CONCURRENCY',
+  'SVC_TRANSCRIBE_RETENTION_DAYS',
+  'SVC_TRANSCRIBE_MINUTES_PER_APP_DAY',
+  'SVC_TRANSCRIBE_MAX_FILE_BYTES',
+  'SVC_TRANSCRIBE_TIMEOUT_SECONDS',
+  'SVC_SEARCH_MODEL',
+  'SVC_SEARCH_TOKENS_PER_APP_DAY',
+  'SVC_SEARCH_MAX_DOCUMENTS',
+  'SVC_SEARCH_QUERIES_PER_USER_MINUTE',
+  'SVC_SEARCH_MAX_VECTORS_PER_APP',
+];
+
+/** Varje SVC_-variabel deploy/compose.yml skickar in. Hålls i takt med compose-filen. */
+const TOMMA_INSTALLNINGAR: readonly string[] = COMPOSE_SVC_NAMN;
+
+describe('Tomma inställningar (så skickar compose dem)', () => {
+  let dataDir: string;
+  let platform: Platform | undefined;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'vibesandbox-tomma-'));
+  });
+
+  afterEach(async () => {
+    await platform?.close();
+    platform = undefined;
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('alla tjänster startar med varje SVC_-värde tomt — tomt betyder "inte satt"', async () => {
+    // deploy/compose.yml skickar in varje SVC_-variabel, även de som inte är ifyllda: docker
+    // compose har inget sätt att utelämna en variabel. En tjänst som tolkar tomt som ogiltigt
+    // fäller hela plattformen vid start (det hände i drift 2026-09-20).
+    const tomma: Record<string, string> = {};
+    for (const namn of TOMMA_INSTALLNINGAR) tomma[namn] = '';
+    tomma['SVC_LLM_MODEL'] = 'en/modell';
+    tomma['SVC_SEARCH_MODEL'] = 'en/embeddingmodell';
+    tomma['SVC_OCR_MODEL'] = 'en/bildmodell';
+
+    platform = createPlatform(
+      {
+        baseDomain: 'appar.test',
+        appDomain: 'appar.test',
+        dataDir,
+        port: 0,
+        listenHost: '127.0.0.1',
+        publicScheme: 'http',
+        identity: { provider: 'test', testSecret: HEMLIGHET },
+        appServices: { enabled: [...APP_SERVICE_NAMES], env: tomma },
+      },
+      {
+        appServiceOverrides: {
+          mailer: { send: async () => {} },
+          berget: { baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'test-nyckel-123456' },
+        },
+      },
+    );
+    const { port } = await platform.listen();
+    expect(port).toBeGreaterThan(0);
   });
 });
 

@@ -61,9 +61,12 @@ export interface HistorySettings {
 /**
  * Kvarhållningstiden ur konfigurationen: ett heltal eller texten ur miljövariabeln
  * (`SVC_HISTORY_RETENTION_DAYS`). Saknas den gäller standardvärdet. Allt annat stoppar uppstarten.
+ *
+ * En TOM sträng räknas som att värdet saknas: docker compose skickar in varje variabel, även de
+ * som inte är ifyllda, och en tom variabel ska inte fälla plattformen vid start.
  */
 export function parseRetentionDays(value: unknown): number {
-  if (value === undefined) return DEFAULT_RETENTION_DAYS;
+  if (value === undefined || (typeof value === 'string' && value.trim() === '')) return DEFAULT_RETENTION_DAYS;
   let days: number | undefined;
   if (typeof value === 'number') days = value;
   else if (typeof value === 'string' && /^[1-9][0-9]{0,5}$/.test(value)) days = Number(value);

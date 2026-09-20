@@ -73,7 +73,7 @@ describe('ändringshistorik i data-API:t', () => {
     });
 
     it('ogiltig kvarhållningstid stoppar uppstarten', () => {
-      for (const retentionDays of [0, -1, 1.5, Number.NaN, 'abc', '', '12x', 100_000]) {
+      for (const retentionDays of [0, -1, 1.5, Number.NaN, 'abc', '12x', 100_000]) {
         expect(() => createTenantStore({ dataDir, history: { retentionDays } })).toThrow(TypeError);
       }
     });
@@ -82,6 +82,13 @@ describe('ändringshistorik i data-API:t', () => {
       await createTenantStore({ dataDir, history: { retentionDays: '30' } }).close();
       await createTenantStore({ dataDir, history: { retentionDays: undefined } }).close();
       await createTenantStore({ dataDir, history: {} }).close();
+    });
+
+    it('en TOM miljövariabel betyder att värdet saknas — inte att det är ogiltigt', async () => {
+      // docker compose skickar in varje variabel, även de som inte är ifyllda. Tolkas "" som
+      // ogiltigt fäller det hela plattformen vid start (hände i drift 2026-09-20).
+      await createTenantStore({ dataDir, history: { retentionDays: '' } }).close();
+      await createTenantStore({ dataDir, history: { retentionDays: '  ' } }).close();
     });
   });
 

@@ -54,6 +54,12 @@ export interface AppServiceSetup {
 /** Skapar de påslagna tjänsterna. Kastar vid start om en påslagen tjänst saknas eller är felbyggd. */
 export function createAppServices(setup: AppServiceSetup): AppService[] {
   const enabled = new Set(setup.enabled);
+  // Tomt värde = inte satt. docker compose skickar in VARJE variabel, även de som inte är
+  // ifyllda (`${SVC_X:-}`), och en tjänst som läser "" som ett ogiltigt värde fäller hela
+  // plattformen vid start. Det hände i drift 2026-09-20: SVC_HISTORY_RETENTION_DAYS var tom.
+  const env = Object.fromEntries(
+    Object.entries(setup.env).filter(([, value]) => value !== undefined && value.trim() !== ''),
+  );
   const services: AppService[] = [];
   let fileReader: AppFileReader | undefined;
   let notifier: AppNotifier | undefined;
@@ -68,7 +74,7 @@ export function createAppServices(setup: AppServiceSetup): AppService[] {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     const dependencies: AppServiceDependencies = {
       dataDir,
-      env: setup.env,
+      env,
       log: (entry) => setup.log({ source: 'service', service: name, ...entry }),
       now: () => new Date(),
       members: setup.members,
