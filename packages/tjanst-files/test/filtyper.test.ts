@@ -31,6 +31,8 @@ import {
   XLSX,
   XLSX_TYP,
   zip,
+  PPTX,
+  PPTX_TYP,
 } from './exempelfiler.ts';
 
 function typ(bytes: Uint8Array, pastatt?: string): string {
@@ -61,6 +63,7 @@ describe('tillåtna typer känns igen på sina magiska byte', () => {
     ['webm-ljud', WEBM, 'audio/webm;codecs=opus', 'audio/webm'],
     ['docx', DOCX, DOCX_TYP, DOCX_TYP],
     ['xlsx', XLSX, XLSX_TYP, XLSX_TYP],
+    ['pptx', PPTX, PPTX_TYP, PPTX_TYP],
     ['text', TEXT, 'text/plain', 'text/plain; charset=utf-8'],
     ['csv', CSV, 'text/csv', 'text/csv; charset=utf-8'],
     ['csv från Windows', CSV, 'application/vnd.ms-excel', 'text/csv; charset=utf-8'],

@@ -106,4 +106,7 @@ export const DOCX_MED_MAKRON = zip(['[Content_Types].xml', 'word/document.xml', 
 export const VANLIG_ZIP = zip(['index.html']);
 
 export const DOCX_TYP = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+/** En presentation: samma sorts zip, med presentationens egen del. */
+export const PPTX = zip(['[Content_Types].xml', '_rels/.rels', 'ppt/presentation.xml']);
+export const PPTX_TYP = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 export const XLSX_TYP = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';

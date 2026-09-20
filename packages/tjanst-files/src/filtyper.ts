@@ -45,6 +45,7 @@ const OGG = kind('audio/ogg', ['ogg', 'oga', 'opus'], ['application/ogg', 'audio
 const WEBM_AUDIO = kind('audio/webm', ['webm', 'weba'], []);
 const DOCX = kind('application/vnd.openxmlformats-officedocument.wordprocessingml.document', ['docx'], []);
 const XLSX = kind('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ['xlsx'], []);
+const PPTX = kind('application/vnd.openxmlformats-officedocument.presentationml.presentation', ['pptx'], []);
 
 const TEXT_ACCEPTS = ['text/plain'];
 // Windows rapporterar ofta .csv som `application/vnd.ms-excel`.
@@ -116,10 +117,14 @@ function officeKind(bytes: Uint8Array): Kind | null {
   // Makron (docm/xlsm förklädda som docx/xlsx) tas inte emot.
   if (names.some((name) => /(^|\/)vbaProject\.bin$/i.test(name) || /(^|\/)vbaData\.xml$/i.test(name))) return null;
   if (!has.has('[Content_Types].xml')) return null;
-  const word = has.has('word/document.xml');
-  const excel = has.has('xl/workbook.xml');
-  if (word === excel) return null;
-  return word ? DOCX : XLSX;
+  // Exakt EN av delarna ska finnas: ett arkiv som utger sig för två saker är ingendera.
+  const traffar = [
+    [has.has('word/document.xml'), DOCX],
+    [has.has('xl/workbook.xml'), XLSX],
+    [has.has('ppt/presentation.xml'), PPTX],
+  ] as const;
+  const funna = traffar.filter(([finns]) => finns);
+  return funna.length === 1 ? (funna[0]?.[1] ?? null) : null;
 }
 
 // ── Ljud och video i behållare ───────────────────────────────────────────────────
@@ -238,4 +243,4 @@ export function checkFileType(bytes: Uint8Array, declaredContentType: string | u
 
 /** För felmeddelanden: vad som går att ladda upp, i klarspråk. */
 export const ALLOWED_TYPES_TEXT =
-  'bilder (PNG, JPEG, WebP, GIF), PDF, text och CSV, Word- och Excel-dokument (docx, xlsx) och ljud (MP3, M4A, WAV, Ogg, WebM)';
+  'bilder (PNG, JPEG, WebP, GIF), PDF, text och CSV, Word, Excel och PowerPoint (docx, xlsx, pptx) och ljud (MP3, M4A, WAV, Ogg, WebM)';

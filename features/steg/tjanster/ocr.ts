@@ -193,10 +193,12 @@ Given(/^att appen "([^"]+)" redan har läst så många sidor som den får i dag$
 
 When(
   /^(Anna) ber appen "([^"]+)" läsa texten i (kvittot|textfilen)( två gånger)?$/,
-  async function (this: Varld, person: string, app: string, vilken: string, tvaGanger: string | undefined) {
+  // En grupp som inte matchat ger `null` i cucumber 13, inte `undefined` — därför ett
+  // sanningstest och inte `!== undefined`, annars görs två anrop även i enkelfallet.
+  async function (this: Varld, person: string, app: string, vilken: string, tvaGanger: string | null | undefined) {
     const id = filId(this, vilken);
     this.svar = [await lasText(this, person, app, id)];
-    if (tvaGanger !== undefined) this.svar.push(await lasText(this, person, app, id));
+    if (tvaGanger) this.svar.push(await lasText(this, person, app, id));
   },
 );
 
