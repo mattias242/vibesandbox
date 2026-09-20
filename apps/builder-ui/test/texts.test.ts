@@ -21,6 +21,16 @@ describe('Trygghet och kontroll', () => {
     expect(all).toMatch(/de du delar den med, efter att de loggat in/);
   });
 
+  // Appen är bara din, men återkopplingen på byggverktyget är det inte: säger du att
+  // byggverktyget inte hjälpte mejlas hela konversationen vidare. Står det inte här blir
+  // punkten ovan om att "bara du ser din app" missvisande.
+  it('säger vad som händer när man lämnar återkoppling på byggverktyget', () => {
+    expect(all).toMatch(/[Bb]yggverktyget inte hjälpte/);
+    expect(all).toMatch(/hela er konversation om appen/);
+    expect(all).toMatch(/till den som driver plattformen/);
+    expect(all).toMatch(/[Tt]ummen upp räknas bara/);
+  });
+
   it('påstår inte mer än så', () => {
     expect(all).not.toMatch(/människa|manuell|granskas av|granskar/i);
     expect(all).not.toMatch(/klassa|klassning|klassific/i);

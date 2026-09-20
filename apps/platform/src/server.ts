@@ -39,7 +39,7 @@ import type { AddedUser } from '@vibesandbox/identity';
 import { createMaskingProvider, createOpenAiCompatibleProvider } from '@vibesandbox/llm';
 import { ConfigError, platformAddresses } from './config.ts';
 import type { BuilderConfig, PlatformConfig } from './config.ts';
-import { createPlatformIdentity, platformMailer } from './identitet.ts';
+import { createPlatformIdentity, platformFeedback, platformMailer } from './identitet.ts';
 import { APP_SERVICE_FACTORIES, createAppServices } from './tjanster.ts';
 import type { PlatformIdentity } from './identitet.ts';
 import type { PlatformLogEntry, PlatformLogger } from './logg.ts';
@@ -196,6 +196,7 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
         agent,
         starterFiles: knowledge.starterFiles,
         invitations: identity.invitations,
+        feedback: platformFeedback(config),
         ui: { directory: builderConfig.uiDirectory },
         urls: { preview: addresses.preview, published: addresses.published },
         openUrl: identity.openUrl,

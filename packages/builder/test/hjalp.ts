@@ -23,7 +23,7 @@ import type {
   SourceFiles,
 } from '@vibesandbox/contracts';
 import { createBuilder } from '../src/index.ts';
-import type { Builder, BuilderControl, BuilderLogEntry, BuilderOptions } from '../src/index.ts';
+import type { Builder, BuilderControl, BuilderLogEntry, BuilderOptions, FeedbackMail, FeedbackMailer } from '../src/index.ts';
 
 // ── Personer ─────────────────────────────────────────────────────────────────────
 
@@ -302,6 +302,23 @@ export function fejkInbjudningar(): FejkInbjudningar {
   return tjanst;
 }
 
+// ── Fejkad återkoppling ──────────────────────────────────────────────────────────
+
+export interface FejkAterkoppling extends FeedbackMailer {
+  /** Mejlen som gick till plattformens ägare, i ordning. */
+  readonly skickade: FeedbackMail[];
+}
+
+export function fejkAterkoppling(): FejkAterkoppling {
+  const skickade: FeedbackMail[] = [];
+  return {
+    skickade,
+    async send(mail) {
+      skickade.push(mail);
+    },
+  };
+}
+
 // ── Miljö ────────────────────────────────────────────────────────────────────────
 
 export const URLS = {
@@ -319,6 +336,7 @@ export interface Miljo {
   readonly control: FejkControl;
   readonly agent: FejkAgent;
   readonly inbjudningar: FejkInbjudningar;
+  readonly aterkoppling: FejkAterkoppling;
   readonly logg: BuilderLogEntry[];
   /** Klockan som byggverktyget ser; flytta den med `tid.ms += …`. */
   readonly tid: { ms: number };
@@ -335,6 +353,7 @@ export async function skapaMiljo(extra: Partial<BuilderOptions> = {}): Promise<M
   const control = fejkControl();
   const agent = fejkAgent();
   const inbjudningar = fejkInbjudningar();
+  const aterkoppling = fejkAterkoppling();
   const logg: BuilderLogEntry[] = [];
   const tid = { ms: Date.parse('2026-09-19T08:00:00.000Z') };
 
@@ -345,6 +364,7 @@ export async function skapaMiljo(extra: Partial<BuilderOptions> = {}): Promise<M
       agent,
       starterFiles: STARTFILER,
       invitations: inbjudningar,
+      feedback: aterkoppling,
       ui: { directory: uiDir },
       urls: URLS,
       openUrl,
@@ -360,6 +380,7 @@ export async function skapaMiljo(extra: Partial<BuilderOptions> = {}): Promise<M
     control,
     agent,
     inbjudningar,
+    aterkoppling,
     logg,
     tid,
     builder: starta(),

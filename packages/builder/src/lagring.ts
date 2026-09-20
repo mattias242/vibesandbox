@@ -1,5 +1,5 @@
 /**
- * Byggverktygets lagring: appar, samtal, revisioner, jobb, händelser och delningar.
+ * Byggverktygets lagring: appar, samtal, revisioner, jobb, händelser, delningar och återkoppling.
  *
  * Varje funktion här är synkron. Uppslag som rör en användares app tar alltid ägaren som
  * parameter, och satserna i sql.ts matchar bara rader som ägs av den — "någon annans app" och
@@ -250,6 +250,20 @@ export function createStorage(db: BuilderDatabase) {
     recordShare(appId: string, sharedBy: string, email: string, now: string): void {
       const emailHash = createHmac('sha256', emailKey).update(email.trim().toLowerCase(), 'utf8').digest('hex');
       db.run(sql.INSERT_SHARE, { appId, sharedBy, emailHash, now });
+    },
+
+    // ── Återkoppling på byggverktyget ──────────────────────────────────────────
+
+    feedbackSince(userId: string, since: string): number {
+      return integer(db.get(sql.COUNT_FEEDBACK_SINCE, { userId, since }) ?? {}, 'antal');
+    },
+
+    /**
+     * En rad per tumme. Texten tas INTE emot här: den är på väg till plattformens ägare i ett
+     * mejl och ska inte också ligga kvar i byggverktygets databas.
+     */
+    recordFeedback(appId: string, userId: string, helpful: boolean, now: string): void {
+      db.run(sql.INSERT_FEEDBACK, { appId, userId, helpful: helpful ? 1 : 0, now });
     },
   };
 

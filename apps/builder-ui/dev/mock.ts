@@ -246,7 +246,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
   }
 
-  const appMatch = /^\/apps\/([\w-]+)(?:\/(messages|publish|open|share))?$/.exec(path);
+  const appMatch = /^\/apps\/([\w-]+)(?:\/(messages|publish|open|share|feedback))?$/.exec(path);
   const app = appMatch === null ? undefined : apps.get(appMatch[1] ?? '');
   if (appMatch === null || app === undefined) return fail(res, 404, 'not_found', 'Det finns inte.');
   const action = appMatch[2];
@@ -293,6 +293,22 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (email.startsWith('upptagen@')) return fail(res, 429, 'rate_limited', 'För många försök.');
     if (!app.members.has(email)) app.members.set(email, newId('m'));
     return send(res, 200, { shared: true });
+  }
+
+  // Återkoppling på byggverktyget. Låtsas-API:t skickar inget mejl — det räcker att svara som
+  // den riktiga rutten, så att tummarna och rutan går att klicka igenom lokalt.
+  // Skriv "upptagen" i texten för att pröva hur gränsen ser ut.
+  if (action === 'feedback' && method === 'POST') {
+    const body = await readJson(req);
+    const helpful = body['helpful'];
+    if (typeof helpful !== 'boolean') return fail(res, 400, 'invalid_request', 'Säg om det hjälpte eller inte.');
+    if (helpful) return send(res, 200, { received: true });
+    const text = typeof body['text'] === 'string' ? body['text'].trim() : '';
+    if (text === '') return fail(res, 400, 'invalid_request', 'Skriv vad som inte hjälpte.');
+    if (text.toLowerCase().includes('upptagen')) {
+      return fail(res, 429, 'rate_limited', 'Du har skickat återkoppling flera gånger på kort tid. Vänta en stund och försök igen.');
+    }
+    return send(res, 200, { received: true });
   }
 
   fail(res, 405, 'method_not_allowed', 'Det går inte.');

@@ -8,6 +8,7 @@
  *     en engångslänk på målvärden (en minut, same-site) som loggar in där utan ny kod
  */
 import { createHmac } from 'node:crypto';
+import { join } from 'node:path';
 import { DataApiError } from '@vibesandbox/contracts';
 import type { AppMailer, Identity, IdentityProvider, InvitationService, Role } from '@vibesandbox/contracts';
 import { createTestIdentityProvider, testLoginPath } from '@vibesandbox/gateway';
@@ -19,6 +20,7 @@ import {
   normalizeEmail,
 } from '@vibesandbox/identity';
 import type { AddedUser, MailSender } from '@vibesandbox/identity';
+import type { FeedbackMailer } from '@vibesandbox/builder';
 import type { MailConfig, PlatformConfig } from './config.ts';
 import type { PlatformLogger } from './logg.ts';
 
@@ -63,6 +65,28 @@ function mailSender(mail: MailConfig): MailSender {
  */
 export function platformMailer(config: PlatformConfig): AppMailer | undefined {
   return config.identity.provider === 'test' ? undefined : mailSender(config.identity.mail);
+}
+
+/** Katalogen återkopplingen hamnar i när det inte finns någon adress att mejla den till. */
+const FEEDBACK_OUTBOX_DIRECTORY = 'aterkoppling';
+
+/**
+ * Vägen för återkoppling PÅ BYGGVERKTYGET till plattformens ägare — samma mejlväg som
+ * inloggningskoderna, men till en människa: `PLATFORM_OWNER_EMAIL`.
+ *
+ * Finns ingen mejltjänst (testläge) eller ingen ägaradress skrivs mejlen som filer under
+ * datakatalogen i stället. Återkoppling som ingen får läsa är borta för alltid, och det är ett
+ * sämre utfall än en fil på en disk som bara plattformen kommer åt.
+ */
+export function platformFeedback(config: PlatformConfig): FeedbackMailer {
+  const to = config.ownerEmail;
+  const sender = config.identity.provider === 'test' ? undefined : mailSender(config.identity.mail);
+  if (to !== undefined && sender !== undefined) {
+    return { send: (mail) => sender.send({ to, subject: mail.subject, text: mail.text }) };
+  }
+  const outbox = createOutboxSender({ directory: join(config.dataDir, FEEDBACK_OUTBOX_DIRECTORY) });
+  const recipient = to ?? `agare@${config.baseDomain}`;
+  return { send: (mail) => outbox.send({ to: recipient, subject: mail.subject, text: mail.text }) };
 }
 
 export function createPlatformIdentity(config: PlatformConfig, log: PlatformLogger): PlatformIdentity {

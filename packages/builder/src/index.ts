@@ -15,6 +15,7 @@ import { resolve } from 'node:path';
 import { API_PREFIX, APP_SERVICE_NAMES } from '@vibesandbox/contracts';
 import type { Agent, AppServiceName, BuilderHandler, Identity, InvitationService, PlatformRequest, SourceFiles } from '@vibesandbox/contracts';
 import { createApi } from './api.ts';
+import type { FeedbackMailer } from './aterkoppling.ts';
 import { grantOwnersOnStartup } from './atkomst.ts';
 import type { BuilderUrls } from './api.ts';
 import type { BuilderControl } from './control.ts';
@@ -27,7 +28,8 @@ import { createStaticSite } from './statiskt.ts';
 import { internal, notFound, problemResponse } from './svar.ts';
 
 export type { BuilderUrls } from './api.ts';
-export { MAX_SHARES_PER_HOUR } from './api.ts';
+export { MAX_FEEDBACK_PER_HOUR, MAX_SHARES_PER_HOUR } from './api.ts';
+export type { FeedbackMail, FeedbackMailer, FeedbackReport } from './aterkoppling.ts';
 export type { BuilderAccessEntry, BuilderControl } from './control.ts';
 export type { BuilderLogEntry, BuilderLogEvent, BuilderLogger } from './logg.ts';
 
@@ -39,6 +41,11 @@ export interface BuilderOptions {
   /** Källfilerna en ny app börjar från — mallens startpunkt för agenten. */
   readonly starterFiles: SourceFiles;
   readonly invitations: InvitationService;
+  /**
+   * Vägen för återkoppling PÅ BYGGVERKTYGET till plattformens ägare. Byggverktyget skriver mejlet
+   * men känner inte adressen — plattformen kopplar in både vägen och mottagaren.
+   */
+  readonly feedback: FeedbackMailer;
   /** Byggverktygets byggda webbgränssnitt. Läses in en gång, vid start. */
   readonly ui: { readonly directory: string };
   readonly urls: BuilderUrls;
@@ -100,6 +107,7 @@ export function createBuilder(options: BuilderOptions): Builder {
     runner,
     control: options.control,
     invitations: options.invitations,
+    feedback: options.feedback,
     urls: options.urls,
     openUrl: options.openUrl,
     services,

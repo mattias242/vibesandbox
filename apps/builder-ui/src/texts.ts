@@ -17,4 +17,7 @@ export const SAFETY_POINTS: readonly string[] = [
   'Koden kontrolleras automatiskt innan den byggs.',
   'Varje app har sin egen lagring som andra appar inte kommer åt.',
   'Bara du ser din app tills du publicerar den. Sedan ser bara de du delar den med, efter att de loggat in.',
+  // Konversationen är inte appen: den här punkten hindrar att punkten ovan läses som ett löfte
+  // om att ingenting alls lämnar dig. Formuleringen ska stämma med knapparna i arbetsytan.
+  'Säger du att byggverktyget inte hjälpte, skickas det du skriver och hela er konversation om appen till den som driver plattformen. Tummen upp räknas bara.',
 ];

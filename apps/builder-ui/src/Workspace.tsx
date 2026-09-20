@@ -3,6 +3,8 @@ import type { AgentEvent, BuilderAppDetail, BuilderJobStatus } from '@vibesandbo
 import { ApiError } from './api.ts';
 import { appendToChat, registerChatInput } from './chatInput.ts';
 import { api, errorMessage, sessionFlash, sleep } from './client.ts';
+import { ToolFeedback } from './Feedback.tsx';
+import { lastAssistantIndex } from './feedback.ts';
 import { JobSteps } from './JobSteps.tsx';
 import { OpenLink } from './OpenLink.tsx';
 import { followJob } from './polling.ts';
@@ -109,7 +111,7 @@ export function Workspace({ appId }: { appId: string }) {
         </p>
         <h1 className="app-title">{app.name}</h1>
 
-        <Conversation app={app} />
+        <Conversation appId={appId} app={app} />
 
         <div className="job-area" aria-live="polite">
           {summary !== null && <JobSteps summary={summary} />}
@@ -155,16 +157,20 @@ export function Workspace({ appId }: { appId: string }) {
   );
 }
 
-function Conversation({ app }: { app: BuilderAppDetail }) {
+function Conversation({ appId, app }: { appId: string; app: BuilderAppDetail }) {
   if (app.messages.length === 0) {
     return <p className="muted">Här syns det du skriver och vad som händer med appen.</p>;
   }
+  // Tummarna gäller byggverktyget som helhet, men hör ögat hemma vid det senaste svaret.
+  // Platsen räknas om varje gång: meddelanden läggs till optimistiskt och har inget id.
+  const feedbackAt = lastAssistantIndex(app.messages);
   return (
     <ol className="messages" aria-label="Konversationen">
       {app.messages.map((message, index) => (
         <li key={`${index}-${message.createdAt}`} className={`message message-${message.role}`}>
           <span className="message-who">{message.role === 'user' ? 'Du' : 'Byggverktyget'}</span>
           <span className="message-text">{message.text}</span>
+          {index === feedbackAt && <ToolFeedback appId={appId} messages={app.messages} />}
         </li>
       ))}
     </ol>

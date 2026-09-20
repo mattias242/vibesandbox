@@ -56,6 +56,12 @@ export interface PlatformConfig {
   /** Porten webbläsaren ser. Saknas = schemats standardport (och då står den aldrig i en adress). */
   readonly publicPort?: number;
   readonly identity: IdentityConfig;
+  /**
+   * Adressen till den som driver plattformen (`PLATFORM_OWNER_EMAIL`). Dit går återkopplingen på
+   * byggverktyget. Saknas den finns ingen mottagare — då skrivs återkopplingen som filer i
+   * datakatalogen i stället för att försvinna (se identitet.ts).
+   */
+  readonly ownerEmail?: string;
   /** Finns när byggverktyget är påslaget (`LLM_MODEL` satt). */
   readonly builder?: BuilderConfig;
   /**
@@ -200,6 +206,7 @@ export function loadConfig(env: Environment): PlatformConfig {
   }
 
   const identity = loadIdentity(env, production, problems, required);
+  const ownerEmail = loadOwnerEmail(env, problems);
   const builder = loadBuilder(env, production, problems);
   const appServices = loadAppServices(env, problems);
   const berget = loadBerget(env, production, problems);
@@ -219,6 +226,7 @@ export function loadConfig(env: Environment): PlatformConfig {
     publicScheme,
     ...(publicPort === undefined ? {} : { publicPort }),
     identity: identity as IdentityConfig,
+    ...(ownerEmail === undefined ? {} : { ownerEmail }),
     ...(builder === undefined ? {} : { builder }),
     ...(appServices.length === 0 ? {} : { appServices: { enabled: appServices, env } }),
     ...(berget === undefined ? {} : { berget }),
@@ -251,6 +259,22 @@ function secret(name: string, purpose: string, problems: string[], required: Req
 function isSet(env: Environment, name: string): boolean {
   const value = env[name];
   return value !== undefined && value.length > 0;
+}
+
+/**
+ * Mottagaren av återkoppling på byggverktyget. Valfri: en plattform utan angiven ägare ska starta,
+ * men då finns ingen att mejla. EN adress, utan styrtecken — ett värde som hamnar i ett mejlhuvud
+ * och bär en radbrytning kan bli en extra mottagare.
+ */
+function loadOwnerEmail(env: Environment, problems: string[]): string | undefined {
+  const value = env['PLATFORM_OWNER_EMAIL'];
+  if (value === undefined || value === '') return undefined;
+  const address = value.trim();
+  if (address.length > 254 || hasControlCharacters(address) || /[,;<>\s]/.test(address) || !/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(address)) {
+    problems.push('PLATFORM_OWNER_EMAIL ska vara EN e-postadress, t.ex. drift@example.org.');
+    return undefined;
+  }
+  return address.toLowerCase();
 }
 
 function loadIdentity(env: Environment, production: boolean, problems: string[], required: Required): IdentityConfig | undefined {

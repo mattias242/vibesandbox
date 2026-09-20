@@ -12,6 +12,7 @@ import {
   type BuilderAppDetail,
   type BuilderAppMember,
   type BuilderAppSummary,
+  type BuilderFeedback,
   type BuilderJob,
   type BuilderMe,
 } from '@vibesandbox/contracts';
@@ -47,6 +48,11 @@ export interface ApiClient {
   publish(appId: string): Promise<{ publishedUrl: string }>;
   openUrl(appId: string, target: OpenTarget): Promise<string>;
   share(appId: string, email: string): Promise<void>;
+  /**
+   * Återkoppling på byggverktyget självt, till den som driver plattformen. `helpful: false`
+   * kräver text och mejlas med hela konversationen om appen; `helpful: true` räknas bara.
+   */
+  sendFeedback(appId: string, feedback: BuilderFeedback): Promise<void>;
   /** Vilka som har åtkomst till appen, ägaren först. */
   listMembers(appId: string): Promise<readonly BuilderAppMember[]>;
   /** Tar bort en persons åtkomst. Gäller direkt. */
@@ -189,6 +195,14 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
     share: async (appId, email) => {
       await request('POST', `/apps/${checkId(appId)}/share`, { email });
+    },
+
+    sendFeedback: async (appId, feedback) => {
+      // Kroppen byggs fält för fält: bara kontraktets två fält går iväg, aldrig något som
+      // råkat följa med objektet. Texten utelämnas helt när den saknas (tumme upp).
+      const body: { helpful: boolean; text?: string } = { helpful: feedback.helpful };
+      if (feedback.text !== undefined) body.text = feedback.text;
+      await request('POST', `/apps/${checkId(appId)}/feedback`, body);
     },
 
     listMembers: async (appId) => {

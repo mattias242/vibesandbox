@@ -831,6 +831,10 @@ export function builderContentSecurityPolicy(previewFrameSource: string): string
 //   GET  /_api/builder/apps/:appId/members         → { members: BuilderAppMember[] }  (ägaren först)
 //   DELETE /_api/builder/apps/:appId/members/:memberId → { removed: true }
 //        Upphör direkt. Okänd medlem ⇒ samma svar (idempotent). Ägarens egen rad ⇒ 400 `invalid_request`.
+//   POST /_api/builder/apps/:appId/feedback { helpful, text? } → { received: true }
+//        Återkoppling på byggverktyget självt, till plattformens ägare — aldrig till språkmodellen,
+//        och den ändrar inte appen. `helpful: false` kräver `text` och mejlas med hela konversationen
+//        om appen; `helpful: true` räknas bara. Gräns per ägare och timme ⇒ 429 `rate_limited`.
 //
 // Bara appens ÄGARE når dessa rutter; för alla andra "finns" appen inte (404) — även för den som
 // fått appen delad med sig.
@@ -873,6 +877,19 @@ export interface BuilderAppMember {
   readonly memberId: string;
   readonly email: string;
   readonly role: AppAccessRole;
+}
+
+/**
+ * Återkoppling på byggverktyget, inte på appen. Den gäller appens konversation som helhet och
+ * inte ett enskilt svar: `BuilderMessage` har ingen identitet, och gränssnittet lägger till
+ * meddelanden innan servern svarat, så ett radnummer skulle peka fel. Hela konversationen följer
+ * ändå med i mejlet, så sammanhanget går inte förlorat.
+ */
+export interface BuilderFeedback {
+  /** Uppskattning räknas bara. Är den false krävs `text`, och återkopplingen mejlas. */
+  readonly helpful: boolean;
+  /** Vad som inte hjälpte, med Annas egna ord. Krävs när `helpful` är false. */
+  readonly text?: string;
 }
 
 export type BuilderJobStatus = 'queued' | 'running' | 'done' | 'failed';

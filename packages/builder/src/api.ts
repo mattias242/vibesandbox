@@ -26,6 +26,8 @@ import type {
   PlatformRequest,
   PlatformResponse,
 } from '@vibesandbox/contracts';
+import { composeFeedbackMail } from './aterkoppling.ts';
+import type { FeedbackMailer } from './aterkoppling.ts';
 import { controlErrorCode, storedAppId } from './control.ts';
 import type { BuilderControl } from './control.ts';
 import type { JobRunner } from './ko.ts';
@@ -46,6 +48,8 @@ export interface ApiDependencies {
   readonly runner: JobRunner;
   readonly control: BuilderControl;
   readonly invitations: InvitationService;
+  /** Vägen för återkoppling på byggverktyget till plattformens ägare. */
+  readonly feedback: FeedbackMailer;
   readonly urls: BuilderUrls;
   readonly openUrl: (identity: Identity, targetUrl: string) => string;
   /** Påslagna plattformstjänster, redan kontrollerade och i plattformens ordning. */
@@ -70,6 +74,12 @@ const NAME_FROM_REQUEST_CHARS = 60;
 
 /** Högst så många delningar per ägare och timme — varje delning skickar ett mejl. */
 export const MAX_SHARES_PER_HOUR = 20;
+
+/**
+ * Högst så många återkopplingar per person och timme. Gränsen gäller båda tummarna: en tumme ner
+ * mejlar plattformens ägare, och en uppskattning som kan skruvas upp fritt är ingen signal.
+ */
+export const MAX_FEEDBACK_PER_HOUR = 10;
 const HOUR_MS = 60 * 60 * 1000;
 
 /**
@@ -121,6 +131,7 @@ type Route =
   | { readonly kind: 'publish'; readonly appId: string }
   | { readonly kind: 'open'; readonly appId: string }
   | { readonly kind: 'share'; readonly appId: string }
+  | { readonly kind: 'feedback'; readonly appId: string }
   | { readonly kind: 'members'; readonly appId: string }
   | { readonly kind: 'member'; readonly appId: string; readonly memberId: string }
   | { readonly kind: 'job'; readonly jobId: string };
@@ -133,12 +144,13 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   publish: ['POST'],
   open: ['GET'],
   share: ['POST'],
+  feedback: ['POST'],
   members: ['GET'],
   member: ['DELETE'],
   job: ['GET'],
 };
 
-const APP_ACTIONS = new Set(['messages', 'publish', 'open', 'share', 'members'] as const);
+const APP_ACTIONS = new Set(['messages', 'publish', 'open', 'share', 'feedback', 'members'] as const);
 
 /** Sökvägen efter prefixet, segment för segment, med exakta jämförelser. Ingen normalisering. */
 function matchRoute(path: string): Route | null {
@@ -198,11 +210,13 @@ function summary(app: StoredApp): BuilderAppSummary {
 }
 
 export function createApi(deps: ApiDependencies): { handle(request: PlatformRequest): Promise<PlatformResponse> } {
-  const { storage, runner, control, invitations, urls, log } = deps;
+  const { storage, runner, control, invitations, feedback, urls, log } = deps;
   const iso = (): string => deps.now().toISOString();
 
   /** Delningar som har börjat men inte sparats än, per ägare — så att samtidiga anrop inte slinker förbi taket. */
   const pendingShares = new Map<string, number>();
+  /** Samma sak för återkopplingen: mejlet är på väg men raden finns ännu inte. */
+  const pendingFeedback = new Map<string, number>();
 
   function ownedApp(appId: string, identity: Identity): StoredApp {
     // Ett felformat id och en app som ägs av någon annan ger exakt samma svar som en som inte finns.
@@ -359,6 +373,67 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
     return json(200, { shared: true });
   }
 
+  /**
+   * Återkoppling på byggverktyget. Den når ALDRIG språkmodellen och ändrar aldrig appen: inget
+   * jobb köas, inget meddelande läggs i samtalet och ingen revision skapas. Tumme ner mejlas till
+   * plattformens ägare med hela konversationen; tumme upp räknas bara.
+   */
+  async function postFeedback(request: PlatformRequest, appId: string): Promise<PlatformResponse> {
+    const body = parseBody(request);
+    const helpful = body['helpful'];
+    if (typeof helpful !== 'boolean') throw invalid('Säg om svaret hjälpte eller inte.');
+
+    const missingText = 'Skriv vad som inte hjälpte, så vet vi vad vi ska göra bättre.';
+    let text = '';
+    if (!helpful) {
+      const raw = body['text'];
+      if (typeof raw !== 'string') throw invalid(missingText);
+      text = raw.trim();
+      if (text.length === 0) throw invalid(missingText);
+      if (characterCount(text) > MAX_TEXT_CHARS) throw invalid(`Återkopplingen får vara högst ${MAX_TEXT_CHARS} tecken.`);
+      if (TEXT_FORBIDDEN.test(text)) throw invalid('Texten innehåller tecken som inte är tillåtna.');
+    }
+
+    const app = ownedApp(appId, request.identity);
+    const userId = request.identity.userId;
+    const base = { appIdPrefix: appIdPrefix(app.appId), userId };
+    const since = new Date(deps.now().getTime() - HOUR_MS).toISOString();
+    const pending = pendingFeedback.get(userId) ?? 0;
+    if (storage.feedbackSince(userId, since) + pending >= MAX_FEEDBACK_PER_HOUR) {
+      log({ level: 'warn', event: 'feedback_rate_limited', ...base });
+      throw new ApiProblem('rate_limited', 'Du har lämnat återkoppling många gånger på kort tid. Vänta en stund och försök igen.');
+    }
+
+    pendingFeedback.set(userId, pending + 1);
+    try {
+      if (!helpful) {
+        // Mejlet FÖRST: går det inte fram är signalen borta, och då ska hon få veta det i stället
+        // för ett kvitto på något som ingen kommer att läsa.
+        await feedback.send(
+          composeFeedbackMail({
+            from: request.identity,
+            appName: app.name,
+            appIdPrefix: appIdPrefix(app.appId),
+            text,
+            conversation: storage.listMessages(app.appId),
+            at: iso(),
+          }),
+        );
+      }
+      storage.recordFeedback(app.appId, userId, helpful, iso());
+    } catch (error) {
+      log({ level: 'error', event: 'feedback_failed', ...base, ...describeError(error) });
+      throw internal();
+    } finally {
+      const left = (pendingFeedback.get(userId) ?? 1) - 1;
+      if (left <= 0) pendingFeedback.delete(userId);
+      else pendingFeedback.set(userId, left);
+    }
+    // Händelsen loggas, aldrig texten: en driftlogg ska inte gå att läsa som ett samtal.
+    log({ level: 'info', event: helpful ? 'feedback_liked' : 'feedback_sent', ...base });
+    return json(200, { received: true });
+  }
+
   async function listMembers(request: PlatformRequest, appId: string): Promise<PlatformResponse> {
     const app = ownedApp(appId, request.identity);
     const entries = await control.listAccess(storedAppId(app.appId));
@@ -427,6 +502,8 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
         return open(request, route.appId);
       case 'share':
         return share(request, route.appId);
+      case 'feedback':
+        return postFeedback(request, route.appId);
       case 'members':
         return listMembers(request, route.appId);
       case 'member':

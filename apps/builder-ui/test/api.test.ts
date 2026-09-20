@@ -147,7 +147,8 @@ describe('adresser', () => {
     await api.publish(APP_ID);
     await api.openUrl(APP_ID, 'preview');
     await api.share(APP_ID, 'a@b.se');
-    expect(calls.length).toBe(9);
+    await api.sendFeedback(APP_ID, { helpful: true });
+    expect(calls.length).toBe(10);
     for (const call of calls) {
       expect(call.url.startsWith(`${BUILDER_API_PREFIX}/`)).toBe(true);
       expect(call.url).not.toMatch(/^[a-z]+:|^\/\//i);
@@ -223,6 +224,40 @@ describe('fel blir klarspråk', () => {
     const error = (await api.listApps().catch((caught: unknown) => caught)) as ApiError;
     expect(onUnauthenticated).toHaveBeenCalledTimes(1);
     expect(error.status).toBe(401);
+  });
+});
+
+describe('återkoppling på byggverktyget', () => {
+  it('tumme upp räknas bara: POST med skyddshuvud och enbart helpful', async () => {
+    const { api, calls } = client(() => json(200, { received: true }));
+    await expect(api.sendFeedback(APP_ID, { helpful: true })).resolves.toBeUndefined();
+    expect(calls.map((call) => [call.method, call.url, call.body])).toEqual([
+      ['POST', `${BUILDER_API_PREFIX}/apps/${APP_ID}/feedback`, JSON.stringify({ helpful: true })],
+    ]);
+    expect(calls[0]?.headers[CSRF_HEADER]).toBe('1');
+    expect(calls[0]?.headers['content-type']).toBe('application/json');
+    expect(calls[0]?.credentials).toBe('same-origin');
+  });
+
+  it('tumme ner skickar texten med — inget annat än kontraktets fält', async () => {
+    const { api, calls } = client(() => json(200, { received: true }));
+    await api.sendFeedback(APP_ID, { helpful: false, text: 'Den förstod inte vad jag menade.' });
+    expect(calls[0]?.body).toBe(JSON.stringify({ helpful: false, text: 'Den förstod inte vad jag menade.' }));
+  });
+
+  it('gränsen går igenom som ApiError med status 429, så rutan kan säga det i klarspråk', async () => {
+    const { api } = client(() => json(429, { error: { code: 'rate_limited', message: 'För många försök.' } }));
+    const error = (await api.sendFeedback(APP_ID, { helpful: true }).catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 429, code: 'rate_limited' });
+  });
+
+  it('fientliga id:n skickas aldrig', async () => {
+    const { api, calls } = client();
+    for (const id of ['..', 'a/b', '', 'a?b=1']) {
+      await expect(api.sendFeedback(id, { helpful: true })).rejects.toBeInstanceOf(ApiError);
+    }
+    expect(calls).toEqual([]);
   });
 });
 

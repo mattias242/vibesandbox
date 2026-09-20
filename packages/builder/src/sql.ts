@@ -8,7 +8,7 @@
  */
 
 /** Höjs vid varje schemaändring, tillsammans med ett nytt steg i `MIGRATIONS`. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /**
  * Steg N tar databasen från schemaversion N till N+1. Nya steg läggs SIST; ett steg som har körts
@@ -23,6 +23,10 @@ export const SCHEMA_VERSION = 1;
  *   gröna utkastet, och ett misslyckat försök kan aldrig bli det som publiceras.
  * - `job_events` är en egen tabell i stället för en JSON-kolumn på jobbet: händelser läggs till
  *   löpande, och `after` blir ett indexuppslag i stället för att hela listan skrivs om per händelse.
+ * - `feedback` är återkoppling på BYGGVERKTYGET, en rad per tumme: vem, vilken app, om det
+ *   hjälpte och när. Fritexten finns INTE här — den mejlas till plattformens ägare och stannar
+ *   i mejlet. Raderna behövs ändå: uppskattningarna ska gå att räkna, och gränsen per timme
+ *   kräver en tidpunkt per återkoppling.
  * - `shares.email_hash` är en HMAC av den normaliserade adressen — adressen själv ägs av
  *   identitetspaketet och sparas aldrig här. Nyckeln ligger i `secrets`, så att en kopia av
  *   databasen inte räcker för att pröva kända adresser mot tabellen utan att också ha nyckeln
@@ -98,6 +102,17 @@ export const MIGRATIONS: readonly string[] = [
   ) STRICT;
 
   CREATE INDEX shares_by_sharer ON shares (shared_by, created_at);
+  `,
+  `
+  CREATE TABLE feedback (
+    id         INTEGER PRIMARY KEY,
+    app_id     TEXT NOT NULL REFERENCES apps (app_id) ON DELETE CASCADE,
+    user_id    TEXT NOT NULL,
+    helpful    INTEGER NOT NULL CHECK (helpful IN (0, 1)),
+    created_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE INDEX feedback_by_user ON feedback (user_id, created_at);
   `,
 ];
 
@@ -250,4 +265,14 @@ export const INSERT_SHARE = `
 
 export const COUNT_SHARES_SINCE = `
   SELECT count(*) AS antal FROM shares WHERE shared_by = :sharedBy AND created_at > :since
+`;
+
+// ── Återkoppling på byggverktyget ────────────────────────────────────────────────
+
+export const INSERT_FEEDBACK = `
+  INSERT INTO feedback (app_id, user_id, helpful, created_at) VALUES (:appId, :userId, :helpful, :now)
+`;
+
+export const COUNT_FEEDBACK_SINCE = `
+  SELECT count(*) AS antal FROM feedback WHERE user_id = :userId AND created_at > :since
 `;
