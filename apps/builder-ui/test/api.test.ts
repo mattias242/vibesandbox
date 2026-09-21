@@ -317,3 +317,96 @@ describe('åtkomstlistan', () => {
     expect(error).toMatchObject({ status: 400, code: 'invalid_request' });
   });
 });
+
+/**
+ * Kontrollrummet. Två läsande anrop, och hårdare kontroll än någon annan rutt: en app-rad som
+ * bär mer än de första `ADMIN_APP_ID_PREFIX_LENGTH` tecknen av app-id:t avvisas, för hela id:t
+ * är appens hemliga adress och ska aldrig nå webbläsaren.
+ */
+describe('kontrollrummet', () => {
+  const OVERVIEW = {
+    apps: 2,
+    published: 1,
+    drafts: 1,
+    users: { admin: 0, builder: 0, viewer: 0 },
+    tokens: { input: 100, output: 50, jobs: 7 },
+    failedJobs: 1,
+  };
+
+  const ROW = {
+    appIdPrefix: '01jabcde',
+    name: 'Bokning',
+    ownerEmail: 'anna@example.se',
+    updatedAt: '2026-09-19T10:00:00Z',
+    hasDraft: true,
+    published: false,
+    members: 3,
+    tokens: { input: 10, output: 5 },
+  };
+
+  it('GET till rätt relativa adresser med samma-origin-kakor och utan skyddshuvud', async () => {
+    const { api, calls } = client((call) => json(200, call.url.endsWith('/admin/appar') ? { apps: [ROW] } : OVERVIEW));
+    await api.adminOverview();
+    await api.adminApps();
+
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${BUILDER_API_PREFIX}/admin/oversikt`,
+      `GET ${BUILDER_API_PREFIX}/admin/appar`,
+    ]);
+    for (const call of calls) {
+      expect(call.credentials).toBe('same-origin');
+      expect(call.headers[CSRF_HEADER]).toBeUndefined();
+      expect(call.body).toBeUndefined();
+    }
+  });
+
+  it('översikten och applistan packas upp när de stämmer', async () => {
+    const { api } = client((call) => json(200, call.url.endsWith('/admin/appar') ? { apps: [ROW] } : OVERVIEW));
+    await expect(api.adminOverview()).resolves.toEqual(OVERVIEW);
+    await expect(api.adminApps()).resolves.toEqual([ROW]);
+  });
+
+  it('ägare får saknas — då är det null, aldrig en gissning', async () => {
+    const { api } = client(() => json(200, { apps: [{ ...ROW, ownerEmail: null }] }));
+    const apps = await api.adminApps();
+    expect(apps[0]?.ownerEmail).toBeNull();
+  });
+
+  it.each([
+    ['saknar ett tal', { ...OVERVIEW, drafts: undefined }],
+    ['har ett tal som text', { ...OVERVIEW, apps: '2' }],
+    ['har ett negativt tal', { ...OVERVIEW, failedJobs: -1 }],
+    ['saknar rollerna', { ...OVERVIEW, users: undefined }],
+    ['saknar tokens', { ...OVERVIEW, tokens: { input: 1 } }],
+  ])('en översikt som %s blir ett fel i klarspråk', async (_name, body) => {
+    const { api } = client(() => json(200, body));
+    const error = (await api.adminOverview().catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.message).toMatch(/Något gick fel/);
+  });
+
+  it.each([
+    ['saknar listan', {}],
+    ['listan är inget fält', { apps: 'Bokning' }],
+    ['en rad saknar namn', { apps: [{ ...ROW, name: undefined }] }],
+    ['en rad har fel sorts ägare', { apps: [{ ...ROW, ownerEmail: 7 }] }],
+    ['en rad saknar antal personer', { apps: [{ ...ROW, members: undefined }] }],
+    ['en rad saknar tokens', { apps: [{ ...ROW, tokens: { input: 1 } }] }],
+  ])('en applista som %s blir ett fel i klarspråk', async (_name, body) => {
+    const { api } = client(() => json(200, body));
+    const error = (await api.adminApps().catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.message).toMatch(/Något gick fel/);
+  });
+
+  it('en rad med mer än förkortningen av app-id:t avvisas — hela id:t är appens hemliga adress', async () => {
+    const { api } = client(() => json(200, { apps: [{ ...ROW, appIdPrefix: '01jabcdefghjkmnpqrstvwxyz0' }] }));
+    await expect(api.adminApps()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('403 går igenom som ApiError med status, så vyn kan säga varför', async () => {
+    const { api } = client(() => json(403, { error: { code: 'forbidden', message: 'Åtkomst nekad.' } }));
+    const error = (await api.adminOverview().catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toMatchObject({ status: 403, code: 'forbidden' });
+  });
+});

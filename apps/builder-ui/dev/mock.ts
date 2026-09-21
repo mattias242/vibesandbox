@@ -11,12 +11,19 @@
  *   "stopp" i ett önskemål → bygget misslyckas med en förklaring
  *   "upptagen@…" vid delning → 429 (för många inbjudningar)
  * Åtkomstlistan: den som delas med hamnar i listan; att ta bort "fast@…" ger 500.
+ *
+ * Kontrollrummet (#/admin) är påslaget: `/me` svarar `isAdmin: true`. Starta med ADMIN_NEKAD=1
+ * för att se hur vyn möter ett nej från servern — länken visas fortfarande, för vyn får aldrig
+ * lita på `isAdmin`.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
 import {
+  ADMIN_APP_ID_PREFIX_LENGTH,
   BUILDER_API_PREFIX,
   CSRF_HEADER,
+  type AdminApp,
+  type AdminOverview,
   type AgentEvent,
   type AppServiceName,
   type ApiErrorBody,
@@ -71,6 +78,88 @@ function newId(prefix: string): string {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/**
+ * Kontrollrummet ska vara värt att titta på direkt: flera appar, olika ägare, några publicerade
+ * och en utan ägare kvar. De här raderna är påhittade och finns bara i utvecklingsläget — de
+ * appar man själv bygger under körningen läggs till ovanpå dem.
+ *
+ * Bara början av app-id:t, aldrig hela: raderna följer samma regel som den riktiga rutten.
+ */
+const ADMIN_DEMO_APPS: readonly AdminApp[] = [
+  {
+    appIdPrefix: 'a01f3c7d'.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: 'Bokning av mötesrum',
+    ownerEmail: 'anna@example.se',
+    updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    hasDraft: true,
+    published: true,
+    members: 7,
+    tokens: { input: 184_200, output: 61_400 },
+  },
+  {
+    appIdPrefix: 'b92ka4m1'.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: 'Anmälan till städdagen',
+    ownerEmail: 'karin@example.se',
+    updatedAt: new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(),
+    hasDraft: false,
+    published: true,
+    members: 23,
+    tokens: { input: 92_800, output: 31_100 },
+  },
+  {
+    appIdPrefix: 'c55prt09'.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: 'Checklista för nyanställda',
+    ownerEmail: 'johan@example.se',
+    updatedAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
+    hasDraft: true,
+    published: false,
+    members: 2,
+    tokens: { input: 40_150, output: 12_900 },
+  },
+  {
+    appIdPrefix: 'd7zq2x88'.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: 'Enkät om fikat',
+    ownerEmail: null,
+    updatedAt: new Date(Date.now() - 41 * 24 * 60 * 60 * 1000).toISOString(),
+    hasDraft: false,
+    published: false,
+    members: 1,
+    tokens: { input: 5_300, output: 1_100 },
+  },
+];
+
+/** Låtsas-appar man byggt under körningen, som rader i kontrollrummet. */
+function adminRows(): AdminApp[] {
+  const own = [...apps.values()].map((app) => ({
+    appIdPrefix: app.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: app.name,
+    ownerEmail: 'anna@example.se',
+    updatedAt: app.updatedAt,
+    hasDraft: app.hasDraft,
+    published: app.published,
+    members: 1 + app.members.size,
+    tokens: { input: app.draftVersion * 18_400, output: app.draftVersion * 6_200 },
+  }));
+  return [...own, ...ADMIN_DEMO_APPS].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function adminOverview(): AdminOverview {
+  const rows = adminRows();
+  const tokens = rows.reduce(
+    (sum, row) => ({ input: sum.input + row.tokens.input, output: sum.output + row.tokens.output }),
+    { input: 0, output: 0 },
+  );
+  return {
+    apps: rows.length,
+    published: rows.filter((row) => row.published).length,
+    drafts: rows.filter((row) => row.hasDraft && !row.published).length,
+    // Nollor, precis som i den här skivan av den riktiga rutten: adresserna räknas inte än.
+    users: { admin: 0, builder: 0, viewer: 0 },
+    tokens: { ...tokens, jobs: jobs.size + 37 },
+    failedJobs: 2,
+  };
 }
 
 function nameFrom(text: string): string {
@@ -186,7 +275,19 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
 
-  if (method === 'GET' && path === '/me') return send(res, 200, { displayName: 'Anna', canBuild: true, services: MOCK_SERVICES, version: 'lokal-dev' });
+  if (method === 'GET' && path === '/me') {
+    return send(res, 200, { displayName: 'Anna', canBuild: true, isAdmin: true, services: MOCK_SERVICES, version: 'lokal-dev' });
+  }
+
+  // Kontrollrummet. Låtsas-servern släpper in alla — den riktiga rutten kräver rollen `admin`.
+  // Vill du se hur nekad åtkomst ser ut: starta om med ADMIN_NEKAD=1 i miljön.
+  if (path.startsWith('/admin/')) {
+    if (method !== 'GET') return fail(res, 405, 'method_not_allowed', 'Det går inte.');
+    if (process.env['ADMIN_NEKAD'] === '1') return fail(res, 403, 'forbidden', 'Åtkomst nekad.');
+    if (path === '/admin/oversikt') return send(res, 200, adminOverview());
+    if (path === '/admin/appar') return send(res, 200, { apps: adminRows() });
+    return fail(res, 404, 'not_found', 'Det finns inte.');
+  }
 
   if (path === '/apps') {
     if (method === 'GET') {

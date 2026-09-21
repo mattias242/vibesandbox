@@ -3,7 +3,7 @@
  * servern, och ett konstigt värde ger startsidan — aldrig ett gissat app-id.
  */
 import { describe, expect, it } from 'vitest';
-import { appHash, parseRoute } from '../src/route.ts';
+import { ADMIN_HASH, appHash, parseRoute } from '../src/route.ts';
 
 describe('parseRoute', () => {
   it('startsidan', () => {
@@ -22,5 +22,16 @@ describe('parseRoute', () => {
 
   it('appHash är parseRoutes omvändning', () => {
     expect(parseRoute(appHash('abc123'))).toEqual({ view: 'app', appId: 'abc123' });
+  });
+
+  it('kontrollrummet', () => {
+    expect(parseRoute(ADMIN_HASH)).toEqual({ view: 'admin' });
+    expect(ADMIN_HASH).toBe('#/admin');
+  });
+
+  it('bara den exakta adressen är kontrollrummet', () => {
+    for (const hash of ['#/admin/', '#/admin/appar', '#/Admin', '#/administration']) {
+      expect(parseRoute(hash)).toEqual({ view: 'start' });
+    }
   });
 });

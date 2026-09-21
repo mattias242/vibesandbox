@@ -6,8 +6,11 @@
  * Fel blir alltid `ApiError` med ett meddelande som går att visa rakt av för användaren.
  */
 import {
+  ADMIN_APP_ID_PREFIX_LENGTH,
   BUILDER_API_PREFIX,
   CSRF_HEADER,
+  type AdminApp,
+  type AdminOverview,
   type ApiErrorCode,
   type BuilderAppDetail,
   type BuilderAppMember,
@@ -57,6 +60,10 @@ export interface ApiClient {
   listMembers(appId: string): Promise<readonly BuilderAppMember[]>;
   /** Tar bort en persons åtkomst. Gäller direkt. */
   removeMember(appId: string, memberId: string): Promise<void>;
+  /** Kontrollrummet: plattformens siffror. Kräver rollen `admin`; annars 403 från servern. */
+  adminOverview(): Promise<AdminOverview>;
+  /** Kontrollrummet: alla appar, senast ändrad först. Aldrig hela app-id:t. */
+  adminApps(): Promise<readonly AdminApp[]>;
 }
 
 export const NETWORK_ERROR_MESSAGE = 'Kunde inte nå servern. Kontrollera uppkopplingen och försök igen.';
@@ -106,6 +113,81 @@ function checkMembers(value: unknown): readonly BuilderAppMember[] {
       throw new ApiError(500, GENERIC_ERROR_MESSAGE);
     }
     return { memberId, email, role };
+  });
+}
+
+/** Ett antal från servern: ett helt tal som inte kan vara negativt. Allt annat är ett trasigt svar. */
+function checkCount(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  }
+  return value;
+}
+
+function fields(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  return value as Record<string, unknown>;
+}
+
+/** Kontrollrummets siffror. Ett fält som saknas blir ett fel, aldrig en nolla som ser ut som ett svar. */
+function checkOverview(value: unknown): AdminOverview {
+  const body = fields(value);
+  const users = fields(body['users']);
+  const tokens = fields(body['tokens']);
+  return {
+    apps: checkCount(body['apps']),
+    published: checkCount(body['published']),
+    drafts: checkCount(body['drafts']),
+    users: {
+      admin: checkCount(users['admin']),
+      builder: checkCount(users['builder']),
+      viewer: checkCount(users['viewer']),
+    },
+    tokens: {
+      input: checkCount(tokens['input']),
+      output: checkCount(tokens['output']),
+      jobs: checkCount(tokens['jobs']),
+    },
+    failedJobs: checkCount(body['failedJobs']),
+  };
+}
+
+/**
+ * Kontrollrummets applista. Hela app-id:t är appens hemliga adress, så en rad som bär mer än de
+ * första `ADMIN_APP_ID_PREFIX_LENGTH` tecknen avvisas här — innan den nått en vy som kunde visa
+ * den. Radens fält plockas ett och ett: bara kontraktets fält går vidare.
+ */
+function checkAdminApps(value: unknown): readonly AdminApp[] {
+  if (!Array.isArray(value)) throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  return value.map((item: unknown) => {
+    const row = fields(item);
+    const { appIdPrefix, name, ownerEmail, updatedAt, hasDraft, published } = row;
+    const tokens = fields(row['tokens']);
+    if (
+      typeof appIdPrefix !== 'string' ||
+      appIdPrefix.length === 0 ||
+      appIdPrefix.length > ADMIN_APP_ID_PREFIX_LENGTH ||
+      !ID_PATTERN.test(appIdPrefix) ||
+      typeof name !== 'string' ||
+      name === '' ||
+      name.length > 200 ||
+      (ownerEmail !== null && (typeof ownerEmail !== 'string' || ownerEmail === '' || ownerEmail.length > 254)) ||
+      typeof updatedAt !== 'string' ||
+      typeof hasDraft !== 'boolean' ||
+      typeof published !== 'boolean'
+    ) {
+      throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+    }
+    return {
+      appIdPrefix,
+      name,
+      ownerEmail,
+      updatedAt,
+      hasDraft,
+      published,
+      members: checkCount(row['members']),
+      tokens: { input: checkCount(tokens['input']), output: checkCount(tokens['output']) },
+    };
   });
 }
 
@@ -214,5 +296,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       const path = `/apps/${checkId(appId)}/members/${checkId(memberId, 'Den personen finns inte i listan.')}`;
       await request('DELETE', path);
     },
+
+    adminOverview: async () => checkOverview(await request<unknown>('GET', '/admin/oversikt')),
+
+    adminApps: async () => checkAdminApps((await request<{ apps?: unknown }>('GET', '/admin/appar')).apps),
   };
 }

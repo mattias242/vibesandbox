@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { BuilderMe } from '@vibesandbox/contracts';
+import { ADMIN_LINK_LABEL } from './admin.ts';
+import { AdminPage } from './AdminPage.tsx';
 import { api, errorMessage } from './client.ts';
 import { versionText } from './formagor.ts';
-import { parseRoute, type Route } from './route.ts';
+import { ADMIN_HASH, parseRoute, type Route } from './route.ts';
 import { GuideLink, OpenGuideProvider, ServicesGuide } from './ServicesGuide.tsx';
 import { StartPage } from './StartPage.tsx';
 import { Workspace } from './Workspace.tsx';
@@ -55,6 +57,13 @@ export function App() {
             Bygg en app
           </a>
           <span className="topbar-end">
+            {/* Länken visas bara för den som bär rollen — men det är bara för att slippa visa en
+                länk som ändå nekas. Grinden sitter på servern, i varje rutt. */}
+            {me?.isAdmin === true && (
+              <a className="topbar-link" href={ADMIN_HASH}>
+                {ADMIN_LINK_LABEL}
+              </a>
+            )}
             <GuideLink short />
             {me !== null && <span className="who">Inloggad som {me.displayName}</span>}
           </span>
@@ -73,6 +82,10 @@ export function App() {
               Laddar…
             </p>
           </div>
+        ) : route.view === 'admin' ? (
+          // Före behörighetsvyn nedan: den som administrerar plattformen behöver inte själv
+          // kunna bygga appar. Kontrollrummet hämtar ändå ingenting utan att servern säger ja.
+          <AdminPage />
         ) : !me.canBuild ? (
           <div className="page">
             <h1>Du kan inte bygga appar än</h1>

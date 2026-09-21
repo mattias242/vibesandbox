@@ -1086,3 +1086,131 @@ body:has(.workspace) .topbar-inner {
   font-size: 0.875rem;
   text-align: center;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Kontrollrummet (adminvyn). Lagt sist, eftersom det är den yngsta vyn och inte
+   rör någon av de andra.
+
+   Egen bredd: applistan har sex kolumner och blir obegriplig hoptryckt i --page,
+   så vyn får --wide, och rubrikraden följer med (samma :has()-grepp som
+   arbetsytan använder). Tabellen får rulla i sidled på liten skärm i stället för
+   att kolumnerna knycklas ihop — en rullad tabell går att läsa, en knycklad gör
+   det inte.
+
+   Färgerna är stilmallens egna, så inga nya kontrastpar uppstår: siffrornas
+   etiketter och id-början använder --muted mot vitt (7,4:1), rubrikraden i
+   tabellen --surface med --ink (14,5:1) och länken i den mörkblå rubrikraden
+   vit text mot --navy (13,6:1). Märkena är .badge som i Mina appar.
+   ────────────────────────────────────────────────────────────────────────────── */
+.page-admin {
+  max-width: var(--wide);
+}
+
+body:has(.page-admin) .topbar-inner {
+  max-width: var(--wide);
+}
+
+/* Länken till kontrollrummet i rubrikraden: vit text mot --navy, 13,6:1. Klickytan
+   mäts i px, inte i rem, så att den inte krymper med textstorleken. */
+.topbar-link {
+  color: var(--white);
+  min-height: var(--tap);
+  display: inline-flex;
+  align-items: center;
+}
+
+.topbar-link:hover {
+  color: var(--white);
+}
+
+.admin-block {
+  margin-top: 2.5rem;
+}
+
+.admin-block .hint {
+  max-width: 44rem;
+}
+
+/* Siffrorna: små kort som lägger sig om efter skärmens bredd, inte en fast spaltdelning.
+   Måttet är valt så att alla sju får plats på en rad på stor skärm och två i bredd i en telefon. */
+.admin-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+}
+
+.admin-figure {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.75rem 0.9rem;
+}
+
+.admin-figure dt {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.admin-figure dd {
+  margin: 0.15rem 0 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  /* Siffror i fast bredd, så att tal under varandra går att jämföra med ögat. */
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-table-scroll {
+  overflow-x: auto;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 0.7rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.admin-table thead th {
+  background: var(--surface);
+  border-bottom: 2px solid var(--line);
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.admin-app {
+  min-width: 14rem;
+}
+
+.admin-app-name {
+  display: block;
+  font-weight: 600;
+}
+
+/* Början av appens adress. Bara text — aldrig en länk: hela adressen är nyckeln till appen. */
+.admin-prefix {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 400;
+}
+
+.admin-note {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.admin-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
