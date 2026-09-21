@@ -10,7 +10,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ADMIN_APP_ID_PREFIX_LENGTH, type AdminApp, type AdminOverview } from '@vibesandbox/contracts';
-import { ADMIN_FORBIDDEN, ADMIN_TITLE } from '../src/admin.ts';
+import { ADMIN_FORBIDDEN, ADMIN_OWNER_MISSING, ADMIN_TITLE } from '../src/admin.ts';
 import { AdminView } from '../src/AdminPage.tsx';
 
 /** Ett riktigt app-id. Bara de första tecknen får nå märkspråket. */
@@ -84,10 +84,13 @@ describe('kontrollrummet', () => {
     expect(html).not.toContain('#/app/');
   });
 
-  it('säger vem som äger appen, och säger det rakt ut när ägaren saknas', () => {
+  it('säger vem som äger appen, och säger rakt ut när adressen inte är känd', () => {
     const html = render(loaded);
     expect(html).toContain('anna@example.se');
-    expect(html).toMatch(/[Ss]aknar ägare|[Ii]ngen ägare/);
+    expect(html).toContain(ADMIN_OWNER_MISSING);
+    // Appen HAR en ägare — byggverktyget vet vem som skapade den. Det är adressen som saknas,
+    // och en text som påstår att ägaren saknas vore osann (se atkomst.ts i byggverktyget).
+    expect(html, 'en app utan känd adress har ändå en ägare').not.toMatch(/[Ss]aknar ägare|[Ii]ngen ägare/);
   });
 
   it('visar lägesetiketter och att en publicerad app ändrats sedan dess', () => {

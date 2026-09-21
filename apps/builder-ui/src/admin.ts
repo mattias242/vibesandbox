@@ -46,7 +46,13 @@ export const ADMIN_ID_NOTE =
 /** "Tokens" är modellens mått. Sagt en gång, i vanliga ord, så att siffrorna betyder något. */
 export const ADMIN_TOKENS_NOTE = `Tokens är måttet på hur mycket text modellen läst och skrivit. Siffrorna för plattformen gäller de senaste ${ADMIN_TOKEN_WINDOW_DAYS} dygnen; siffrorna i listan gäller varje app sedan den skapades.`;
 
-export const ADMIN_OWNER_MISSING = 'Saknar ägare';
+/**
+ * Appen HAR en ägare — byggverktyget vet vem som skapade den. Det som saknas är adressen:
+ * appar som fanns innan control hade en åtkomstlista fick sin ägarrad vid en omstart, och då
+ * skickas `null` som adress eftersom byggverktyget aldrig sparar e-postadresser
+ * (`packages/builder/src/atkomst.ts`). "Saknar ägare" vore alltså osant och oroande.
+ */
+export const ADMIN_OWNER_MISSING = 'Adressen är inte känd';
 
 export interface AppStatus {
   readonly label: string;
