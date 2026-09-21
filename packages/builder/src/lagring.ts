@@ -8,6 +8,7 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import type { AgentEvent, BuilderJobStatus, BuilderMessage, ConversationEntry, SourceFiles } from '@vibesandbox/contracts';
 import type { BuilderDatabase, Row } from './databas.ts';
+import * as adminSql from './sql-admin.ts';
 import * as sql from './sql.ts';
 
 export interface StoredApp {
@@ -30,6 +31,36 @@ export interface JobForRun {
   readonly ownerUserId: string;
   readonly messageSeq: number;
   readonly status: BuilderJobStatus;
+}
+
+/** Sammanräkningen bakom `AdminOverview` — alla appar, oavsett ägare. */
+export interface AdminCounts {
+  readonly apps: number;
+  readonly published: number;
+  readonly drafts: number;
+}
+
+/** Tokens och jobb inom kontrollrummets tidsfönster. */
+export interface AdminJobTotals {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly jobs: number;
+}
+
+/**
+ * En app sedd från kontrollrummet. `ownerUserId` följer med för att ägarens ADRESS ska kunna
+ * hämtas ur control — den finns inte i byggverktygets databas. Hela `appId` stannar i det här
+ * lagret: anroparen kapar det innan det når svaret.
+ */
+export interface StoredAdminApp {
+  readonly appId: string;
+  readonly ownerUserId: string;
+  readonly name: string;
+  readonly updatedAt: string;
+  readonly hasDraft: boolean;
+  readonly published: boolean;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
 }
 
 export interface JobOutcome {
@@ -264,6 +295,42 @@ export function createStorage(db: BuilderDatabase) {
      */
     recordFeedback(appId: string, userId: string, helpful: boolean, now: string): void {
       db.run(sql.INSERT_FEEDBACK, { appId, userId, helpful: helpful ? 1 : 0, now });
+    },
+
+    // ── Kontrollrummet (adminvyn) ──────────────────────────────────────────────
+    //
+    // De fyra läsningarna nedan tar INGEN ägare: de ser medvetet över alla appar. Satserna ligger
+    // samlade i sql-admin.ts, och vägen hit går bara genom `requireAdmin` i api.ts.
+
+    countAllApps(): AdminCounts {
+      const row = db.get(adminSql.COUNT_ALL_APPS, {}) ?? {};
+      return { apps: integer(row, 'apps'), published: integer(row, 'published'), drafts: integer(row, 'drafts') };
+    },
+
+    jobTotalsSince(since: string): AdminJobTotals {
+      const row = db.get(adminSql.SUM_JOB_TOKENS_SINCE, { since }) ?? {};
+      return {
+        inputTokens: integer(row, 'input_tokens'),
+        outputTokens: integer(row, 'output_tokens'),
+        jobs: integer(row, 'jobs'),
+      };
+    },
+
+    failedJobsSince(since: string): number {
+      return integer(db.get(adminSql.COUNT_FAILED_JOBS_SINCE, { since }) ?? {}, 'failed');
+    },
+
+    listAllApps(): StoredAdminApp[] {
+      return db.all(adminSql.LIST_ALL_APPS, {}).map((row) => ({
+        appId: text(row, 'app_id'),
+        ownerUserId: text(row, 'owner_user_id'),
+        name: text(row, 'name'),
+        updatedAt: text(row, 'updated_at'),
+        hasDraft: integer(row, 'has_draft') === 1,
+        published: typeof row['published_version'] === 'string',
+        inputTokens: integer(row, 'input_tokens'),
+        outputTokens: integer(row, 'output_tokens'),
+      }));
     },
   };
 

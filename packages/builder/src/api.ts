@@ -26,6 +26,7 @@ import type {
   PlatformRequest,
   PlatformResponse,
 } from '@vibesandbox/contracts';
+import { createAdmin } from './admin.ts';
 import { composeFeedbackMail } from './aterkoppling.ts';
 import type { FeedbackMailer } from './aterkoppling.ts';
 import { controlErrorCode, storedAppId } from './control.ts';
@@ -105,6 +106,21 @@ function canBuild(identity: Identity): boolean {
   return identity.roles.some((role) => BUILDER_ROLES.has(role));
 }
 
+function isAdmin(identity: Identity): boolean {
+  return identity.roles.includes('admin');
+}
+
+/**
+ * Kontrollrummet kräver plattformsrollen `admin`. Rollen `builder` räcker INTE — den som får bygga
+ * appar får inte därmed se allas. Kontrollen görs per rutt, inte i `matchRoute`: en rutt som inte
+ * finns ska svara likadant oavsett vem som frågar.
+ */
+function requireAdmin(identity: Identity): void {
+  if (!isAdmin(identity)) {
+    throw new ApiProblem('forbidden', 'Kontrollrummet är bara för plattformens administratörer.');
+  }
+}
+
 /** Antal tecken (kodpunkter), inte UTF-16-enheter — så att å och emoji räknas som ett tecken var. */
 function characterCount(value: string): number {
   let count = 0;
@@ -134,7 +150,9 @@ type Route =
   | { readonly kind: 'feedback'; readonly appId: string }
   | { readonly kind: 'members'; readonly appId: string }
   | { readonly kind: 'member'; readonly appId: string; readonly memberId: string }
-  | { readonly kind: 'job'; readonly jobId: string };
+  | { readonly kind: 'job'; readonly jobId: string }
+  | { readonly kind: 'adminOverview' }
+  | { readonly kind: 'adminApps' };
 
 const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   me: ['GET'],
@@ -148,6 +166,9 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   members: ['GET'],
   member: ['DELETE'],
   job: ['GET'],
+  // Kontrollrummet är ren läsning: det finns ingen skrivande metod att neka på annat sätt än 405.
+  adminOverview: ['GET'],
+  adminApps: ['GET'],
 };
 
 const APP_ACTIONS = new Set(['messages', 'publish', 'open', 'share', 'feedback', 'members'] as const);
@@ -174,6 +195,14 @@ function matchRoute(path: string): Route | null {
   }
   if (first === 'jobs' && second !== undefined && second.length > 0 && third === undefined) {
     return { kind: 'job', jobId: second };
+  }
+  // Kontrollrummet: två fasta sökvägar utan id. Jämförelsen är exakt, så `/admin`, `/admin/`,
+  // `/admin/Oversikt` och `/admin/oversikt/extra` är alla lika mycket "ingen rutt". Rollen
+  // kontrolleras i `dispatch`, inte här.
+  if (first === 'admin' && third === undefined) {
+    if (second === 'oversikt') return { kind: 'adminOverview' };
+    if (second === 'appar') return { kind: 'adminApps' };
+    return null;
   }
   return null;
 }
@@ -212,6 +241,7 @@ function summary(app: StoredApp): BuilderAppSummary {
 export function createApi(deps: ApiDependencies): { handle(request: PlatformRequest): Promise<PlatformResponse> } {
   const { storage, runner, control, invitations, feedback, urls, log } = deps;
   const iso = (): string => deps.now().toISOString();
+  const admin = createAdmin({ storage, control, now: deps.now });
 
   /** Delningar som har börjat men inte sparats än, per ägare — så att samtidiga anrop inte slinker förbi taket. */
   const pendingShares = new Map<string, number>();
@@ -481,10 +511,18 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
       const me: BuilderMe = {
         displayName: displayName(identity),
         canBuild: canBuild(identity),
+        isAdmin: isAdmin(identity),
         services: deps.services,
         ...(deps.version === undefined ? {} : { version: deps.version }),
       };
       return json(200, me);
+    }
+    // Kontrollrummet har sin egen grind, och den prövas före byggrätten: den som är admin får
+    // förstås också bygga, men den som bara är byggare ska få veta att det är adminrollen som
+    // saknas — inte ett besked om att hen inte får bygga appar.
+    if (route.kind === 'adminOverview' || route.kind === 'adminApps') {
+      requireAdmin(identity);
+      return route.kind === 'adminOverview' ? admin.overview() : admin.apps();
     }
     if (!canBuild(identity)) throw new ApiProblem('forbidden', 'Du har inte behörighet att bygga appar.');
 

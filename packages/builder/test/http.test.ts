@@ -22,7 +22,7 @@ describe('GET /me', () => {
   it('ger visningsnamn ur adressens lokala del och att Anna får bygga', async () => {
     const svar = await anropa(m.builder, ANNA, 'GET', api('/me'));
     expect(svar.status).toBe(200);
-    expect(svar.json).toEqual({ displayName: 'anna', canBuild: true, services: [] });
+    expect(svar.json).toEqual({ displayName: 'anna', canBuild: true, isAdmin: false, services: [] });
     expect(svar.headers['Cache-Control']).toBe('no-store');
     expect(svar.headers['Content-Type']).toBe('application/json; charset=utf-8');
   });
@@ -30,7 +30,7 @@ describe('GET /me', () => {
   it('fungerar även för den som bara får titta — men canBuild är falskt', async () => {
     const svar = await anropa(m.builder, VERA, 'GET', api('/me'));
     expect(svar.status).toBe(200);
-    expect(svar.json).toEqual({ displayName: 'vera', canBuild: false, services: [] });
+    expect(svar.json).toEqual({ displayName: 'vera', canBuild: false, isAdmin: false, services: [] });
   });
 
   it('admin får bygga', async () => {
@@ -69,7 +69,7 @@ describe('GET /me — påslagna tjänster för guiden "Vilka tjänster finns som
     await m.builder.close();
     m.builder = m.starta({ services: ['notify'] });
     const svar = await anropa(m.builder, VERA, 'GET', api('/me'));
-    expect(svar.json).toEqual({ displayName: 'vera', canBuild: false, services: ['notify'] });
+    expect(svar.json).toEqual({ displayName: 'vera', canBuild: false, isAdmin: false, services: ['notify'] });
   });
 
   it('listan läses vid start: att ändra den insända listan efteråt ändrar inte svaret', async () => {

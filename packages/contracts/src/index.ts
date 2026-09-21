@@ -837,7 +837,8 @@ export function builderContentSecurityPolicy(previewFrameSource: string): string
 //        om appen; `helpful: true` räknas bara. Gräns per ägare och timme ⇒ 429 `rate_limited`.
 //
 // Bara appens ÄGARE når dessa rutter; för alla andra "finns" appen inte (404) — även för den som
-// fått appen delad med sig.
+// fått appen delad med sig. Undantaget är kontrollrummet under `/_api/builder/admin/…`, som
+// kräver rollen `admin` och medvetet ser över alla appar (se "Kontrollrummet" längre ned).
 //
 // Övriga sökvägar på byggverktygets värd serverar byggverktygets egna statiska filer (SPA).
 
@@ -846,6 +847,11 @@ export const BUILDER_API_PREFIX = '/_api/builder';
 export interface BuilderMe {
   readonly displayName: string;
   readonly canBuild: boolean;
+  /**
+   * Bär rollen `admin`. Gränssnittet visar länken till kontrollrummet först då — men det är
+   * bara för att slippa visa en länk som ändå nekas. Grinden sitter på servern, i varje rutt.
+   */
+  readonly isAdmin: boolean;
   /**
    * Plattformstjänsterna som är påslagna, i plattformens ordning. Byggverktygets guide "Vad kan
    * min app göra?" visar bara dem — ingen ska bli lovad något som svarar 404.
@@ -893,6 +899,54 @@ export interface BuilderFeedback {
 }
 
 export type BuilderJobStatus = 'queued' | 'running' | 'done' | 'failed';
+
+// ── Kontrollrummet (adminvyn) ───────────────────────────────────────────────────
+//
+// Under `/_api/builder/admin/…`, på samma värd som resten av byggverktyget. Kräver rollen
+// `admin` — inte bara `builder`. Den som saknar rollen får 403, och gränssnittet visar ingen
+// länk dit. Rutterna bryter MEDVETET byggverktygets vanliga regel att man bara ser sitt eget.
+//
+//   GET /_api/builder/admin/oversikt → AdminOverview
+//   GET /_api/builder/admin/appar    → { apps: AdminApp[] }   (senast ändrad först)
+//
+// Hela app-id:t ÄR den hemliga delen av appens adress. Kontrollrummet visar därför bara ett
+// förkortat id, aldrig en delningslänk — samma regel som driftloggarna följer.
+
+/** Så många tecken av app-id:t kontrollrummet visar. Samma längd som i driftloggarna. */
+export const ADMIN_APP_ID_PREFIX_LENGTH = 8;
+
+/** Så många dygn bakåt `AdminOverview.tokens` summerar. */
+export const ADMIN_TOKEN_WINDOW_DAYS = 30;
+
+export interface AdminOverview {
+  /** Alla appar i byggverktyget, oavsett ägare. */
+  readonly apps: number;
+  readonly published: number;
+  /** Appar med ett utkast som ännu inte publicerats. */
+  readonly drafts: number;
+  /** Adresser som får logga in, per roll. */
+  readonly users: { readonly admin: number; readonly builder: number; readonly viewer: number };
+  /** Summerade tokens de senaste `ADMIN_TOKEN_WINDOW_DAYS` dygnen, och antalet jobb bakom dem. */
+  readonly tokens: { readonly input: number; readonly output: number; readonly jobs: number };
+  /** Jobb som misslyckats inom samma fönster — byggverktygets egen felbild. */
+  readonly failedJobs: number;
+}
+
+/** En rad i kontrollrummets applista. Aldrig hela app-id:t, aldrig en länk till appen. */
+export interface AdminApp {
+  /** De första `ADMIN_APP_ID_PREFIX_LENGTH` tecknen av app-id:t. Räcker för att känna igen en app. */
+  readonly appIdPrefix: string;
+  readonly name: string;
+  /** Ägarens adress. Bara kontrollrummet ser den; den loggas aldrig. */
+  readonly ownerEmail: string | null;
+  readonly updatedAt: string;
+  readonly hasDraft: boolean;
+  readonly published: boolean;
+  /** Antal personer med åtkomst till appen, ägaren inräknad. */
+  readonly members: number;
+  /** Summerade tokens för appens alla jobb, sedan den skapades. */
+  readonly tokens: { readonly input: number; readonly output: number };
+}
 
 export interface BuilderAppDetail extends BuilderAppSummary {
   /** Den publicerade appens adress — finns när `published`, så att delningslänken syns efter omladdning. */
