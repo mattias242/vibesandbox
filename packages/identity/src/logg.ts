@@ -5,6 +5,8 @@
 
 export type IdentityEvent =
   | 'user_added'
+  /** En roll sattes rakt av — den enda vägen att SÄNKA en behörighet. Se `setUserRole`. */
+  | 'role_changed'
   | 'invited'
   | 'challenge_created'
   | 'login_succeeded'

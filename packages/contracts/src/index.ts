@@ -932,6 +932,33 @@ export interface AdminOverview {
   readonly failedJobs: number;
 }
 
+// ── Kontrollrummet: adresser och roller ─────────────────────────────────────────
+//
+//   GET  /_api/builder/admin/anvandare              → { users: AdminUser[] }
+//   POST /_api/builder/admin/anvandare  { email, role }   → 201 { user: AdminUser }
+//        Bjuder in adressen eller HÖJER dess roll. Samma svar oavsett vilket.
+//   POST /_api/builder/admin/anvandare/:userId { role }   → 200 { user: AdminUser }
+//        Sätter rollen rakt av — den enda vägen att SÄNKA en roll. Den egna raden avvisas
+//        med `invalid_request`: en administratör som sänker sig själv låser ut sig, och
+//        vägen tillbaka går bara över SSH.
+//
+// Adresserna i svaren är personuppgifter. De går till den som förvaltar plattformen och
+// får aldrig hamna i en driftlogg — samma regel som `AdminApp.ownerEmail`.
+
+export interface AdminUser {
+  readonly userId: string;
+  readonly email: string;
+  readonly role: Role;
+  /**
+   * När adressen lades in. `null` bara om värdet inte gick att läsa ur databasen — användaren
+   * tas med ändå, eftersom den som inte syns i kontrollrummet inte heller går att ändra rollen
+   * på, och en osynlig behörighet är farligare än ett saknat datum.
+   */
+  readonly createdAt: string | null;
+  /** Sant för den som frågar. Gränssnittet ska inte erbjuda att sänka sin egen roll. */
+  readonly self: boolean;
+}
+
 /** En rad i kontrollrummets applista. Aldrig hela app-id:t, aldrig en länk till appen. */
 export interface AdminApp {
   /** De första `ADMIN_APP_ID_PREFIX_LENGTH` tecknen av app-id:t. Räcker för att känna igen en app. */

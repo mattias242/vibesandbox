@@ -84,9 +84,24 @@ const MIGRATIONS: readonly string[] = [
 
 // ── Satser ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Hur många id en uppslagning av adresser frågar om åt gången. SQLite har ett tak för antalet
+ * parametrar i en sats, och listan av ägare växer med antalet appar — därför delas den upp.
+ * Satsen har ALLTID exakt så här många platshållare: en kortare omgång fylls ut med ett id som
+ * redan finns i omgången. Då byggs ingen SQL av indata, och en enda förberedd sats räcker.
+ */
+export const USER_ID_BATCH = 500;
+
+const USER_ID_PLACEHOLDERS = new Array(USER_ID_BATCH).fill('?').join(', ');
+
 export const SQL = {
   findUserByEmail: 'SELECT user_id, email, role FROM users WHERE email = :email',
   findUserById: 'SELECT user_id, email, role FROM users WHERE user_id = :user_id',
+  // Äldst först. `rowid` skiljer två rader som lades till i samma millisekund, så ordningen är
+  // stabil mellan två anrop i stället för att avgöras av SQLites lagring.
+  listUsers: 'SELECT user_id, email, role, created_at FROM users ORDER BY created_at, rowid',
+  countUsersByRole: 'SELECT role, COUNT(*) AS total FROM users GROUP BY role',
+  emailsByUserIds: `SELECT user_id, email FROM users WHERE user_id IN (${USER_ID_PLACEHOLDERS})`,
   insertUser: 'INSERT INTO users (user_id, email, role, created_at) VALUES (:user_id, :email, :role, :created_at)',
   updateUserRole: 'UPDATE users SET role = :role WHERE user_id = :user_id',
 

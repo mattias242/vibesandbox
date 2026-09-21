@@ -9,7 +9,7 @@
 import { isAbsolute, join } from 'node:path';
 import { DataApiError } from '@vibesandbox/contracts';
 import { normalizeEmail } from './adress.ts';
-import { isRole, upsertUser } from './anvandare.ts';
+import { findUserByEmail, isRole, setUserRole, upsertUser } from './anvandare.ts';
 import { openIdentityDatabase } from './databas.ts';
 
 /** Var identitetsdatabasen ligger under plattformens datakatalog. Plattformen ska använda samma. */
@@ -24,8 +24,10 @@ export interface CliOutput {
 
 const USAGE = [
   'Användning: anvandare lagg-till <e-postadress> <admin|builder|viewer>',
+  '            anvandare satt-roll <e-postadress> <admin|builder|viewer>',
   'Miljö: DATA_DIR (absolut sökväg till plattformens datakatalog).',
-  'Lägger till adressen, eller höjer dess roll. En roll sänks aldrig.',
+  'lagg-till lägger till adressen, eller höjer dess roll. En roll sänks aldrig.',
+  'satt-roll sätter rollen rakt av på en adress som redan finns — även nedåt.',
 ];
 
 /** 0 = klart, 1 = fel under körningen, 2 = fel användning. */
@@ -41,11 +43,12 @@ export async function runIdentityCli(
   };
 
   const [command, email, role, ...rest] = argv;
-  if (command !== 'lagg-till' || email === undefined || role === undefined || rest.length > 0) {
+  if ((command !== 'lagg-till' && command !== 'satt-roll') || email === undefined || role === undefined || rest.length > 0) {
     return usage('Okänt kommando eller fel antal argument.');
   }
   if (!isRole(role)) return usage('Rollen ska vara admin, builder eller viewer.');
-  if (normalizeEmail(email) === null) return usage('E-postadressen är ogiltig.');
+  const address = normalizeEmail(email);
+  if (address === null) return usage('E-postadressen är ogiltig.');
 
   const dataDir = env['DATA_DIR'];
   if (dataDir === undefined || !isAbsolute(dataDir) || dataDir.includes(String.fromCharCode(0))) {
@@ -55,6 +58,17 @@ export async function runIdentityCli(
   let db;
   try {
     db = openIdentityDatabase(identityDataDirectory(dataDir));
+    if (command === 'satt-roll') {
+      // satt-roll skapar aldrig en användare: en felstavad adress ska bli ett fel, inte ett konto.
+      const existing = findUserByEmail(db, address);
+      if (existing === null) {
+        output.err('Det finns ingen användare med den adressen.');
+        return 1;
+      }
+      const user = setUserRole(db, existing.userId, role, Date.now());
+      output.out(`Användaren ${user.userId} har nu rollen ${user.role}.`);
+      return 0;
+    }
     const user = upsertUser(db, email, role, Date.now());
     output.out(
       user.created
