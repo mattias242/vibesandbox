@@ -120,6 +120,13 @@ export class Varld extends World {
   /** Sökvägen till "den sidan" i scenariot om egna skyddsregler. */
   sida: string | undefined;
 
+  /**
+   * Allt plattformen loggat under scenariot, en rad per loggpost. Utan en loggare skriver
+   * plattformen ingenting alls (`silentLogger`), och då går det inte att pröva vad som INTE står
+   * i driftloggarna — t.ex. att en e-postadress aldrig hamnar där.
+   */
+  readonly loggrader: string[] = [];
+
   readonly appar = new Map<string, AppId>();
   readonly personer = new Map<string, Person>();
   /** Det dokument var och en senast sparade — "Annas dokument". */
@@ -210,6 +217,13 @@ export class Varld extends World {
         listenHost: '127.0.0.1',
         publicScheme: 'http',
         identity: { provider: 'test', testSecret: TESTHEMLIGHET },
+        logger: (post) => {
+          try {
+            this.loggrader.push(JSON.stringify(post));
+          } catch {
+            this.loggrader.push('[loggpost som inte gick att skriva ut]');
+          }
+        },
         ...(builder === undefined ? {} : { builder }),
         ...(this.kvot === undefined ? {} : { limits: this.kvot }),
         ...(this.tjanster.length === 0 ? {} : { appServices: { enabled: this.tjanster, env: tjanstMiljo } }),
