@@ -15,6 +15,12 @@
  * Kontrollrummet (#/admin) är påslaget: `/me` svarar `isAdmin: true`. Starta med ADMIN_NEKAD=1
  * för att se hur vyn möter ett nej från servern — länken visas fortfarande, för vyn får aldrig
  * lita på `isAdmin`.
+ *
+ * Adresslistan i kontrollrummet ändrar låtsas-serverns EGET tillstånd, så att en inbjudan och en
+ * rolländring går att klicka igenom på riktigt och syns i siffrorna. Felvägarna:
+ *   "upptagen@…"          → 429 (för många ändringar)
+ *   "krock@…"             → 409 (någon annan hann före)
+ *   den egna raden        → 400 (servern nekar; vyn erbjuder det aldrig)
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
@@ -31,6 +37,7 @@ import {
   type BuilderAppDetail,
   type BuilderJob,
   type BuilderMessage,
+  type Role,
 } from '@vibesandbox/contracts';
 
 export const MOCK_MARKER = 'vibesandbox-builder-ui-mock';
@@ -130,6 +137,42 @@ const ADMIN_DEMO_APPS: readonly AdminApp[] = [
   },
 ];
 
+interface MockUser {
+  userId: string;
+  email: string;
+  role: Role;
+  createdAt: string;
+  self: boolean;
+}
+
+/**
+ * Adresserna som får logga in. Första raden är den inloggade själv (`self`), så att vyn har en rad
+ * som INTE får någon knapp — det är den regeln som är värd att se med egna ögon.
+ *
+ * Kontraktets `AdminUser` är genomgående `readonly` — svaret ska inte gå att ändra där det tagits
+ * emot. Låtsas-serverns eget tillstånd är däremot just det som ska ändras, därav den egna typen.
+ */
+const adminUsers: MockUser[] = [
+  { userId: 'u-anna', email: 'anna@example.se', role: 'admin', createdAt: '2026-05-04T09:12:00Z', self: true },
+  { userId: 'u-karin', email: 'karin@example.se', role: 'builder', createdAt: '2026-06-18T13:40:00Z', self: false },
+  { userId: 'u-johan', email: 'johan@example.se', role: 'builder', createdAt: '2026-07-02T08:05:00Z', self: false },
+  { userId: 'u-sara', email: 'sara@example.se', role: 'viewer', createdAt: '2026-08-29T15:20:00Z', self: false },
+  { userId: 'u-per', email: 'per@example.se', role: 'viewer', createdAt: '2026-09-11T11:00:00Z', self: false },
+];
+
+/** Rollerna i styrka, så att en inbjudan kan höja men aldrig sänka — precis som kontraktet säger. */
+const ROLE_RANK: Record<Role, number> = { viewer: 1, builder: 2, admin: 3 };
+
+function isRole(value: unknown): value is Role {
+  return value === 'admin' || value === 'builder' || value === 'viewer';
+}
+
+function countAdminUsers(): { admin: number; builder: number; viewer: number } {
+  const counts = { admin: 0, builder: 0, viewer: 0 };
+  for (const user of adminUsers) counts[user.role] += 1;
+  return counts;
+}
+
 /** Låtsas-appar man byggt under körningen, som rader i kontrollrummet. */
 function adminRows(): AdminApp[] {
   const own = [...apps.values()].map((app) => ({
@@ -155,8 +198,7 @@ function adminOverview(): AdminOverview {
     apps: rows.length,
     published: rows.filter((row) => row.published).length,
     drafts: rows.filter((row) => row.hasDraft && !row.published).length,
-    // Nollor, precis som i den här skivan av den riktiga rutten: adresserna räknas inte än.
-    users: { admin: 0, builder: 0, viewer: 0 },
+    users: countAdminUsers(),
     tokens: { ...tokens, jobs: jobs.size + 37 },
     failedJobs: 2,
   };
@@ -282,11 +324,46 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   // Kontrollrummet. Låtsas-servern släpper in alla — den riktiga rutten kräver rollen `admin`.
   // Vill du se hur nekad åtkomst ser ut: starta om med ADMIN_NEKAD=1 i miljön.
   if (path.startsWith('/admin/')) {
-    if (method !== 'GET') return fail(res, 405, 'method_not_allowed', 'Det går inte.');
     if (process.env['ADMIN_NEKAD'] === '1') return fail(res, 403, 'forbidden', 'Åtkomst nekad.');
-    if (path === '/admin/oversikt') return send(res, 200, adminOverview());
-    if (path === '/admin/appar') return send(res, 200, { apps: adminRows() });
-    return fail(res, 404, 'not_found', 'Det finns inte.');
+    if (method === 'GET') {
+      if (path === '/admin/oversikt') return send(res, 200, adminOverview());
+      if (path === '/admin/appar') return send(res, 200, { apps: adminRows() });
+      if (path === '/admin/anvandare') return send(res, 200, { users: adminUsers });
+      return fail(res, 404, 'not_found', 'Det finns inte.');
+    }
+    if (method === 'POST' && path === '/admin/anvandare') {
+      const body = await readJson(req);
+      const email = typeof body['email'] === 'string' ? body['email'].trim().toLowerCase() : '';
+      const role = body['role'];
+      if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(email) || !isRole(role)) {
+        return fail(res, 400, 'invalid_request', 'Ogiltig adress eller roll.');
+      }
+      if (email.startsWith('upptagen@')) return fail(res, 429, 'rate_limited', 'För många ändringar.');
+      if (email.startsWith('krock@')) return fail(res, 409, 'scope_mismatch', 'Någon annan hann före.');
+      const existing = adminUsers.find((user) => user.email === email);
+      if (existing !== undefined) {
+        // Den här vägen HÖJER bara — att sänka går bara på personens egen sökväg.
+        if (ROLE_RANK[role] > ROLE_RANK[existing.role]) existing.role = role;
+        return send(res, 201, { user: existing });
+      }
+      const user: MockUser = { userId: newId('u'), email, role, createdAt: now(), self: false };
+      adminUsers.push(user);
+      return send(res, 201, { user });
+    }
+    const userMatch = /^\/admin\/anvandare\/([\w-]+)$/.exec(path);
+    if (method === 'POST' && userMatch !== null) {
+      const user = adminUsers.find((row) => row.userId === userMatch[1]);
+      if (user === undefined) return fail(res, 404, 'not_found', 'Det finns inte.');
+      // Den egna raden: en administratör som sänker sig själv låser ut sig, så servern nekar.
+      if (user.self) return fail(res, 400, 'invalid_request', 'Du kan inte ändra din egen roll.');
+      const body = await readJson(req);
+      const role = body['role'];
+      if (!isRole(role)) return fail(res, 400, 'invalid_request', 'Ogiltig roll.');
+      if (user.email.startsWith('krock@')) return fail(res, 409, 'scope_mismatch', 'Någon annan hann före.');
+      user.role = role;
+      return send(res, 200, { user });
+    }
+    return fail(res, 405, 'method_not_allowed', 'Det går inte.');
   }
 
   if (path === '/apps') {

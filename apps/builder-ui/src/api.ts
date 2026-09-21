@@ -11,6 +11,7 @@ import {
   CSRF_HEADER,
   type AdminApp,
   type AdminOverview,
+  type AdminUser,
   type ApiErrorCode,
   type BuilderAppDetail,
   type BuilderAppMember,
@@ -18,6 +19,7 @@ import {
   type BuilderFeedback,
   type BuilderJob,
   type BuilderMe,
+  type Role,
 } from '@vibesandbox/contracts';
 
 export class ApiError extends Error {
@@ -64,6 +66,15 @@ export interface ApiClient {
   adminOverview(): Promise<AdminOverview>;
   /** Kontrollrummet: alla appar, senast ändrad först. Aldrig hela app-id:t. */
   adminApps(): Promise<readonly AdminApp[]>;
+  /** Kontrollrummet: alla adresser som får logga in, och med vilken roll. */
+  adminUsers(): Promise<readonly AdminUser[]>;
+  /**
+   * Bjuder in adressen, eller höjer rollen om den redan finns. Servern svarar likadant i båda
+   * fallen, så vyn avgör själv vilket det var genom att se efter i listan den redan har.
+   */
+  adminInvite(email: string, role: Role): Promise<AdminUser>;
+  /** Sätter rollen rakt av — den enda vägen att sänka. Den egna raden avvisas av servern. */
+  adminSetRole(userId: string, role: Role): Promise<AdminUser>;
 }
 
 export const NETWORK_ERROR_MESSAGE = 'Kunde inte nå servern. Kontrollera uppkopplingen och försök igen.';
@@ -191,6 +202,36 @@ function checkAdminApps(value: unknown): readonly AdminApp[] {
   });
 }
 
+/**
+ * En rad ur kontrollrummets adresslista. Hårdare än den ser ut: `userId` hamnar i sökvägen när en
+ * roll sätts, och `role` styr vilken knapp vyn visar — en roll utanför kontraktet skulle lämna
+ * vyn i ett läge den inte kan rita. `self` avgör om raden får en knapp alls, så en rad utan det
+ * fältet är inte ett tomt värde utan ett trasigt svar.
+ */
+function checkAdminUser(value: unknown): AdminUser {
+  const row = fields(value);
+  const { userId, email, role, createdAt, self } = row;
+  if (
+    typeof userId !== 'string' ||
+    !ID_PATTERN.test(userId) ||
+    typeof email !== 'string' ||
+    email === '' ||
+    email.length > 254 ||
+    (role !== 'admin' && role !== 'builder' && role !== 'viewer') ||
+    typeof createdAt !== 'string' ||
+    createdAt === '' ||
+    typeof self !== 'boolean'
+  ) {
+    throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  }
+  return { userId, email, role, createdAt, self };
+}
+
+function checkAdminUsers(value: unknown): readonly AdminUser[] {
+  if (!Array.isArray(value)) throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  return value.map((item: unknown) => checkAdminUser(item));
+}
+
 /** Adresser från servern hamnar i en iframe eller en länk — bara http(s) godtas, aldrig `javascript:`. */
 function checkHttpUrl(value: unknown): string {
   if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
@@ -300,5 +341,18 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     adminOverview: async () => checkOverview(await request<unknown>('GET', '/admin/oversikt')),
 
     adminApps: async () => checkAdminApps((await request<{ apps?: unknown }>('GET', '/admin/appar')).apps),
+
+    adminUsers: async () => checkAdminUsers((await request<{ users?: unknown }>('GET', '/admin/anvandare')).users),
+
+    adminInvite: async (email, role) => {
+      // Kroppen byggs fält för fält: bara adressen och rollen går iväg.
+      const result = await request<{ user?: unknown }>('POST', '/admin/anvandare', { email, role });
+      return checkAdminUser(result.user);
+    },
+
+    adminSetRole: async (userId, role) => {
+      const path = `/admin/anvandare/${checkId(userId, 'Den personen finns inte i listan.')}`;
+      return checkAdminUser((await request<{ user?: unknown }>('POST', path, { role })).user);
+    },
   };
 }

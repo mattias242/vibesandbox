@@ -410,3 +410,85 @@ describe('kontrollrummet', () => {
     expect(error).toMatchObject({ status: 403, code: 'forbidden' });
   });
 });
+
+/**
+ * Kontrollrummets adresser och roller. Här finns adminvyns första SKRIVANDE anrop, så
+ * skyddshuvudet är det som måste sitta: utan det avvisar gatewayn anropet som CSRF.
+ *
+ * Svaret kontrolleras lika hårt som applistan. Ett `userId` hamnar i en sökväg, och en `role`
+ * som inte är kontraktets styr vilken knapp vyn visar — bägge avvisas innan de nått vyn.
+ */
+describe('kontrollrummets adresser', () => {
+  const USER = {
+    userId: 'u-01jabcde',
+    email: 'anna@example.se',
+    role: 'admin',
+    createdAt: '2026-09-01T08:00:00Z',
+    self: true,
+  };
+
+  it('GET hämtar listan utan skyddshuvud', async () => {
+    const { api, calls } = client(() => json(200, { users: [USER] }));
+    await expect(api.adminUsers()).resolves.toEqual([USER]);
+    expect(`${calls[0]?.method} ${calls[0]?.url}`).toBe(`GET ${BUILDER_API_PREFIX}/admin/anvandare`);
+    expect(calls[0]?.headers[CSRF_HEADER]).toBeUndefined();
+    expect(calls[0]?.credentials).toBe('same-origin');
+  });
+
+  it('inbjudan skickar adress och roll med skyddshuvudet', async () => {
+    const invited = { ...USER, userId: 'u-ny', email: 'ny@example.se', role: 'builder', self: false };
+    const { api, calls } = client(() => json(201, { user: invited }));
+    await expect(api.adminInvite('ny@example.se', 'builder')).resolves.toEqual(invited);
+
+    expect(`${calls[0]?.method} ${calls[0]?.url}`).toBe(`POST ${BUILDER_API_PREFIX}/admin/anvandare`);
+    expect(calls[0]?.headers[CSRF_HEADER]).toBe('1');
+    expect(calls[0]?.headers['content-type']).toBe('application/json');
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual({ email: 'ny@example.se', role: 'builder' });
+  });
+
+  it('en ny roll sätts på personens egen sökväg, också med skyddshuvudet', async () => {
+    const changed = { ...USER, userId: 'u-annan', email: 'b@example.se', role: 'viewer', self: false };
+    const { api, calls } = client(() => json(200, { user: changed }));
+    await expect(api.adminSetRole('u-annan', 'viewer')).resolves.toEqual(changed);
+
+    expect(`${calls[0]?.method} ${calls[0]?.url}`).toBe(`POST ${BUILDER_API_PREFIX}/admin/anvandare/u-annan`);
+    expect(calls[0]?.headers[CSRF_HEADER]).toBe('1');
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual({ role: 'viewer' });
+  });
+
+  it('ett id som skulle leda anropet någon annanstans skickas aldrig iväg', async () => {
+    const { api, calls } = client(() => json(200, { user: USER }));
+    await expect(api.adminSetRole('../andra', 'viewer')).rejects.toBeInstanceOf(ApiError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    ['saknar listan', {}],
+    ['listan är inget fält', { users: 'anna@example.se' }],
+    ['en rad saknar adress', { users: [{ ...USER, email: undefined }] }],
+    ['en rad har en roll som inte finns i kontraktet', { users: [{ ...USER, role: 'superadmin' }] }],
+    ['en rad saknar vem som frågar', { users: [{ ...USER, self: undefined }] }],
+    ['en rad har ett id som inte går att använda i en sökväg', { users: [{ ...USER, userId: '../x' }] }],
+  ])('en lista som %s blir ett fel i klarspråk, inte en trasig vy', async (_name, body) => {
+    const { api } = client(() => json(200, body));
+    const error = (await api.adminUsers().catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.message).toMatch(/Något gick fel/);
+  });
+
+  it.each([
+    ['saknar användaren', {}],
+    ['har en roll som inte finns', { user: { ...USER, role: 'owner' } }],
+    ['säger inte vem som frågar', { user: { ...USER, self: 'ja' } }],
+  ])('ett svar på en ändring som %s avvisas — vyn ändras aldrig på ett trasigt svar', async (_name, body) => {
+    const { api } = client(() => json(200, body));
+    await expect(api.adminInvite('ny@example.se', 'builder')).rejects.toBeInstanceOf(ApiError);
+    await expect(api.adminSetRole('u-annan', 'viewer')).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it.each([400, 403, 409, 429])('serverns %i går igenom med sin status, så vyn kan säga varför', async (status) => {
+    const { api } = client(() => json(status, { error: { code: 'invalid_request', message: 'Nej.' } }));
+    const error = (await api.adminSetRole('u-annan', 'viewer').catch((caught: unknown) => caught)) as ApiError;
+    expect(error.status).toBe(status);
+  });
+});

@@ -1214,3 +1214,119 @@ body:has(.page-admin) .topbar-inner {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Kontrollrummets tredje del: vilka som får logga in.
+
+   Den enda delen av kontrollrummet som ändrar något, och därför den enda med
+   fält och knappar. Inga nya färger: rollförklaringarna står på --surface med
+   --ink (14,5:1), dolda etiketter använder .visually-hidden, och knapparna är
+   stilmallens .button — alltså --blue mot vitt (6,6:1) och vit text på --blue
+   (6,6:1). Klickytorna mäts i px via var(--tap), aldrig i rem.
+   ────────────────────────────────────────────────────────────────────────────── */
+
+/* Vad de tre rollerna får göra. Ett kort per roll, som lägger sig om efter bredden. */
+.admin-roles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 1.5rem;
+}
+
+.admin-role {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.75rem 0.9rem;
+}
+
+.admin-role dt {
+  font-weight: 600;
+}
+
+.admin-role dd {
+  margin: 0.15rem 0 0;
+  color: var(--muted); /* mot --surface 6,9:1 */
+  font-size: 0.95rem;
+}
+
+.admin-invite {
+  margin: 0 0 1.5rem;
+  max-width: 44rem;
+}
+
+/* Fälten bredvid varandra när skärmen räcker till, annars under varandra.
+   Knappen ligger i linje med fältens underkant, inte med deras etiketter. */
+.admin-invite-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.admin-field {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.admin-field-role {
+  flex: 0 1 12rem;
+}
+
+.admin-field .input {
+  width: 100%;
+}
+
+/* Menyn ser ut som fälten intill: samma ram, samma höjd, samma textstorlek. Den egna
+   pilen behålls (inget eget grafiskt påhitt) men får plats genom en bredare högermarginal. */
+.admin-select {
+  flex: none;
+  padding-right: 2rem;
+  background: var(--white);
+}
+
+.admin-user-email {
+  /* Långa adresser bryts hellre än att tvinga fram sidledsrullning i hela tabellen. */
+  overflow-wrap: anywhere;
+  min-width: 12rem;
+  font-weight: 400;
+}
+
+/* Raden som är en själv: ingen knapp, bara en mening om varför. Samma dämpade färg som
+   övriga upplysningar i tabellen, --muted mot vitt (7,4:1). */
+.admin-self-note {
+  margin: 0;
+  max-width: 24rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* Menyn och knappen på en rad; beskedet under dem, över hela bredden. */
+.admin-role-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 15rem;
+}
+
+.admin-role-form .admin-select {
+  flex: 0 1 9.5rem;
+  font-size: 1rem;
+}
+
+/* Knappen i tabellraden är smalare än sidans övriga, men aldrig lägre: 44 px står kvar. */
+.button-role {
+  padding: 0.4rem 0.9rem;
+}
+
+.admin-role-form .status-line {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+/* Status utan text ska inte lämna en tom rad efter sig i varje tabellcell. */
+.admin-role-form .status-line:empty {
+  min-height: 0;
+}

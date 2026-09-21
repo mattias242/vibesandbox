@@ -1,28 +1,61 @@
-import { useEffect, useState } from 'react';
-import { ADMIN_TOKEN_WINDOW_DAYS, type AdminApp, type AdminOverview } from '@vibesandbox/contracts';
+import { useEffect, useId, useState, type FormEvent } from 'react';
+import {
+  ADMIN_TOKEN_WINDOW_DAYS,
+  type AdminApp,
+  type AdminOverview,
+  type AdminUser,
+  type Role,
+} from '@vibesandbox/contracts';
 import {
   ADMIN_APPS_HEADING,
   ADMIN_EMPTY,
   ADMIN_FIGURES_HEADING,
   ADMIN_ID_NOTE,
+  ADMIN_INVITE_BUTTON,
+  ADMIN_INVITE_EMAIL_LABEL,
+  ADMIN_INVITE_HEADING,
+  ADMIN_INVITE_NOTE,
+  ADMIN_INVITE_ROLE_LABEL,
+  ADMIN_INVITE_SENDING,
   ADMIN_LEAD,
   ADMIN_LOADING,
   ADMIN_OWNER_MISSING,
+  ADMIN_ROLE_BUTTON,
+  ADMIN_ROLE_SAVING,
+  ADMIN_ROLE_SELECT_LABEL,
+  ADMIN_SELF_NOTE,
   ADMIN_TITLE,
   ADMIN_TOKENS_NOTE,
-  ADMIN_USERS_UNKNOWN,
+  ADMIN_USERS_COLUMNS,
+  ADMIN_USERS_HEADING,
+  ADMIN_USERS_LEAD,
+  ROLES,
+  ROLE_TEXTS,
   adminErrorMessage,
+  countRoles,
+  inviteErrorMessage,
+  invitedMessage,
+  roleChangedMessage,
+  roleErrorMessage,
+  roleLabel,
   statusOf,
+  validateInviteEmail,
+  withUser,
 } from './admin.ts';
 import { api } from './client.ts';
 import { formatCount, formatUpdated } from './format.ts';
 
 /**
- * Kontrollrummet: plattformens administratör ser alla appar utan att gå in på servern.
+ * Kontrollrummet: plattformens administratör ser alla appar utan att gå in på servern, och
+ * bestämmer vilka adresser som får logga in.
  *
- * Vyn är ren läsning — här finns inte en enda knapp som ändrar något, och inte en enda länk in i
- * någon annans app. Appens fulla id är dess hemliga adress; listan visar bara början av den, och
- * gör aldrig en länk av den.
+ * Applistan är ren läsning — där finns inte en enda knapp, och inte en enda länk in i någon annans
+ * app. Appens fulla id är dess hemliga adress; listan visar bara början av den, och gör aldrig en
+ * länk av den.
+ *
+ * Adresslistan ändrar. Den ändrar först när servern har svarat: knapparna skickar, och det är
+ * SERVERNS rad som läggs in i listan. Ett misslyckat anrop lämnar därför vyn precis som den var,
+ * med ett besked om varför.
  *
  * Hämtningen och utseendet ligger isär: `AdminPage` hämtar, `AdminView` visar. Då går vyns alla
  * lägen — laddar, tom, full lista, nekad — att pröva utan webbläsare.
@@ -30,17 +63,19 @@ import { formatCount, formatUpdated } from './format.ts';
 export function AdminPage() {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [apps, setApps] = useState<readonly AdminApp[] | null>(null);
+  const [users, setUsers] = useState<readonly AdminUser[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    // Båda anropen tillsammans: vyn visar ingenting förrän den har hela bilden, och ett nekat
+    // Alla tre anropen tillsammans: vyn visar ingenting förrän den har hela bilden, och ett nekat
     // anrop ska ge ett besked — inte en halv sida.
-    Promise.all([api.adminOverview(), api.adminApps()]).then(
-      ([nextOverview, nextApps]) => {
+    Promise.all([api.adminOverview(), api.adminApps(), api.adminUsers()]).then(
+      ([nextOverview, nextApps, nextUsers]) => {
         if (cancelled) return;
         setOverview(nextOverview);
         setApps(nextApps);
+        setUsers(nextUsers);
       },
       (caught: unknown) => {
         if (!cancelled) setError(adminErrorMessage(caught));
@@ -51,16 +86,54 @@ export function AdminPage() {
     };
   }, []);
 
-  return <AdminView overview={overview} apps={apps} error={error} />;
+  /**
+   * Efter en ändring är listan sanningen. Siffrorna räknas om ur den, så att panelen och tabellen
+   * på samma sida inte säger olika saker.
+   */
+  function accept(user: AdminUser): { next: readonly AdminUser[]; existed: boolean } {
+    const current = users ?? [];
+    const existed = current.some((row) => row.userId === user.userId);
+    const next = withUser(current, user);
+    setUsers(next);
+    setOverview((previous) => (previous === null ? previous : { ...previous, users: countRoles(next) }));
+    return { next, existed };
+  }
+
+  async function invite(email: string, role: Role): Promise<string> {
+    const user = await api.adminInvite(email, role);
+    const { existed } = accept(user);
+    return invitedMessage(user, existed);
+  }
+
+  async function setRole(userId: string, role: Role): Promise<string> {
+    const user = await api.adminSetRole(userId, role);
+    accept(user);
+    return roleChangedMessage(user);
+  }
+
+  return (
+    <AdminView
+      overview={overview}
+      apps={apps}
+      users={users}
+      error={error}
+      onInvite={(email, role) => invite(email, role)}
+      onSetRole={(userId, role) => setRole(userId, role)}
+    />
+  );
 }
 
 export interface AdminViewProps {
   readonly overview: AdminOverview | null;
   readonly apps: readonly AdminApp[] | null;
+  readonly users: readonly AdminUser[] | null;
   readonly error: string | null;
+  /** Löser ut med beskedet att visa; kastar serverns fel, som vyn översätter till klarspråk. */
+  readonly onInvite: (email: string, role: Role) => Promise<string>;
+  readonly onSetRole: (userId: string, role: Role) => Promise<string>;
 }
 
-export function AdminView({ overview, apps, error }: AdminViewProps) {
+export function AdminView({ overview, apps, users, error, onInvite, onSetRole }: AdminViewProps) {
   return (
     <div className="page page-admin">
       <h1>{ADMIN_TITLE}</h1>
@@ -70,7 +143,7 @@ export function AdminView({ overview, apps, error }: AdminViewProps) {
         <p className="notice notice-error" role="alert">
           {error}
         </p>
-      ) : overview === null || apps === null ? (
+      ) : overview === null || apps === null || users === null ? (
         <p className="muted" aria-live="polite">
           {ADMIN_LOADING}
         </p>
@@ -86,9 +159,13 @@ export function AdminView({ overview, apps, error }: AdminViewProps) {
               <Figure label="Bygg som gick fel" value={overview.failedJobs} />
               <Figure label="Tokens in" value={overview.tokens.input} />
               <Figure label="Tokens ut" value={overview.tokens.output} />
+              {/* Adresserna som får logga in, per roll. Rollerna med sina svenska namn, samma
+                  ord som i listan längre ned — annars ser det ut som två olika saker. */}
+              {ROLES.map((role) => (
+                <Figure key={role} label={roleLabel(role)} value={overview.users[role]} />
+              ))}
             </dl>
             <p className="hint">{ADMIN_TOKENS_NOTE}</p>
-            <p className="hint">{ADMIN_USERS_UNKNOWN}</p>
           </section>
 
           <section className="admin-block" aria-labelledby="admin-apps-heading">
@@ -96,6 +173,8 @@ export function AdminView({ overview, apps, error }: AdminViewProps) {
             <p className="hint">{ADMIN_ID_NOTE}</p>
             {apps.length === 0 ? <p className="muted">{ADMIN_EMPTY}</p> : <AppTable apps={apps} />}
           </section>
+
+          <UsersSection users={users} onInvite={onInvite} onSetRole={onSetRole} />
         </>
       )}
     </div>
@@ -162,5 +241,224 @@ function AppTable({ apps }: { apps: readonly AdminApp[] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** Kontrollrummets tredje del: vilka som får logga in, och med vilken roll. */
+function UsersSection({
+  users,
+  onInvite,
+  onSetRole,
+}: {
+  users: readonly AdminUser[];
+  onInvite: AdminViewProps['onInvite'];
+  onSetRole: AdminViewProps['onSetRole'];
+}) {
+  return (
+    <section className="admin-block" aria-labelledby="admin-users-heading">
+      <h2 id="admin-users-heading">{ADMIN_USERS_HEADING}</h2>
+      <p className="hint">{ADMIN_USERS_LEAD}</p>
+
+      {/* Vad de tre rollerna får göra. Sagt en gång, här — skillnaden mellan dem är inte
+          självklar, och den som väljer roll åt en kollega behöver veta det innan hen väljer. */}
+      <dl className="admin-roles">
+        {ROLES.map((role) => (
+          <div className="admin-role" key={role}>
+            <dt>{ROLE_TEXTS[role].label}</dt>
+            <dd>{ROLE_TEXTS[role].explanation}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <InviteForm onInvite={onInvite} />
+      <UserTable users={users} onSetRole={onSetRole} />
+    </section>
+  );
+}
+
+function InviteForm({ onInvite }: { onInvite: AdminViewProps['onInvite'] }) {
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState<Role>('builder');
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const emailId = useId();
+  const roleId = useId();
+  const resultId = useId();
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (sending) return;
+    const checked = validateInviteEmail(email);
+    if (!checked.ok) {
+      setResult({ ok: false, message: checked.message });
+      return;
+    }
+    setSending(true);
+    setResult(null);
+    try {
+      const message = await onInvite(checked.email, role);
+      // Rutan töms först nu: går anropet fel står adressen kvar, och går att skicka om.
+      setEmail('');
+      setResult({ ok: true, message });
+    } catch (caught) {
+      setResult({ ok: false, message: inviteErrorMessage(caught) });
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <form className="admin-invite" onSubmit={(event) => void submit(event)} noValidate>
+      <h3>{ADMIN_INVITE_HEADING}</h3>
+      <p className="hint">{ADMIN_INVITE_NOTE}</p>
+      <div className="admin-invite-row">
+        <div className="admin-field">
+          <label className="field-label" htmlFor={emailId}>
+            {ADMIN_INVITE_EMAIL_LABEL}
+          </label>
+          <input
+            id={emailId}
+            className="input"
+            type="email"
+            inputMode="email"
+            autoComplete="off"
+            spellCheck={false}
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            aria-invalid={result !== null && !result.ok}
+            aria-describedby={resultId}
+            disabled={sending}
+          />
+        </div>
+        <div className="admin-field admin-field-role">
+          <label className="field-label" htmlFor={roleId}>
+            {ADMIN_INVITE_ROLE_LABEL}
+          </label>
+          <select
+            id={roleId}
+            className="input admin-select"
+            value={role}
+            onChange={(event) => setRole(event.target.value as Role)}
+            disabled={sending}
+          >
+            {ROLES.map((value) => (
+              <option key={value} value={value}>
+                {roleLabel(value)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button type="submit" className="button button-primary" disabled={sending}>
+          {sending ? ADMIN_INVITE_SENDING : ADMIN_INVITE_BUTTON}
+        </button>
+      </div>
+      <p id={resultId} className={result?.ok === false ? 'status-line status-error' : 'status-line'} aria-live="polite">
+        {result?.message ?? ''}
+      </p>
+    </form>
+  );
+}
+
+/**
+ * Adressen är radens rubrik (`th scope="row"`), så att en skärmläsare kan knyta varje cell till
+ * rätt person. Adressen står BARA där och i beskedet efter en ändring — aldrig i ett `aria-label`,
+ * en `title` eller ett `id`, eftersom sådant följer med i uppläsningen utan att någon bett om det.
+ */
+function UserTable({ users, onSetRole }: { users: readonly AdminUser[]; onSetRole: AdminViewProps['onSetRole'] }) {
+  return (
+    <div className="admin-table-scroll" role="region" aria-label={ADMIN_USERS_HEADING} tabIndex={0}>
+      <table className="admin-table">
+        <caption className="visually-hidden">Alla adresser som får logga in i plattformen</caption>
+        <thead>
+          <tr>
+            <th scope="col">{ADMIN_USERS_COLUMNS.email}</th>
+            <th scope="col">{ADMIN_USERS_COLUMNS.role}</th>
+            <th scope="col">{ADMIN_USERS_COLUMNS.created}</th>
+            <th scope="col">{ADMIN_USERS_COLUMNS.change}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {users.map((user) => (
+            <tr key={user.userId}>
+              <th scope="row" className="admin-user-email">
+                {user.email}
+              </th>
+              <td>
+                <span className="badge">{roleLabel(user.role)}</span>
+              </td>
+              <td>{formatUpdated(user.createdAt)}</td>
+              <td>
+                {user.self ? (
+                  // Ingen knapp, inte ens en inaktiverad: en knapp som bara kan misslyckas är ett
+                  // löfte vyn inte kan hålla. I stället står det varför raden ser annorlunda ut.
+                  <p className="admin-self-note">{ADMIN_SELF_NOTE}</p>
+                ) : (
+                  <RoleForm user={user} onSetRole={onSetRole} />
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RoleForm({ user, onSetRole }: { user: AdminUser; onSetRole: AdminViewProps['onSetRole'] }) {
+  const [role, setRole] = useState<Role>(user.role);
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const selectId = useId();
+  const resultId = useId();
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (saving || role === user.role) return;
+    setSaving(true);
+    setResult(null);
+    try {
+      const message = await onSetRole(user.userId, role);
+      setResult({ ok: true, message });
+    } catch (caught) {
+      // Menyn ställs tillbaka: raden ska läsas som den ÄR, inte som någon hoppades att den blev.
+      setRole(user.role);
+      setResult({ ok: false, message: roleErrorMessage(caught) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form className="admin-role-form" onSubmit={(event) => void submit(event)}>
+      {/* Etiketten är dold för ögat men läses upp. Den säger "den här raden", aldrig adressen:
+          radrubriken ger skärmläsaren personen, och adressen behöver inte upprepas i ett attribut. */}
+      <label className="visually-hidden" htmlFor={selectId}>
+        {ADMIN_ROLE_SELECT_LABEL}
+      </label>
+      <select
+        id={selectId}
+        className="input admin-select"
+        value={role}
+        disabled={saving}
+        aria-describedby={resultId}
+        onChange={(event) => setRole(event.target.value as Role)}
+      >
+        {ROLES.map((value) => (
+          <option key={value} value={value}>
+            {roleLabel(value)}
+          </option>
+        ))}
+      </select>
+      <button type="submit" className="button button-role" disabled={saving || role === user.role}>
+        {saving ? ADMIN_ROLE_SAVING : ADMIN_ROLE_BUTTON}
+      </button>
+      <p
+        id={resultId}
+        className={result?.ok === false ? 'status-line status-error' : 'status-line'}
+        aria-live="polite"
+      >
+        {result?.message ?? ''}
+      </p>
+    </form>
   );
 }
