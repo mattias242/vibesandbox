@@ -5,7 +5,6 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LlmError, createFakeProvider } from '@vibesandbox/llm';
-import type { FakeProvider } from '@vibesandbox/llm';
 import type { AppService, LlmProvider } from '@vibesandbox/contracts';
 import { createLlmService, factory } from '../src/index.ts';
 import { startaFejkBerget } from './fejk-berget.ts';

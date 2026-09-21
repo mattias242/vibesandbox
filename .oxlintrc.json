@@ -2,6 +2,8 @@
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "ignorePatterns": ["**/dist/**", "**/node_modules/**", "spikes/**"],
   "rules": {
-    "no-control-regex": "off"
+    "no-control-regex": "off",
+    "unicorn/no-useless-spread": "off",
+    "unicorn/no-new-array": "off"
   }
 }

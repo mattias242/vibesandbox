@@ -416,7 +416,10 @@ describe('PDF', () => {
     svarare = () => Response.json({ content: KVITTO, usage: { pages: 1 } });
     const svar = await tjanst({ SVC_OCR_MODEL: 'berget-ocr' }).handle(begaran({ fileId: 'kvitto' }));
     expect(kropp(svar)).toEqual({ text: KVITTO, pages: [{ number: 1, text: KVITTO }] });
-    expect((anrop[0]?.body['document'] as { url: string }).url.startsWith('data:image/png;base64,')).toBe(true);
+    // Uteblivet anrop ska säga just det, inte kasta TypeError på uppslaget av `document`.
+    const forsta = anrop[0];
+    if (forsta === undefined) throw new Error('Berget anropades aldrig');
+    expect((forsta.body['document'] as { url: string }).url.startsWith('data:image/png;base64,')).toBe(true);
   });
 
   it('dokument-API:ts asynkrona svar och felaktiga svar blir 503', async () => {

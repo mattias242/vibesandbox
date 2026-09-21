@@ -13,11 +13,11 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "oxlint",
+    "lint": "oxlint --deny-warnings",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "bdd": "cucumber-js",
-    "check": "npm run typecheck && npm test && npm run bdd",
+    "check": "npm run lint && npm run typecheck && npm test && npm run bdd",
     "bdd:pagar": "cucumber-js -p pagar"
   },
   "devDependencies": {

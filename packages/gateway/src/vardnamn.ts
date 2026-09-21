@@ -64,7 +64,7 @@ const CONFIG_DOMAIN_PATTERN =
 
 /** Punkten i en domän ska matcha en punkt, inte "vilket tecken som helst". */
 function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\\-]/g, '\\$&');
+  return text.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
 }
 
 function assertConfigDomain(name: string, value: string): void {

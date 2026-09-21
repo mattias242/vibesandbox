@@ -335,7 +335,7 @@ describe('misslyckanden', () => {
 
   it('ok utan bygge räknas som misslyckat — inget kan importeras', async () => {
     const appId = await nyApp(m.builder);
-    m.agent.turer.push(async (input): Promise<AgentTurnResult> => ({
+    m.agent.turer.push(async (_input): Promise<AgentTurnResult> => ({
       ok: true,
       files: TODO,
       summary: 'Klart',

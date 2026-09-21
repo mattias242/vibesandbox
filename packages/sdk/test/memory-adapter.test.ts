@@ -54,7 +54,10 @@ describe('minnesadaptern', () => {
     const doc = await adapter.create('bokningar', 'app', { taggar: ['projektor'] });
     (doc.data['taggar'] as string[]).push('ändrat utifrån');
     const [listed] = (await adapter.list('bokningar', 'app')).documents;
-    (listed?.data['taggar'] as string[]).push('ändrat igen');
+    // Utan den här kontrollen blir ett tomt listningssvar en TypeError på nästa rad i stället
+    // för ett testfel som säger vad som saknades.
+    if (listed === undefined) throw new Error('listningen gav inget dokument');
+    (listed.data['taggar'] as string[]).push('ändrat igen');
     expect((await adapter.get('bokningar', doc.id)).data).toEqual({ taggar: ['projektor'] });
   });
 

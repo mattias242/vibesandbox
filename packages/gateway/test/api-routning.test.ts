@@ -65,7 +65,9 @@ describe('API-routning och felmappning', () => {
     await anropa({ port: server.port, path: '/_api/collections/poster/docs', host: vardnamnForApp(appId) });
 
     const anrop = uppsattning.store.anrop[0];
-    expect((anrop?.extra as { scope: string }).scope).toBe('app');
+    // Uteblivet anrop ska säga "store anropades aldrig", inte kasta TypeError på raden efter.
+    if (anrop === undefined) throw new Error('store anropades aldrig');
+    expect((anrop.extra as { scope: string }).scope).toBe('app');
   });
 
   it('ogiltigt scope-värde ⇒ 400 invalid_request, store anropas inte', async () => {
