@@ -8,7 +8,10 @@
  *   Och samma adress ger alltid samma id, olika adresser olika id
  *   Och id:t är det som en testinloggning för adressen bär (`testUserIdFor`)
  */
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { Identity } from '@vibesandbox/contracts';
 import { createPlatformIdentity, testUserIdFor } from '../src/identitet.ts';
 import type { PlatformConfig } from '../src/config.ts';
@@ -17,10 +20,26 @@ import { TESTHEMLIGHET } from './stod/plattform.ts';
 
 const ANNA: Identity = { userId: 'anv-anna', email: 'anna@example.org', roles: ['builder'] };
 
+/**
+ * Varje plattform får en egen datakatalog. Testläget rör numera disk: användarregistret öppnas
+ * också här, eftersom rollerna bor i ETT register oavsett hur man loggade in. Inbjudans id är
+ * ändå härlett ur adressen och kommer inte ur registret — det är just det som prövas nedan.
+ */
+const oppnade: { close(): Promise<void>; dataDir: string }[] = [];
+
+afterEach(async () => {
+  for (const { close, dataDir } of oppnade.splice(0)) {
+    await close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 function testidentitet(hemlighet = TESTHEMLIGHET): { invite: ReturnType<typeof createPlatformIdentity>['invitations']['invite']; logg: PlatformLogEntry[] } {
   const logg: PlatformLogEntry[] = [];
-  const config = { identity: { provider: 'test', testSecret: hemlighet }, dataDir: '/finns-inte' } as unknown as PlatformConfig;
+  const dataDir = mkdtempSync(join(tmpdir(), 'vibesandbox-testidentitet-'));
+  const config = { identity: { provider: 'test', testSecret: hemlighet }, dataDir } as unknown as PlatformConfig;
   const identitet = createPlatformIdentity(config, (entry) => logg.push(entry));
+  oppnade.push({ close: () => identitet.close(), dataDir });
   return { invite: (request) => identitet.invitations.invite(request), logg };
 }
 

@@ -10,6 +10,20 @@
  * En app som inte går att ge sin ägare (okänd i control, eller control har en ANNAN ägare) loggas
  * och hoppas över: ägaren förblir utelåst från just den appen, men starten stoppas inte och ingen
  * ägare byts ut i tysthet.
+ *
+ * VALT MEDVETET: adressen skrivs INTE in här, trots att bryggan till identiteten (anvandare.ts)
+ * gör den känd vid start och `grantAccess` gärna hade tagit emot den. Kontrollrummet slår i
+ * stället upp den vid varje visning. Skälen, i den ordning de vägde:
+ *
+ *  1. Adressen är en personuppgift. En skrivning hit ger en ANDRA kopia, i en annan databas, som
+ *     ingen längre håller aktuell: byter någon adress i identiteten — eller tas hen bort — ligger
+ *     den gamla kvar i control:s åtkomstlista. Uppslagningen är alltid färsk, och identiteten
+ *     förblir det enda stället adresserna bor.
+ *  2. Det vore en skrivning på befintliga rader vid VARJE start, för varje app, för att fylla i
+ *     något bara kontrollrummet läser — och kontrollrummet öppnas sällan.
+ *
+ * Priset är en uppslagning per visning av applistan. Den är ett anrop för hela listan mot en
+ * SQLite-fil på samma maskin (se admin.ts), alltså billigare än skrivningarna den ersätter.
  */
 import { storedAppId } from './control.ts';
 import type { BuilderControl } from './control.ts';

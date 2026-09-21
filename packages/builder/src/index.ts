@@ -15,6 +15,7 @@ import { resolve } from 'node:path';
 import { API_PREFIX, APP_SERVICE_NAMES } from '@vibesandbox/contracts';
 import type { Agent, AppServiceName, BuilderHandler, Identity, InvitationService, PlatformRequest, SourceFiles } from '@vibesandbox/contracts';
 import { createApi } from './api.ts';
+import type { BuilderUserDirectory } from './anvandare.ts';
 import type { FeedbackMailer } from './aterkoppling.ts';
 import { grantOwnersOnStartup } from './atkomst.ts';
 import type { BuilderUrls } from './api.ts';
@@ -28,6 +29,7 @@ import { createStaticSite } from './statiskt.ts';
 import { internal, notFound, problemResponse } from './svar.ts';
 
 export type { BuilderUrls } from './api.ts';
+export type { BuilderUser, BuilderUserDirectory } from './anvandare.ts';
 export { MAX_FEEDBACK_PER_HOUR, MAX_SHARES_PER_HOUR } from './api.ts';
 export type { FeedbackMail, FeedbackMailer, FeedbackReport } from './aterkoppling.ts';
 export type { BuilderAccessEntry, BuilderControl } from './control.ts';
@@ -37,6 +39,12 @@ export interface BuilderOptions {
   /** Katalog för byggverktygets egen databas, `builder.sqlite`. */
   readonly dataDir: string;
   readonly control: BuilderControl;
+  /**
+   * Vägen till identiteten: vilka adresser som får logga in, och med vilken roll. Bara
+   * kontrollrummet använder den (anvandare.ts). Utan den fungerar byggverktyget som förut —
+   * `AdminOverview.users` blir nollor och användarrutterna svarar `unavailable`.
+   */
+  readonly users?: BuilderUserDirectory;
   readonly agent: Agent;
   /** Källfilerna en ny app börjar från — mallens startpunkt för agenten. */
   readonly starterFiles: SourceFiles;
@@ -106,6 +114,7 @@ export function createBuilder(options: BuilderOptions): Builder {
     storage,
     runner,
     control: options.control,
+    ...(options.users === undefined ? {} : { users: options.users }),
     invitations: options.invitations,
     feedback: options.feedback,
     urls: options.urls,

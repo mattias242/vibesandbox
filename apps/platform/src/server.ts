@@ -85,8 +85,9 @@ export interface Platform {
   /** Ordnad nedstängning. Går att anropa flera gånger; alla anrop väntar in samma nedstängning. */
   close(): Promise<void>;
   /**
-   * Administrativt: lägger till en inbjuden adress eller höjer dess roll, utan mejl. Bara med
-   * e-postinloggning; i testläge avvisas anropet. (I drift görs det med identitetens CLI.)
+   * Administrativt: lägger till en inbjuden adress eller höjer dess roll, utan mejl. Fungerar i
+   * båda inloggningslägena — rollerna bor i samma register oavsett hur man loggar in. (I drift
+   * görs det med identitetens CLI.)
    */
   addUser(email: string, role: Role): Promise<AddedUser>;
 }
@@ -193,6 +194,8 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
       builder = createBuilder({
         dataDir: join(config.dataDir, BUILDER_DIRECTORY),
         control: openControl,
+        // Kontrollrummets väg till adresser och roller — samma register i båda inloggningslägena.
+        users: identity.users,
         agent,
         starterFiles: knowledge.starterFiles,
         invitations: identity.invitations,

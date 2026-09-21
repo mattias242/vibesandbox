@@ -27,6 +27,7 @@ import type {
   PlatformResponse,
 } from '@vibesandbox/contracts';
 import { createAdmin } from './admin.ts';
+import type { BuilderUserDirectory } from './anvandare.ts';
 import { composeFeedbackMail } from './aterkoppling.ts';
 import type { FeedbackMailer } from './aterkoppling.ts';
 import { controlErrorCode, storedAppId } from './control.ts';
@@ -48,6 +49,8 @@ export interface ApiDependencies {
   readonly storage: Storage;
   readonly runner: JobRunner;
   readonly control: BuilderControl;
+  /** Vägen till identiteten, för kontrollrummet. Valfri — se anvandare.ts. */
+  readonly users?: BuilderUserDirectory;
   readonly invitations: InvitationService;
   /** Vägen för återkoppling på byggverktyget till plattformens ägare. */
   readonly feedback: FeedbackMailer;
@@ -152,7 +155,9 @@ type Route =
   | { readonly kind: 'member'; readonly appId: string; readonly memberId: string }
   | { readonly kind: 'job'; readonly jobId: string }
   | { readonly kind: 'adminOverview' }
-  | { readonly kind: 'adminApps' };
+  | { readonly kind: 'adminApps' }
+  | { readonly kind: 'adminUsers' }
+  | { readonly kind: 'adminUser'; readonly userId: string };
 
 const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   me: ['GET'],
@@ -166,9 +171,12 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   members: ['GET'],
   member: ['DELETE'],
   job: ['GET'],
-  // Kontrollrummet är ren läsning: det finns ingen skrivande metod att neka på annat sätt än 405.
+  // Kontrollrummets två vyer är ren läsning: det finns ingen skrivande metod att neka på annat
+  // sätt än 405. Användarhanteringen skriver — men bara med POST: en roll sätts, tas aldrig bort.
   adminOverview: ['GET'],
   adminApps: ['GET'],
+  adminUsers: ['GET', 'POST'],
+  adminUser: ['POST'],
 };
 
 const APP_ACTIONS = new Set(['messages', 'publish', 'open', 'share', 'feedback', 'members'] as const);
@@ -196,12 +204,17 @@ function matchRoute(path: string): Route | null {
   if (first === 'jobs' && second !== undefined && second.length > 0 && third === undefined) {
     return { kind: 'job', jobId: second };
   }
-  // Kontrollrummet: två fasta sökvägar utan id. Jämförelsen är exakt, så `/admin`, `/admin/`,
-  // `/admin/Oversikt` och `/admin/oversikt/extra` är alla lika mycket "ingen rutt". Rollen
-  // kontrolleras i `dispatch`, inte här.
-  if (first === 'admin' && third === undefined) {
-    if (second === 'oversikt') return { kind: 'adminOverview' };
-    if (second === 'appar') return { kind: 'adminApps' };
+  // Kontrollrummet: fasta sökvägar, och ett användar-id som enda rörliga del. Jämförelsen är
+  // exakt, så `/admin`, `/admin/`, `/admin/Oversikt` och `/admin/oversikt/extra` är alla lika
+  // mycket "ingen rutt". Rollen kontrolleras i `dispatch`, inte här. Formen på användar-id:t
+  // prövas också där, med `MEMBER_ID_PATTERN` — det är indata, inte en del av rutten.
+  if (first === 'admin') {
+    if (second === 'oversikt' && third === undefined) return { kind: 'adminOverview' };
+    if (second === 'appar' && third === undefined) return { kind: 'adminApps' };
+    if (second === 'anvandare') {
+      if (third === undefined) return { kind: 'adminUsers' };
+      if (third.length > 0) return { kind: 'adminUser', userId: third };
+    }
     return null;
   }
   return null;
@@ -241,7 +254,7 @@ function summary(app: StoredApp): BuilderAppSummary {
 export function createApi(deps: ApiDependencies): { handle(request: PlatformRequest): Promise<PlatformResponse> } {
   const { storage, runner, control, invitations, feedback, urls, log } = deps;
   const iso = (): string => deps.now().toISOString();
-  const admin = createAdmin({ storage, control, now: deps.now });
+  const admin = createAdmin({ storage, control, ...(deps.users === undefined ? {} : { users: deps.users }), now: deps.now });
 
   /** Delningar som har börjat men inte sparats än, per ägare — så att samtidiga anrop inte slinker förbi taket. */
   const pendingShares = new Map<string, number>();
@@ -520,9 +533,21 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
     // Kontrollrummet har sin egen grind, och den prövas före byggrätten: den som är admin får
     // förstås också bygga, men den som bara är byggare ska få veta att det är adminrollen som
     // saknas — inte ett besked om att hen inte får bygga appar.
-    if (route.kind === 'adminOverview' || route.kind === 'adminApps') {
+    if (route.kind === 'adminOverview' || route.kind === 'adminApps' || route.kind === 'adminUsers' || route.kind === 'adminUser') {
       requireAdmin(identity);
-      return route.kind === 'adminOverview' ? admin.overview() : admin.apps();
+      switch (route.kind) {
+        case 'adminOverview':
+          return admin.overview();
+        case 'adminApps':
+          return admin.apps();
+        case 'adminUsers':
+          return request.method === 'GET' ? admin.users(identity) : admin.invite(identity, parseBody(request));
+        case 'adminUser':
+          // Ett användar-id är ett användar-id: samma form som ett medlems-id. Ett felformat id
+          // når aldrig identiteten — `__proto__`, NUL och överlånga strängar stannar här.
+          if (!MEMBER_ID_PATTERN.test(route.userId)) throw invalid('Personen du vill ändra finns inte i listan.');
+          return admin.setRole(identity, route.userId, parseBody(request));
+      }
     }
     if (!canBuild(identity)) throw new ApiProblem('forbidden', 'Du har inte behörighet att bygga appar.');
 

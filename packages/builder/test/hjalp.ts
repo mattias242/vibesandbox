@@ -20,10 +20,19 @@ import type {
   InvitationService,
   InvitedUser,
   PlatformResponse,
+  Role,
   SourceFiles,
 } from '@vibesandbox/contracts';
 import { createBuilder } from '../src/index.ts';
-import type { Builder, BuilderControl, BuilderLogEntry, BuilderOptions, FeedbackMail, FeedbackMailer } from '../src/index.ts';
+import type {
+  Builder,
+  BuilderControl,
+  BuilderLogEntry,
+  BuilderOptions,
+  BuilderUserDirectory,
+  FeedbackMail,
+  FeedbackMailer,
+} from '../src/index.ts';
 
 // ── Personer ─────────────────────────────────────────────────────────────────────
 
@@ -300,6 +309,98 @@ export function fejkInbjudningar(): FejkInbjudningar {
     },
   };
   return tjanst;
+}
+
+// ── Fejkad användarkatalog (bryggan till identiteten) ────────────────────────────
+
+export interface FejkAnvandare extends BuilderUserDirectory {
+  /** Raderna i den ordning de lades till — identitetens `listUsers` ger äldst först. */
+  readonly rader: { userId: string; email: string; role: Role; createdAt: string | null }[];
+  /** Hur många gånger adresserna slagits upp. Applistan ska klara sig på ETT anrop. */
+  uppslagningar: number;
+  /** `null` som tidpunkt: en rad identiteten inte kunde läsa tidpunkten för. */
+  lagTill(identity: Identity, createdAt?: string | null): void;
+}
+
+/** Samma krav på adressen som identitetspaketets `normalizeEmail`, i korthet. */
+function normalisera(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const email = value.trim().toLowerCase();
+  if (email.length === 0 || email.length > 254) return null;
+  if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(email)) return null;
+  return email;
+}
+
+const ROLLORDNING: Readonly<Record<Role, number>> = { viewer: 1, builder: 2, admin: 3 };
+
+function rollUr(value: unknown): Role | null {
+  return typeof value === 'string' && Object.hasOwn(ROLLORDNING, value) ? (value as Role) : null;
+}
+
+/**
+ * Beter sig som identitetspaketets fyra funktioner: `listUsers`, `countUsersByRole`,
+ * `emailsByUserIds`, `setUserRole` — plus `upsertUser` bakom `invite`, som HÖJER men aldrig sänker.
+ * Ogiltig adress eller okänd roll ⇒ `DataApiError('invalid_request')`, okänt id ⇒ `not_found`.
+ */
+export function fejkAnvandare(personer: readonly Identity[] = [ANNA, BERTIL, ADAM, VERA]): FejkAnvandare {
+  const katalog: FejkAnvandare = {
+    rader: [],
+    uppslagningar: 0,
+    lagTill(identity, createdAt) {
+      const roll = rollUr(identity.roles[0]) ?? 'viewer';
+      katalog.rader.push({
+        userId: identity.userId,
+        email: identity.email,
+        role: roll,
+        createdAt:
+          createdAt === undefined
+            ? new Date(Date.parse('2026-09-01T08:00:00.000Z') + katalog.rader.length * 60_000).toISOString()
+            : createdAt,
+      });
+    },
+    list() {
+      return katalog.rader.map((rad) => ({ ...rad }));
+    },
+    countByRole() {
+      const antal: Record<Role, number> = { admin: 0, builder: 0, viewer: 0 };
+      for (const rad of katalog.rader) antal[rad.role] += 1;
+      return antal;
+    },
+    emails(userIds) {
+      katalog.uppslagningar += 1;
+      const karta = new Map<string, string>();
+      for (const userId of userIds) {
+        const rad = katalog.rader.find((kandidat) => kandidat.userId === userId);
+        if (rad !== undefined) karta.set(userId, rad.email);
+      }
+      return karta;
+    },
+    async invite(rawEmail, rawRole, now) {
+      const email = normalisera(rawEmail);
+      if (email === null) throw new DataApiError('invalid_request', 'E-postadressen är ogiltig.');
+      const roll = rollUr(rawRole);
+      if (roll === null) throw new DataApiError('invalid_request', 'Okänd roll.');
+      const befintlig = katalog.rader.find((rad) => rad.email === email);
+      if (befintlig === undefined) {
+        const rad = { userId: randomBytes(16).toString('base64url'), email, role: roll, createdAt: new Date(now).toISOString() };
+        katalog.rader.push(rad);
+        return { ...rad };
+      }
+      // Höjer, aldrig sänker.
+      if (ROLLORDNING[roll] > ROLLORDNING[befintlig.role]) befintlig.role = roll;
+      return { ...befintlig };
+    },
+    setRole(userId, rawRole) {
+      const roll = rollUr(rawRole);
+      if (roll === null) throw new DataApiError('invalid_request', 'Okänd roll.');
+      const rad = katalog.rader.find((kandidat) => kandidat.userId === userId);
+      if (rad === undefined) throw new DataApiError('not_found', 'Användaren finns inte.');
+      rad.role = roll;
+      return { ...rad };
+    },
+  };
+  for (const person of personer) katalog.lagTill(person);
+  return katalog;
 }
 
 // ── Fejkad återkoppling ──────────────────────────────────────────────────────────
