@@ -21,6 +21,7 @@ import type {
   ClassificationSource,
   Identity,
   InvitationService,
+  JsonObject,
   PlatformRequest,
   RedlineCategory,
   SourceFiles,
@@ -92,6 +93,24 @@ export interface BuilderOptions {
    * Saknas den klassas ingenting, och apparna står kvar som oklassade i registret. Det läses som
    * den strängaste klassen, så en installation utan klassning kan aldrig se ofarligare ut än en med.
    */
+  /**
+   * Vägen till appens DATA — för export och för avveckling. Byggverktyget når den aldrig själv:
+   * en `TenantContext` skapas bara i gatewayn, och plattformen kopplar ihop de två
+   * (`tenantForLifecycle`). Saknas den går appen inte att exportera eller avveckla, och rutterna
+   * svarar att funktionen inte är inkopplad — hellre det än en avveckling som lämnar data kvar.
+   */
+  readonly appData?: {
+    export(
+      appId: string,
+      identity: Identity,
+      options: { readonly maxDocumentsPerCollection: number },
+    ): Promise<{
+      readonly collections: Readonly<Record<string, { readonly documents: readonly JsonObject[]; readonly truncated: boolean }>>;
+      readonly documentCount: number;
+    }>;
+    /** Raderar appens data och filer, båda versionerna. Svarar med hur mycket som försvann. */
+    destroy(appId: string, identity: Identity): Promise<{ readonly documentsDeleted: number; readonly filesDeleted: number }>;
+  };
   readonly classifyRequest?: (
     request: string,
     signal: AbortSignal,
@@ -152,6 +171,7 @@ export function createBuilder(options: BuilderOptions): Builder {
     urls: options.urls,
     openUrl: options.openUrl,
     services,
+    ...(options.appData === undefined ? {} : { appData: options.appData }),
     ...(options.version === undefined ? {} : { version: options.version }),
     log,
     now,

@@ -21,6 +21,10 @@
  *   "upptagen@…"          → 429 (för många ändringar)
  *   "krock@…"             → 409 (någon annan hann före)
  *   den egna raden        → 400 (servern nekar; vyn erbjuder det aldrig)
+ *
+ * Avveckling och export går att klicka igenom på riktigt: exporten ger påhittad appdata, och en
+ * avvecklad app försvinner ur ägarens lista men står kvar i AI-registret. Starta med
+ * AVVECKLING_SAKNAS=1 för att se hur vyn möter en installation där de inte är inkopplade (503).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
@@ -37,6 +41,8 @@ import {
   type BuilderJob,
   type AdminRegisterEntry,
   type AdminReview,
+  type AppExport,
+  type DecommissionEvidence,
   type BuilderMessage,
   type Classification,
   type ClassificationSource,
@@ -64,6 +70,11 @@ interface MockApp {
   classificationSource: ClassificationSource;
   /** Adress → medlems-id för dem appen delats med. Ägaren läggs till i svaret. */
   members: Map<string, string>;
+  /**
+   * När appen avvecklades, eller `null` så länge den lever. En avvecklad app finns inte längre för
+   * sin ägare — men raden i AI-registret står kvar, precis som i den riktiga plattformen.
+   */
+  decommissionedAt: string | null;
 }
 
 interface MockJob {
@@ -202,8 +213,8 @@ function adminRows(): AdminApp[] {
     name: app.name,
     ownerEmail: 'anna@example.se',
     updatedAt: app.updatedAt,
-    hasDraft: app.hasDraft,
-    published: app.published,
+    hasDraft: app.hasDraft && app.decommissionedAt === null,
+    published: app.published && app.decommissionedAt === null,
     members: 1 + app.members.size,
     tokens: { input: app.draftVersion * 18_400, output: app.draftVersion * 6_200 },
   }));
@@ -223,8 +234,13 @@ function adminRegister(): AdminRegisterEntry[] {
     classification: app.classification,
     source: app.classificationSource,
     classifiedAt: app.classificationSource === 'fail-closed' ? null : app.updatedAt,
-    published: app.published,
+    // En avvecklad app är inte publicerad, hur den än såg ut när den levde: adressen slutade
+    // svara i samma stund. Raden står kvar — det är hela poängen med registret.
+    published: app.published && app.decommissionedAt === null,
+    decommissionedAt: app.decommissionedAt,
   }));
+  // Sista demoraden är avvecklad från start, så att en avvecklad rad går att se i registret utan
+  // att man först måste bygga en app och sedan avveckla den.
   const demo: AdminRegisterEntry[] = ADMIN_DEMO_APPS.map((rad, i) => ({
     appIdPrefix: rad.appIdPrefix,
     name: rad.name,
@@ -232,7 +248,8 @@ function adminRegister(): AdminRegisterEntry[] {
     classification: (['intern', 'personuppgift', 'oppen', 'kanslig'] as const)[i % 4] ?? 'kanslig',
     source: (['modell', 'signalord', 'modell', 'fail-closed'] as const)[i % 4] ?? 'fail-closed',
     classifiedAt: i % 4 === 3 ? null : rad.updatedAt,
-    published: rad.published,
+    published: i === ADMIN_DEMO_APPS.length - 1 ? false : rad.published,
+    decommissionedAt: i === ADMIN_DEMO_APPS.length - 1 ? '2026-09-14T10:12:00Z' : null,
   }));
   return [...egna, ...demo];
 }
@@ -368,6 +385,15 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   }
 }
 
+/**
+ * Svaret från en installation där appdata inte är inkopplad: samma 503 som den riktiga rutten ger.
+ * Gäller BÅDA rutterna — vägen ut och vägen bort hänger ihop, och en installation som saknar den
+ * ena saknar den andra.
+ */
+function unavailable(res: ServerResponse): void {
+  fail(res, 503, 'unavailable', 'Export och avveckling är inte inkopplade i den här installationen.');
+}
+
 function origin(req: IncomingMessage): string {
   return `http://${req.headers.host ?? '127.0.0.1:5173'}`;
 }
@@ -383,7 +409,7 @@ ul{padding:0}small{color:#4a5668}</style></head><body data-mock="${MOCK_MARKER}"
 }
 
 function detail(app: MockApp, req: IncomingMessage): BuilderAppDetail {
-  const { draftVersion: _d, publishedVersion: _p, job, members: _m, ...summary } = app;
+  const { draftVersion: _d, publishedVersion: _p, job, members: _m, decommissionedAt: _a, ...summary } = app;
   const current = job === undefined ? undefined : jobs.get(job.jobId);
   return {
     ...summary,
@@ -496,6 +522,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (path === '/apps') {
     if (method === 'GET') {
       const list = [...apps.values()]
+        // En avvecklad app finns inte för sin ägare. Det är inte att dölja något: det finns
+        // ingenting kvar att öppna.
+        .filter((app) => app.decommissionedAt === null)
         .map(({ appId, name, updatedAt, hasDraft, published }) => ({ appId, name, updatedAt, hasDraft, published }))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       return send(res, 200, { apps: list });
@@ -517,6 +546,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         classification: 'kanslig',
         classificationSource: 'fail-closed',
         members: new Map(),
+        decommissionedAt: null,
       });
       return send(res, 201, { appId });
     }
@@ -555,9 +585,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
   }
 
-  const appMatch = /^\/apps\/([\w-]+)(?:\/(messages|publish|open|share|feedback))?$/.exec(path);
+  const appMatch = /^\/apps\/([\w-]+)(?:\/(messages|publish|open|share|feedback|export|avveckla))?$/.exec(path);
   const app = appMatch === null ? undefined : apps.get(appMatch[1] ?? '');
-  if (appMatch === null || app === undefined) return fail(res, 404, 'not_found', 'Det finns inte.');
+  // En avvecklad app svarar som en app som aldrig funnits — samma 404, ingen särskild text som
+  // röjer att den har funnits. Den upplysningen hör hemma i registret, inte här.
+  if (appMatch === null || app === undefined || app.decommissionedAt !== null) {
+    return fail(res, 404, 'not_found', 'Det finns inte.');
+  }
   const action = appMatch[2];
 
   if (action === undefined && method === 'GET') return send(res, 200, detail(app, req));
@@ -588,6 +622,61 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     app.review = { reviewId: newId('g'), state: 'vantar', requestedAt: now(), decidedAt: null, reason: null };
     app.updatedAt = now();
     return send(res, 202, { review: { state: 'vantar', requestedAt: app.review.requestedAt } });
+  }
+
+  // Exporten: allt appen bär, som JSON. Attrappen lagrar ingen appdata, så den hittar på ett par
+  // rader och en fil — men formen är kontraktets, så nedladdningen går att prova på riktigt.
+  if (action === 'export' && method === 'GET') {
+    if (process.env['AVVECKLING_SAKNAS'] === '1') return unavailable(res);
+    const body: AppExport = {
+      format: 1,
+      exportedAt: now(),
+      app: {
+        name: app.name,
+        classification: app.classification,
+        classificationSource: app.classificationSource,
+        published: app.published,
+      },
+      collections: {
+        uppgifter: {
+          documents: [
+            { id: 'r1', rubrik: 'Köpa kaffe till fikat', klar: false, skapad: '2026-09-18T08:14:00Z' },
+            { id: 'r2', rubrik: 'Boka mötesrum', klar: true, skapad: '2026-09-18T09:02:00Z' },
+            { id: 'r3', rubrik: 'Skicka protokollet', klar: false, skapad: '2026-09-19T15:41:00Z' },
+          ],
+          truncated: false,
+        },
+      },
+      files: [{ id: 'f1', name: 'dagordning.pdf', size: 184_320 }],
+      conversation: [...app.messages],
+    };
+    return send(res, 200, body);
+  }
+
+  // Avvecklingen. Bekräftelsen är appens namn ORDAGRANT: fel namn, tomt namn eller `true` ger 400,
+  // precis som den riktiga rutten. Starta om med AVVECKLING_SAKNAS=1 för att se hur vyn möter en
+  // installation där export och avveckling inte är inkopplade (503).
+  if (action === 'avveckla' && method === 'POST') {
+    if (process.env['AVVECKLING_SAKNAS'] === '1') return unavailable(res);
+    const body = await readJson(req);
+    if (body['confirm'] !== app.name) {
+      return fail(res, 400, 'invalid_request', `Skriv appens namn för att bekräfta att den ska avvecklas: ${app.name}`);
+    }
+    const at = now();
+    app.decommissionedAt = at;
+    app.published = false;
+    app.hasDraft = false;
+    // Ett ärende som låg i kö försvinner med appen: det finns ingen kod kvar att läsa.
+    delete app.review;
+    app.updatedAt = at;
+    // Gallringsbeviset. Siffrorna räknas FÖRE raderingen — efteråt finns inget att räkna.
+    const evidence: DecommissionEvidence = {
+      appIdPrefix: app.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+      decommissionedAt: at,
+      documentsDeleted: 3,
+      filesDeleted: 1,
+    };
+    return send(res, 200, { evidence });
   }
 
   if (action === 'open' && method === 'GET') {

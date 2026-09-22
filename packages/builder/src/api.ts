@@ -13,16 +13,28 @@
  * appen delad med sig har åtkomst i control men äger inget här: för hen "finns" appen inte (404).
  */
 import { randomBytes } from 'node:crypto';
-import { BUILDER_API_PREFIX, DataApiError, isAppId, REVIEW_STATES } from '@vibesandbox/contracts';
+import {
+  asClassification,
+  BUILDER_API_PREFIX,
+  CLASSIFICATION_SOURCES,
+  DataApiError,
+  DECOMMISSION_LIMITS,
+  isAppId,
+  REVIEW_STATES,
+} from '@vibesandbox/contracts';
 import type {
+  AppExport,
   AppServiceName,
   BuilderAppDetail,
   BuilderAppMember,
   BuilderAppSummary,
   BuilderJob,
   BuilderMe,
+  ClassificationSource,
+  DecommissionEvidence,
   Identity,
   InvitationService,
+  JsonObject,
   PlatformRequest,
   PlatformResponse,
   ReviewState,
@@ -38,6 +50,23 @@ import type { Storage, StoredApp } from './lagring.ts';
 import { appIdPrefix, describeError } from './logg.ts';
 import type { BuilderLogger } from './logg.ts';
 import { ApiProblem, conflict, internal, invalid, json, notFound, problemResponse } from './svar.ts';
+
+/**
+ * Vägen till en apps DATA. Byggverktyget når den aldrig själv — en `TenantContext` skapas bara i
+ * gatewayn — så plattformen kopplar ihop de två. Saknas den går appen inte att exportera eller
+ * avveckla, och rutterna säger det rakt ut.
+ */
+export interface AppDataAccess {
+  export(
+    appId: string,
+    identity: Identity,
+    options: { readonly maxDocumentsPerCollection: number },
+  ): Promise<{
+    readonly collections: Readonly<Record<string, { readonly documents: readonly JsonObject[]; readonly truncated: boolean }>>;
+    readonly documentCount: number;
+  }>;
+  destroy(appId: string, identity: Identity): Promise<{ readonly documentsDeleted: number; readonly filesDeleted: number }>;
+}
 
 export interface BuilderUrls {
   /** Förhandsvisningens adress, t.ex. `https://p-<appId>.<BASE_DOMAIN>/`. */
@@ -60,6 +89,8 @@ export interface ApiDependencies {
   /** Påslagna plattformstjänster, redan kontrollerade och i plattformens ordning. */
   readonly services: readonly AppServiceName[];
   readonly version?: string;
+  /** Vägen till appens data — för export och avveckling. Se `BuilderOptions.appData`. */
+  readonly appData?: AppDataAccess;
   readonly log: BuilderLogger;
   readonly now: () => Date;
 }
@@ -166,6 +197,8 @@ type Route =
   | { readonly kind: 'app'; readonly appId: string }
   | { readonly kind: 'messages'; readonly appId: string }
   | { readonly kind: 'publish'; readonly appId: string }
+  | { readonly kind: 'export'; readonly appId: string }
+  | { readonly kind: 'avveckla'; readonly appId: string }
   | { readonly kind: 'open'; readonly appId: string }
   | { readonly kind: 'share'; readonly appId: string }
   | { readonly kind: 'feedback'; readonly appId: string }
@@ -187,6 +220,8 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   app: ['GET'],
   messages: ['POST'],
   publish: ['POST'],
+  export: ['GET'],
+  avveckla: ['POST'],
   open: ['GET'],
   share: ['POST'],
   feedback: ['POST'],
@@ -205,7 +240,7 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   adminUser: ['POST'],
 };
 
-const APP_ACTIONS = new Set(['messages', 'publish', 'open', 'share', 'feedback', 'members'] as const);
+const APP_ACTIONS = new Set(['messages', 'publish', 'open', 'share', 'feedback', 'members', 'export', 'avveckla'] as const);
 
 /** Sökvägen efter prefixet, segment för segment, med exakta jämförelser. Ingen normalisering. */
 function matchRoute(path: string): Route | null {
@@ -407,6 +442,119 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
     if (reviewId === null) throw conflict(REVIEW_ALREADY_PENDING);
     log({ level: 'info', event: 'review_requested', ...base });
     return json(202, { review: { state: 'vantar' satisfies ReviewState, requestedAt: iso() } });
+  }
+
+  /** Vägen till appens data, eller ett tydligt besked. Aldrig en tom export som ser ut som ett svar. */
+  function appData(): AppDataAccess {
+    if (deps.appData === undefined) {
+      throw new ApiProblem('unavailable', 'Export och avveckling är inte inkopplade i den här installationen.');
+    }
+    return deps.appData;
+  }
+
+  /**
+   * Allt appen bär, som en fil att spara.
+   *
+   * Exporten finns FÖRE avvecklingen i den här filen av samma skäl som den finns före den i
+   * verkligheten: appdata i en kommun kan vara allmän handling, och den får inte försvinna bara
+   * för att den som byggde appen tröttnat. Plattformen kan inte avgöra om just de här
+   * uppgifterna är det — men den kan se till att det alltid finns en väg ut som inte kräver att
+   * någon läser databasen på servern.
+   *
+   * Exporten respekterar synligheten: en `user`-kollektion ger bara ägarens egna rader. En
+   * fullständig utlämning är en styrningsåtgärd som inte finns än — se `exportDocuments`.
+   */
+  async function exportApp(request: PlatformRequest, appId: string): Promise<PlatformResponse> {
+    const app = ownedApp(appId, request.identity);
+    const data = appData();
+    const { collections, documentCount } = await data.export(app.appId, request.identity, {
+      maxDocumentsPerCollection: DECOMMISSION_LIMITS.maxDocumentsPerCollection,
+    });
+    const body: AppExport = {
+      format: 1,
+      exportedAt: iso(),
+      app: {
+        name: app.name,
+        classification: asClassification(storage.classificationOf(app.appId)?.classification),
+        classificationSource: classificationSourceOf(app.appId),
+        published: app.publishedVersion !== null,
+      },
+      collections,
+      // Filerna listas av `files`-tjänsten, inte här. Innehållet hämtas var för sig: en export
+      // som bakade in dem som base64 hade sprängt taket på första appen med en bild i.
+      files: [],
+      conversation: storage.listMessages(app.appId),
+    };
+    // Taket mäts på det FÄRDIGA svaret, inte på en uppskattning. En app som sprängt det måste
+    // hämtas ur backupen i stället; plattformen kör på två kärnor och ska inte serialisera en
+    // hundra megabyte stor kropp bara för att någon sparat mycket.
+    const text = JSON.stringify(body);
+    if (Buffer.byteLength(text, 'utf8') > DECOMMISSION_LIMITS.maxExportBytes) {
+      throw new ApiProblem('too_large', 'Appen innehåller för mycket för att hämtas ut den här vägen. Hör av dig till den som förvaltar plattformen.');
+    }
+    log({ level: 'info', event: 'app_exported', appIdPrefix: appIdPrefix(app.appId), userId: request.identity.userId, count: documentCount });
+    return json(200, body);
+  }
+
+  /** Appens klassningskälla, prövad mot kontraktet. Okänt ord ⇒ vi vet inte. */
+  function classificationSourceOf(appId: string): ClassificationSource {
+    const source = storage.classificationOf(appId)?.source ?? null;
+    return CLASSIFICATION_SOURCES.includes(source as ClassificationSource) ? (source as ClassificationSource) : 'fail-closed';
+  }
+
+  /**
+   * Avvecklingen. Raderar appens data och filer, tar bort den ur control så att adressen slutar
+   * svara, och arkiverar registerposten.
+   *
+   * Ordningen är inte godtycklig. DATA först: går den raderingen fel ska appen fortfarande finnas
+   * och gå att försöka igen. En app som tagits ur control men vars databas ligger kvar på disken
+   * är precis det ett gallringsbevis inte får ljuga om.
+   *
+   * Bekräftelsen är appens namn, ordagrant. Ett `{ confirm: true }` klickas bort; ett namn måste
+   * skrivas, och den som skriver fel namn har inte den app hon tror framför sig.
+   */
+  async function decommission(request: PlatformRequest, appId: string): Promise<PlatformResponse> {
+    const app = ownedApp(appId, request.identity);
+    const data = appData();
+    const body = parseBody(request);
+    if (body['confirm'] !== app.name) {
+      throw invalid(`Skriv appens namn för att bekräfta att den ska avvecklas: ${app.name}`);
+    }
+    const base = { appIdPrefix: appIdPrefix(app.appId), userId: request.identity.userId };
+
+    let deleted: { documentsDeleted: number; filesDeleted: number };
+    try {
+      deleted = await data.destroy(app.appId, request.identity);
+    } catch (error) {
+      log({ level: 'error', event: 'decommission_failed', ...base, reason: 'data', ...describeError(error) });
+      throw new ApiProblem('unavailable', 'Appens uppgifter gick inte att radera just nu. Försök igen om en stund — ingenting har tagits bort.');
+    }
+    try {
+      await control.deleteApp(storedAppId(app.appId));
+    } catch (error) {
+      // Data är borta men appen finns kvar i control. Det är det MINDRE dåliga läget av de två,
+      // och det måste synas: adressen svarar tills någon kör om avvecklingen.
+      log({ level: 'error', event: 'decommission_failed', ...base, reason: 'control', ...describeError(error) });
+      throw new ApiProblem('unavailable', 'Uppgifterna är raderade, men appen gick inte att ta bort helt. Försök igen om en stund.');
+    }
+    const at = iso();
+    storage.decommissionApp(app.appId, at);
+    // Gallringsbeviset. Räknat FÖRE raderingen — efteråt finns inget att räkna. Det är hela
+    // poängen: det ska gå att visa VAD som försvann, inte bara att något gjorde det.
+    const evidence: DecommissionEvidence = {
+      appIdPrefix: appIdPrefix(app.appId),
+      decommissionedAt: at,
+      documentsDeleted: deleted.documentsDeleted,
+      filesDeleted: deleted.filesDeleted,
+    };
+    log({
+      level: 'info',
+      event: 'app_decommissioned',
+      ...base,
+      count: deleted.documentsDeleted,
+      files: deleted.filesDeleted,
+    });
+    return json(200, { evidence });
   }
 
   function open(request: PlatformRequest, appId: string): PlatformResponse {
@@ -634,6 +782,10 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
         return postMessage(request, route.appId);
       case 'publish':
         return publish(request, route.appId);
+      case 'export':
+        return exportApp(request, route.appId);
+      case 'avveckla':
+        return decommission(request, route.appId);
       case 'open':
         return open(request, route.appId);
       case 'share':

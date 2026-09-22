@@ -381,6 +381,20 @@ export interface TenantStore {
     at: string,
   ): Promise<StoredDocument>;
 
+  /**
+   * Allt den HÄR användaren får se i appen, kollektion för kollektion. Exporten respekterar
+   * synligheten: en `user`-kollektion ger bara hennes egna rader. Se `exportDocuments` i
+   * data-api om varför det inte får vara på något annat sätt.
+   */
+  exportTenant(
+    tenant: TenantContext,
+    identity: Identity,
+    options: { readonly maxDocumentsPerCollection: number },
+  ): Promise<{
+    readonly collections: Readonly<Record<string, { readonly documents: readonly JsonObject[]; readonly truncated: boolean }>>;
+    readonly documentCount: number;
+  }>;
+
   /** Raderar ALL data för en hyresgäst. Används vid avveckling. */
   destroyTenant(tenant: TenantContext): Promise<void>;
 
@@ -1002,6 +1016,12 @@ export interface AdminRegisterEntry {
   /** När klassen sattes. `null` för en app som ännu aldrig beskrivits — då gissar registret inte. */
   readonly classifiedAt: string | null;
   readonly published: boolean;
+  /**
+   * När appen avvecklades, eller `null` för en app som lever. En avvecklad app står KVAR i
+   * registret: uppgifterna i den är raderade, men att den har funnits, vem som ägde den och hur
+   * känslig den var är just det en tillsyn frågar efter.
+   */
+  readonly decommissionedAt: string | null;
 }
 
 // ── Granskning: en människa prövar koden innan appen går ut ────────────────────
@@ -1091,6 +1111,81 @@ export const REVIEW_LIMITS = {
   /** Så många ärenden kön hämtar. Kön ska gå att beta av, inte vara ett arkiv. */
   maxQueue: 200,
 } as const;
+
+// ── Avveckling och export: när en app ska sluta finnas ─────────────────────────
+//
+// En app som ingen längre behöver ska gå att ta bort — på riktigt, och så att någon i efterhand
+// kan visa ATT den togs bort. Två rutter, i den ordning de måste komma:
+//
+//   GET  /_api/builder/apps/<id>/export   → allt appen bär, som en fil att spara
+//   POST /_api/builder/apps/<id>/avveckla → { confirm: <appens namn> }
+//
+// Exporten FÖRST, och det är inte en artighet. Appdata i en kommun kan vara allmän handling, och
+// då får den inte försvinna bara för att den som byggde appen tröttnat. Plattformen kan inte
+// avgöra om just de här uppgifterna är det — men den kan se till att det alltid finns en väg ut
+// som inte kräver att någon läser databasen på servern.
+//
+// Avvecklingen raderar appens DATA och FILER, och tar bort appen ur control så att adressen slutar
+// svara. Men registerposten ARKIVERAS, den raderas inte: att appen har funnits, vem som ägde den
+// och hur känslig den var är själva svaret en tillsyn behöver. Raderingen gäller uppgifterna i
+// appen, inte spåret av att appen fanns.
+//
+// Bekräftelsen är appens namn, ordagrant. Ett `{ confirm: true }` klickas bort; ett namn måste
+// skrivas, och den som skriver fel namn har inte den app hon tror framför sig.
+
+export const DECOMMISSION_LIMITS = {
+  /** Så många dokument exporten tar med per kollektion. Över det kapas den, och svaret säger det. */
+  maxDocumentsPerCollection: 10_000,
+  /**
+   * Tak på hela exportens kropp, mätt i byte på det färdiga svaret. En app som spränger det måste
+   * hämtas ur backupen i stället — plattformen kör på två kärnor och ska inte serialisera en
+   * kropp i den storleksordningen bara för att någon sparat mycket. Svaret blir `too_large`.
+   */
+  maxExportBytes: 64 * 1024 * 1024,
+} as const;
+
+/**
+ * Det appen bar, som en fil att spara. JSON och inte CSV: en app kan ha kollektioner med olika
+ * form, och en CSV per kollektion hade tappat nästlade värden utan att säga till. Den som behöver
+ * CSV kan göra den ur det här; den som gör tvärtom kan inte få tillbaka det som gick förlorat.
+ */
+export interface AppExport {
+  /** Formatets version. Står först, så att en läsare vet vad hen har innan hen tolkar resten. */
+  readonly format: 1;
+  readonly exportedAt: string;
+  readonly app: {
+    readonly name: string;
+    readonly classification: Classification;
+    readonly classificationSource: ClassificationSource;
+    readonly published: boolean;
+  };
+  /**
+   * Dokumenten per kollektion, ur den PUBLICERADE appen. Förhandsvisningen har en egen databas
+   * med egen data, och den följer inte med: utkastet är ogranskad kod och det som ligger där är
+   * testmaterial, inte handlingar. Avvecklingen raderar däremot BÅDA — det som ska bort ska bort,
+   * även om det aldrig var värt att spara.
+   *
+   * `truncated` är sant när taket slog till — aldrig tyst kapning.
+   */
+  readonly collections: Readonly<Record<string, { readonly documents: readonly JsonObject[]; readonly truncated: boolean }>>;
+  /** Filerna appen sparat: namn och storlek. Innehållet hämtas var för sig, se `files`-tjänsten. */
+  readonly files: readonly { readonly id: string; readonly name: string; readonly size: number }[];
+  /** Samtalet som byggde appen. Hör till handlingen: det visar VARFÖR appen ser ut som den gör. */
+  readonly conversation: readonly BuilderMessage[];
+}
+
+/**
+ * Beviset på att appen avvecklades. Skrivs i audit och går inte att ändra i efterhand.
+ *
+ * `documentsDeleted` och `filesDeleted` räknas FÖRE raderingen och sparas — efteråt finns inget
+ * att räkna. Det är hela poängen med ett gallringsbevis: det ska gå att visa vad som försvann.
+ */
+export interface DecommissionEvidence {
+  readonly appIdPrefix: string;
+  readonly decommissionedAt: string;
+  readonly documentsDeleted: number;
+  readonly filesDeleted: number;
+}
 
 // ── Röda linjer: förbjuden användning stoppas innan något byggs ─────────────────
 //

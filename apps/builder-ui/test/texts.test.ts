@@ -9,6 +9,13 @@
 import { describe, expect, it } from 'vitest';
 import { REVIEW_STATES } from '@vibesandbox/contracts';
 import {
+  DECOMMISSION_BUTTON,
+  DECOMMISSION_DONE_BODY,
+  DECOMMISSION_LEAD,
+  DECOMMISSION_REMAINS,
+  DECOMMISSION_WARNING,
+  EXPORT_BUTTON,
+  EXPORT_WHY,
   PUBLISH_REQUEST_AGAIN_BUTTON,
   PUBLISH_REQUEST_BUTTON,
   PUBLISH_REQUEST_HINT,
@@ -16,6 +23,9 @@ import {
   REVIEW_REASON_LEAD,
   SAFETY_POINTS,
   SUGGESTIONS,
+  decommissionConfirmHint,
+  decommissionEvidenceText,
+  exportFileName,
   reviewOwnerText,
 } from '../src/texts.ts';
 
@@ -165,5 +175,115 @@ describe('ägarens lägen för en begärd publicering', () => {
     expect(PUBLISH_REQUEST_AGAIN_BUTTON).toMatch(/[Bb]egär/);
     expect(PUBLISH_REQUEST_HINT, 'säg vad som händer innan hon trycker').toMatch(/läser en människa koden/);
     expect(REVIEW_REASON_LEAD, 'det ska synas vems orden är').toMatch(/den som läste koden/);
+  });
+});
+
+
+/**
+ * Avvecklingens texter. Det här är den enda ytan i byggverktyget där ingenting går att ångra, och
+ * det som låses här är att ägaren får veta TRE saker innan hon trycker — att det inte går att
+ * ångra, exakt vad som raderas, och exakt vad som blir kvar.
+ *
+ * Den tredje är den som är lätt att tappa. Registerposten står kvar med flit, och läser ägaren
+ * "appen tas bort" och sedan upptäcker att den står kvar i ett register har plattformen sagt
+ * något osant till henne. Det är värre än att texten blev lite längre.
+ */
+describe('avvecklingens texter', () => {
+  it('säger att det inte går att ångra, utan att skrika', () => {
+    expect(DECOMMISSION_WARNING).toMatch(/går inte att ångra/);
+    // Ingen skrämsel: inga versaler, inga utropstecken. Allvaret ligger i vad som står, inte i hur.
+    expect(DECOMMISSION_WARNING).not.toMatch(/!/);
+    expect(`${DECOMMISSION_WARNING}\n${DECOMMISSION_LEAD}\n${DECOMMISSION_REMAINS}`).not.toMatch(/\b[A-ZÅÄÖ]{3,}\b/);
+  });
+
+  it('räknar upp exakt vad som raderas — inte bara "appen tas bort"', () => {
+    expect(DECOMMISSION_WARNING, 'uppgifterna i appen').toMatch(/uppgifter/i);
+    expect(DECOMMISSION_WARNING, 'filerna').toMatch(/filer/i);
+    expect(DECOMMISSION_WARNING, 'koden').toMatch(/kod/i);
+    expect(DECOMMISSION_WARNING, 'samtalet hör till appen och följer med').toMatch(/samtalet/i);
+  });
+
+  it('säger vad som blir kvar, och att det är med flit', () => {
+    expect(DECOMMISSION_REMAINS).toMatch(/står kvar|finns kvar/);
+    expect(DECOMMISSION_REMAINS, 'det är registret posten står kvar i').toMatch(/register/i);
+    expect(DECOMMISSION_REMAINS, 'inte något plattformen glömt').toMatch(/med flit|avsiktligt/);
+    // Och att det som står kvar är SPÅRET, inte uppgifterna. Annars läses meningen tvärtom.
+    expect(DECOMMISSION_REMAINS).toMatch(/[Uu]ppgifterna i appen finns inte kvar/);
+  });
+
+  it('erbjuder exporten som en väg ut, och säger varför den finns', () => {
+    expect(EXPORT_WHY, 'skälet är att det kan vara allmän handling').toMatch(/allmän handling/);
+    expect(EXPORT_WHY, 'plattformen VET inte, och ska inte låtsas veta').toMatch(/kan inte avgöra/);
+    expect(EXPORT_WHY).toMatch(/alltid finnas en väg ut/);
+    // Och vad filen innehåller, så att hon vet om den räcker.
+    expect(EXPORT_WHY).toMatch(/samtalet/i);
+  });
+
+  it('knapparna säger vad de gör, inte "ta bort" som om det vore att stänga en flik', () => {
+    expect(EXPORT_BUTTON).toBe('Ladda ner appens innehåll');
+    expect(DECOMMISSION_BUTTON).toMatch(/[Aa]vveckla/);
+    expect(DECOMMISSION_BUTTON, 'det är för alltid, och det ska stå på knappen').toMatch(/för alltid/);
+  });
+
+  it('bekräftelsen ber om appens namn ordagrant, med skiftläget utskrivet', () => {
+    const hint = decommissionConfirmHint('Bokning av mötesrum');
+    expect(hint).toContain('Bokning av mötesrum');
+    expect(hint).toMatch(/precis som det står/);
+    expect(hint, 'fel skiftläge räcker inte, och det ska sägas').toMatch(/stora och små bokstäver/);
+  });
+
+  it('beskedet efteråt säger samma två saker som varningen gjorde', () => {
+    expect(DECOMMISSION_DONE_BODY).toMatch(/raderade/);
+    expect(DECOMMISSION_DONE_BODY).toMatch(/register/i);
+  });
+});
+
+describe('gallringsbeviset i ord', () => {
+  it('räknar i klarspråk, med mellanrum i stora tal', () => {
+    expect(decommissionEvidenceText(1240, 3)).toContain('3 filer');
+    expect(decommissionEvidenceText(1240, 3)).toMatch(/1\s240/);
+    expect(decommissionEvidenceText(1240, 3)).toMatch(/raderades/);
+  });
+
+  it('böjer entalet — "1 filer" läser som ett fel i räkningen', () => {
+    const one = decommissionEvidenceText(1, 1);
+    expect(one).toContain('1 sparad uppgift');
+    expect(one).toContain('1 fil ');
+    expect(one).not.toContain('1 filer');
+  });
+
+  it('en tom app får en nolla, inte en tystnad', () => {
+    expect(decommissionEvidenceText(0, 0)).toMatch(/0 sparade uppgifter och 0 filer/);
+  });
+});
+
+describe('filen ägaren får', () => {
+  const AT = new Date('2026-09-22T08:00:00Z');
+
+  it('bär appens namn och datumet — annars går två exporter inte att skilja åt', () => {
+    expect(exportFileName('Bokning av mötesrum', AT)).toBe('Bokning-av-mötesrum-2026-09-22.json');
+  });
+
+  it('behåller svenska bokstäver — "Anmälan" ska inte bli "Anm-lan"', () => {
+    expect(exportFileName('Anmälan till städdagen', AT)).toBe('Anmälan-till-städdagen-2026-09-22.json');
+  });
+
+  it('tecken som inte hör hemma i ett filnamn blir bindestreck, aldrig sökvägar', () => {
+    const name = exportFileName('../etc/passwd: "allt"', AT);
+    expect(name).not.toContain('/');
+    expect(name).not.toContain('..');
+    expect(name).not.toContain('"');
+    expect(name).toBe('etc-passwd-allt-2026-09-22.json');
+  });
+
+  it('ett namn utan en enda bokstav ger ändå ett filnamn som går att spara', () => {
+    expect(exportFileName('###', AT)).toBe('app-2026-09-22.json');
+    expect(exportFileName('', AT)).toBe('app-2026-09-22.json');
+  });
+
+  it('ett orimligt långt namn kapas, så att filen går att spara på riktiga filsystem', () => {
+    const name = exportFileName('å'.repeat(400), AT);
+    expect(name.length).toBeLessThan(90);
+    expect(name).toMatch(/\.json$/);
   });
 });

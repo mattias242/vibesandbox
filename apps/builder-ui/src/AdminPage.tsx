@@ -28,15 +28,16 @@ import {
   ADMIN_LOADING,
   ADMIN_OWNER_MISSING,
   ADMIN_REGISTER_COLUMNS,
+  ADMIN_REGISTER_DECOMMISSIONED_AT,
+  ADMIN_REGISTER_DECOMMISSIONED_NOTE,
   ADMIN_REGISTER_EMPTY,
   ADMIN_REGISTER_HEADING,
   ADMIN_REGISTER_LEAD,
   ADMIN_REGISTER_LEVELS_HEADING,
   ADMIN_REGISTER_NEVER_CLASSIFIED,
   ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE,
-  ADMIN_REGISTER_PUBLISHED,
   ADMIN_REGISTER_SOURCES_HEADING,
-  ADMIN_REGISTER_UNPUBLISHED,
+  registerStateLabel,
   ADMIN_REVIEWS_COLUMNS,
   ADMIN_REVIEWS_EMPTY,
   ADMIN_REVIEWS_HEADING,
@@ -369,6 +370,10 @@ function RegisterSection({ register }: { register: readonly AdminRegisterEntry[]
           raden ut som ett fel i registret, och det är precis vad den inte är. */}
       <p className="hint">{ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE}</p>
 
+      {/* Varför avvecklade appar står kvar. Utan den meningen läses en avvecklad rad som ett bevis
+          på att uppgifterna INTE raderades — alltså tvärtemot vad som faktiskt hände. */}
+      <p className="hint">{ADMIN_REGISTER_DECOMMISSIONED_NOTE}</p>
+
       {register.length === 0 ? <p className="muted">{ADMIN_REGISTER_EMPTY}</p> : <RegisterTable register={register} />}
     </section>
   );
@@ -395,8 +400,11 @@ function RegisterTable({ register }: { register: readonly AdminRegisterEntry[] }
           {register.map((entry, index) => {
             const level = classificationText(entry.classification);
             const source = classificationSourceText(entry.source);
+            // En avvecklad rad ska gå att skilja från en levande vid en blick, inte genom att
+            // läsa en cell. Klassen sitter på hela raden av just det skälet.
+            const gone = entry.decommissionedAt !== null;
             return (
-              <tr key={`${entry.appIdPrefix}-${index}`}>
+              <tr key={`${entry.appIdPrefix}-${index}`} className={gone ? 'admin-decommissioned' : undefined}>
                 <th scope="row" className="admin-app">
                   <span className="admin-app-name">{entry.name}</span>
                   {/* Bara början av adressen — och som text, aldrig som länk. */}
@@ -414,10 +422,19 @@ function RegisterTable({ register }: { register: readonly AdminRegisterEntry[] }
                   ) : (
                     formatUpdated(entry.classifiedAt) || ADMIN_DATE_UNKNOWN
                   )}
+                  {/* Avvecklingsdatumet står i samma cell som klassningens, under den: det är två
+                      tidpunkter i samma apps liv, och ordet framför säger vilken av dem det är. */}
+                  {entry.decommissionedAt !== null && (
+                    <span className="admin-decommissioned-at">
+                      {ADMIN_REGISTER_DECOMMISSIONED_AT} {formatUpdated(entry.decommissionedAt) || ADMIN_DATE_UNKNOWN}
+                    </span>
+                  )}
                 </td>
                 <td>
-                  <span className={entry.published ? 'badge badge-published' : 'badge'}>
-                    {entry.published ? ADMIN_REGISTER_PUBLISHED : ADMIN_REGISTER_UNPUBLISHED}
+                  {/* En avvecklad app visas aldrig som publicerad, hur raden än såg ut när appen
+                      levde: adressen slutade svara i samma stund som den avvecklades. */}
+                  <span className={gone ? 'badge badge-gone' : entry.published ? 'badge badge-published' : 'badge'}>
+                    {registerStateLabel(entry)}
                   </span>
                 </td>
               </tr>

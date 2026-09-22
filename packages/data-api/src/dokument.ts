@@ -29,6 +29,7 @@ import {
   INSERT_DOCUMENT,
   SELECT_LAST_DOCUMENT_ID,
   LIST_APP_DOCUMENTS,
+  LIST_COLLECTIONS,
   LIST_USER_DOCUMENTS,
   SELECT_COLLECTION_SCOPE,
   SELECT_DOCUMENT,
@@ -71,6 +72,60 @@ export function listDocuments(handle: TenantHandle, request: ListRequest): Docum
     return { documents, nextCursor: encodeCursor(request.collection, lockedScope, last.id) };
   }
   return { documents };
+}
+
+export interface ExportRequest {
+  readonly userId: string;
+  readonly maxDocumentsPerCollection: number;
+}
+
+export interface ExportedCollections {
+  readonly collections: Record<string, { documents: JsonObject[]; truncated: boolean }>;
+  readonly documentCount: number;
+}
+
+/**
+ * Allt den HÄR användaren får se i appen, kollektion för kollektion.
+ *
+ * Exporten respekterar synligheten. En `user`-kollektion ger bara hennes egna rader, precis som
+ * en vanlig listning gör. Det är med flit, och det är värt att vara tydlig om: en export som gav
+ * ägaren allt hade upphävt hela regeln som gör att en enkät inte läcker mellan kollegor — och den
+ * regeln är inget man får gå runt genom att kalla anropet något annat.
+ *
+ * En fullständig utlämning av en app som är allmän handling är därför INTE det här anropet. Det
+ * är en styrningsåtgärd som ännu inte finns, och den ska när den byggs vara en egen väg med en
+ * egen behörighet och ett eget spår i audit.
+ *
+ * `truncated` sätts när taket slog till. Aldrig en tyst kapning: en export som saknar rader utan
+ * att säga det är värre än ingen export alls.
+ */
+export function exportDocuments(handle: TenantHandle, request: ExportRequest): ExportedCollections {
+  const collections: Record<string, { documents: JsonObject[]; truncated: boolean }> = Object.create(null);
+  let documentCount = 0;
+  for (const row of handle.statement(LIST_COLLECTIONS).all({}) as Row[]) {
+    const name = typeof row['name'] === 'string' ? row['name'] : null;
+    const scope = row['scope'] === 'user' ? 'user' : 'app';
+    if (name === null) continue;
+    const documents: JsonObject[] = [];
+    let truncated = false;
+    let afterId: string | undefined;
+    // Sida för sida, så att en stor kollektion inte läses in i minnet på en gång.
+    for (;;) {
+      const kvar = request.maxDocumentsPerCollection - documents.length;
+      if (kvar <= 0) {
+        truncated = true;
+        break;
+      }
+      const page = listDocuments(handle, { collection: name, scope, userId: request.userId, pageSize: Math.min(kvar, 500), afterId });
+      for (const doc of page.documents) documents.push(doc.data);
+      if (page.nextCursor === undefined) break;
+      afterId = page.documents.at(-1)?.id;
+      if (afterId === undefined) break;
+    }
+    collections[name] = { documents, truncated };
+    documentCount += documents.length;
+  }
+  return { collections, documentCount };
 }
 
 export interface CreateRequest {

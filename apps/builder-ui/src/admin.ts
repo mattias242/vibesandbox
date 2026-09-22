@@ -372,6 +372,42 @@ export const ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE =
 export const ADMIN_REGISTER_PUBLISHED = 'Publicerad';
 export const ADMIN_REGISTER_UNPUBLISHED = 'Inte publicerad';
 
+// ── Avvecklade appar i registret ──────────────────────────────────────────────
+//
+// En avvecklad app står KVAR i registret. Raden är då det enda som finns kvar av den, och den är
+// inte ett skräprester efter en radering som gick halvvägs — den är själva svaret på frågan "har
+// den här appen funnits, och vad gjorde ni med den?".
+//
+// Två saker måste därför synas. Att raden är avvecklad ska gå att se vid en blick, utan att läsa
+// någon cell; och att posten står kvar MED FLIT ska stå i ord, annars läser den som granskar
+// plattformen raden som ett bevis på att uppgifterna inte raderades.
+
+/** Lägesordet för en avvecklad app. Ersätter "Publicerad"/"Inte publicerad" — hon är varken. */
+export const ADMIN_REGISTER_DECOMMISSIONED = 'Avvecklad';
+
+/** Står framför datumet i tidkolumnen, så att det syns vilken av radens två tidpunkter det är. */
+export const ADMIN_REGISTER_DECOMMISSIONED_AT = 'Avvecklad';
+
+/**
+ * Varför en avvecklad rad står kvar. Utan den här meningen ser registret ut att bevara appar som
+ * ägaren bett om att få bort — och det gör det inte: det som står kvar är att appen har funnits.
+ */
+export const ADMIN_REGISTER_DECOMMISSIONED_NOTE =
+  'En avvecklad app står kvar i registret, och det är med flit. Uppgifterna som fanns i appen är ' +
+  'raderade, liksom filerna och koden. Kvar står att appen har funnits, vem som ägde den, vilken ' +
+  'nivå den hade och när den avvecklades — just det någon som granskar plattformen behöver kunna ' +
+  'se. En avvecklad rad är alltså inte en app som lever vidare i det tysta.';
+
+/**
+ * Lägesordet visar aldrig "Publicerad" för en avvecklad app, hur raden än såg ut när den levde.
+ * Appen är inte ute längre; adressen slutade svara i samma stund som den avvecklades, och en rad
+ * som stod kvar som publicerad hade pekat på något som inte finns.
+ */
+export function registerStateLabel(entry: { readonly published: boolean; readonly decommissionedAt: string | null }): string {
+  if (entry.decommissionedAt !== null) return ADMIN_REGISTER_DECOMMISSIONED;
+  return entry.published ? ADMIN_REGISTER_PUBLISHED : ADMIN_REGISTER_UNPUBLISHED;
+}
+
 /** Ett läsbart namn och en mening om vad värdet innebär. Samma form för nivå som för källa. */
 export interface ClassificationText {
   readonly label: string;

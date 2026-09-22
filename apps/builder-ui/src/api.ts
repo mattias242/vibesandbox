@@ -19,7 +19,9 @@ import {
   type AdminReview,
   type AdminStop,
   type AdminUser,
+  type AppExport,
   type ClassificationSource,
+  type DecommissionEvidence,
   type RedlineCategory,
   type ReviewDecision,
   type ReviewState,
@@ -79,6 +81,20 @@ export interface ApiClient {
   listMembers(appId: string): Promise<readonly BuilderAppMember[]>;
   /** Tar bort en persons åtkomst. Gäller direkt. */
   removeMember(appId: string, memberId: string): Promise<void>;
+  /**
+   * Allt appen bär, som JSON att spara undan. Svaret plockas INTE isär fält för fält, till
+   * skillnad från allt annat här. Skälet är att det aldrig ritas: det skrivs rakt till en fil.
+   * Att kasta ett fält vi inte känner igen vore att tyst ta bort något ur en export vars hela
+   * poäng är att vara fullständig — och den som får filen ska kunna lita på att inget saknas.
+   */
+  exportApp(appId: string): Promise<AppExport>;
+  /**
+   * Avvecklar appen: uppgifterna och filerna raderas och adressen slutar svara. `confirm` är
+   * appens namn ORDAGRANT. Servern prövar det själv och svarar 400 när det inte stämmer — vyn
+   * stänger knappen av omtanke, men kontrollen får aldrig bara sitta i vyn. Svaret är
+   * gallringsbeviset: vad som fanns, räknat innan det försvann.
+   */
+  decommissionApp(appId: string, confirm: string): Promise<DecommissionEvidence>;
   /** Kontrollrummet: plattformens siffror. Kräver rollen `admin`; annars 403 från servern. */
   adminOverview(): Promise<AdminOverview>;
   /** Kontrollrummet: alla appar, senast ändrad först. Aldrig hela app-id:t. */
@@ -120,6 +136,9 @@ export function fallbackMessage(status: number): string {
   if (status === 409) return 'Det går inte att göra det just nu. Vänta en stund och försök igen.';
   if (status === 413) return 'Texten är för lång. Försök att korta den.';
   if (status === 429) return 'Du har gjort många försök på kort tid. Vänta en stund och försök igen.';
+  // 503 betyder att något plattformen behöver inte svarar — eller inte är inkopplat alls. Texten
+  // säger att det inte går NU, aldrig att användaren gjort fel: hon har inte gjort något fel.
+  if (status === 503) return 'Den funktionen går inte att använda just nu. Försök igen om en stund.';
   return GENERIC_ERROR_MESSAGE;
 }
 
@@ -229,12 +248,16 @@ function checkAdminStops(value: unknown): readonly AdminStop[] {
  * på den strängaste nivån, med källan "det gick inte att avgöra".
  *
  * Fälten plockas ett och ett, så att ett fält för mycket — önskemålets text — aldrig följer med.
+ *
+ * `decommissionedAt` prövas som `classifiedAt`: en tidpunkt eller `null`, aldrig något däremellan.
+ * En avvecklad app står kvar i registret, och raden är det enda som finns kvar av den — då får
+ * inte tidpunkten vara ett värde som vyn tvingas gissa om.
  */
 function checkAdminRegister(value: unknown): readonly AdminRegisterEntry[] {
   if (!Array.isArray(value)) throw new ApiError(500, GENERIC_ERROR_MESSAGE);
   return value.map((item: unknown) => {
     const row = fields(item);
-    const { appIdPrefix, name, ownerEmail, classifiedAt, published } = row;
+    const { appIdPrefix, name, ownerEmail, classifiedAt, published, decommissionedAt } = row;
     if (
       typeof appIdPrefix !== 'string' ||
       appIdPrefix.length === 0 ||
@@ -245,7 +268,8 @@ function checkAdminRegister(value: unknown): readonly AdminRegisterEntry[] {
       name.length > 200 ||
       (ownerEmail !== null && (typeof ownerEmail !== 'string' || ownerEmail === '' || ownerEmail.length > 254)) ||
       (classifiedAt !== null && (typeof classifiedAt !== 'string' || classifiedAt === '')) ||
-      typeof published !== 'boolean'
+      typeof published !== 'boolean' ||
+      (decommissionedAt !== null && (typeof decommissionedAt !== 'string' || decommissionedAt === ''))
     ) {
       throw new ApiError(500, GENERIC_ERROR_MESSAGE);
     }
@@ -260,8 +284,36 @@ function checkAdminRegister(value: unknown): readonly AdminRegisterEntry[] {
         : 'fail-closed',
       classifiedAt,
       published,
+      decommissionedAt,
     };
   });
+}
+
+/**
+ * Gallringsbeviset, så som ägaren får se det. Siffrorna är hela svaret på frågan "vad försvann?",
+ * och de går inte att räkna om i efterhand — det finns inget kvar att räkna. Därför fälls ett svar
+ * där de inte är riktiga tal, hellre än att visa en nolla som läses som ett besked om att appen
+ * var tom.
+ */
+function checkEvidence(value: unknown): DecommissionEvidence {
+  const row = fields(value);
+  const { appIdPrefix, decommissionedAt } = row;
+  if (
+    typeof appIdPrefix !== 'string' ||
+    appIdPrefix.length === 0 ||
+    appIdPrefix.length > ADMIN_APP_ID_PREFIX_LENGTH ||
+    !ID_PATTERN.test(appIdPrefix) ||
+    typeof decommissionedAt !== 'string' ||
+    decommissionedAt === ''
+  ) {
+    throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  }
+  return {
+    appIdPrefix,
+    decommissionedAt,
+    documentsDeleted: checkCount(row['documentsDeleted']),
+    filesDeleted: checkCount(row['filesDeleted']),
+  };
 }
 
 /**
@@ -529,6 +581,21 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     removeMember: async (appId, memberId) => {
       const path = `/apps/${checkId(appId)}/members/${checkId(memberId, 'Den personen finns inte i listan.')}`;
       await request('DELETE', path);
+    },
+
+    exportApp: async (appId) => {
+      const body = await request<unknown>('GET', `/apps/${checkId(appId)}/export`);
+      // Bara att svaret ÄR ett objekt prövas, av skälet som står vid gränssnittet ovan: exporten
+      // skrivs till en fil och ritas aldrig, så ett okänt fält ska följa med — inte kastas bort.
+      fields(body);
+      return body as AppExport;
+    },
+
+    decommissionApp: async (appId, confirm) => {
+      const path = `/apps/${checkId(appId)}/avveckla`;
+      // Kroppen byggs fält för fält: bara namnet ägaren skrev går iväg.
+      const result = await request<{ evidence?: unknown }>('POST', path, { confirm });
+      return checkEvidence(result.evidence);
     },
 
     adminOverview: async () => checkOverview(await request<unknown>('GET', '/admin/oversikt')),

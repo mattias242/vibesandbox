@@ -1,7 +1,14 @@
 /**
  * Den del av control som byggverktyget använder. Smalt med flit: byggverktyget kan skapa appar,
- * lägga in byggda versioner, peka ut utkast, publicera och sköta appens åtkomstlista — men inte ta
- * bort appar eller läsa andras filer. `@vibesandbox/control` uppfyller gränssnittet som det är.
+ * lägga in byggda versioner, peka ut utkast, publicera, sköta appens åtkomstlista och — sedan
+ * avvecklingsskivan — ta bort en app. Det kan fortfarande inte läsa andras filer.
+ * `@vibesandbox/control` uppfyller gränssnittet som det är.
+ *
+ * `deleteApp` kom hit motvilligt. Det är den vassaste metoden i hela control, och den låg utanför
+ * med flit. Men en avveckling som inte tar bort appen ur control lämnar adressen svarande med en
+ * app vars data är raderad — ett halvt borttaget är sämre än båda hela lägena. Skyddet ligger i
+ * att vägen dit är smal: bara ägaren, bara med appens namn skrivet ordagrant som bekräftelse, och
+ * alltid efter att datan redan raderats. Se `decommission` i api.ts.
  */
 import { isAppId } from '@vibesandbox/contracts';
 import type { AppAccessRole, AppId } from '@vibesandbox/contracts';
@@ -25,6 +32,11 @@ export interface BuilderControl {
   revokeAccess(appId: AppId, userId: string): Promise<void>;
   /** Ägaren först, sedan användarna i den ordning de lades till. */
   listAccess(appId: AppId): Promise<readonly BuilderAccessEntry[]>;
+  /**
+   * Tar bort appen ur registret tillsammans med dess versioner och filer. Rör inte appens DATA —
+   * den raderas av hyresgästen, och FÖRE det här anropet. Se filhuvudet.
+   */
+  deleteApp(appId: AppId): Promise<void>;
 }
 
 /**

@@ -117,6 +117,7 @@ export const LIST_REGISTER = `
     a.classification AS classification,
     a.classification_source AS classification_source,
     a.classified_at AS classified_at,
+    a.decommissioned_at AS decommissioned_at,
     a.published_version AS published_version
   FROM apps a
   ORDER BY a.updated_at DESC, a.rowid DESC
@@ -134,7 +135,9 @@ export const LIST_PENDING_REVIEWS = `
          a.name AS name, a.name_is_default AS name_is_default, a.owner_user_id AS owner_user_id,
          a.classification AS classification, a.classification_source AS classification_source
   FROM reviews r JOIN apps a ON a.app_id = r.app_id
-  WHERE r.state = 'vantar'
+  -- decommissioned_at IS NULL är försvar på djupet: avvecklingen drar redan tillbaka väntande
+  -- ärenden, men kön får inte visa en app som inte finns även om den regeln någon gång sviker.
+  WHERE r.state = 'vantar' AND a.decommissioned_at IS NULL
   ORDER BY r.requested_at, r.rowid
   LIMIT :limit
 `;

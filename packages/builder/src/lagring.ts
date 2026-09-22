@@ -86,6 +86,7 @@ export interface StoredRegisterRow {
   readonly classification: string | null;
   readonly source: string | null;
   readonly classifiedAt: string | null;
+  readonly decommissionedAt: string | null;
   readonly published: boolean;
 }
 
@@ -482,6 +483,35 @@ export function createStorage(db: BuilderDatabase) {
       });
     },
 
+    /** Appens klass och källa som de står nu. `null` om appen inte finns. */
+    classificationOf(appId: string): { classification: string | null; source: string | null } | null {
+      const row = db.get(sql.SELECT_CLASSIFICATION, { appId });
+      if (row === undefined) return null;
+      return { classification: optionalText(row, 'classification'), source: optionalText(row, 'classification_source') };
+    },
+
+    // ── Avveckling ─────────────────────────────────────────────────────────────
+
+    /**
+     * Arkiverar appen och gallrar det byggverktyget bär: källkod och samtal. Appens DATA och
+     * FILER ligger i hyresgästen och raderas av den som ringer, före det här anropet.
+     *
+     * `false` betyder att appen redan var avvecklad. Avvecklingen ska vara idempotent utåt men
+     * får inte skriva ett nytt gallringsbevis för något som redan är borta.
+     */
+    decommissionApp(appId: string, now: string): boolean {
+      return db.transaction(() => {
+        if (db.run(sql.DECOMMISSION_APP, { appId, now }).changes === 0) return false;
+        // Ett väntande granskningsärende måste bort, annars står en avvecklad app kvar i kön och
+        // ett "godkänn" skulle publicera en app som inte längre finns i control. Samma sats som när
+        // ägaren bygger om: ingen har läst den, och ingen ska tro att någon gjorde det.
+        db.run(sql.WITHDRAW_PENDING_REVIEW, { appId, now });
+        db.run(sql.DELETE_REVISIONS, { appId });
+        db.run(sql.DELETE_MESSAGES, { appId });
+        return true;
+      });
+    },
+
     // ── Granskning ─────────────────────────────────────────────────────────────
 
     /**
@@ -545,6 +575,7 @@ export function createStorage(db: BuilderDatabase) {
         classification: optionalText(row, 'classification'),
         source: optionalText(row, 'classification_source'),
         classifiedAt: optionalText(row, 'classified_at'),
+        decommissionedAt: optionalText(row, 'decommissioned_at'),
         published: typeof row['published_version'] === 'string',
       }));
     },

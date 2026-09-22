@@ -44,6 +44,11 @@ export const SELECT_COLLECTION_SCOPE = `
   SELECT scope FROM collections WHERE name = :collection
 `;
 
+/** Kollektionernas namn och synlighet, i den ordning de skapades. Bara för export. */
+export const LIST_COLLECTIONS = `
+  SELECT name, scope FROM collections ORDER BY created_at, name
+`;
+
 export const COUNT_COLLECTIONS = `
   SELECT count(*) AS antal FROM collections
 `;

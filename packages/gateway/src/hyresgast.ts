@@ -1,7 +1,10 @@
 /**
  * Från validerat värdnamn till `TenantContext`.
  *
- * DETTA ÄR DET ENDA STÄLLET I HELA PLATTFORMEN som anropar `unsafeCreateTenantContext`.
+ * DETTA ÄR DET ENDA STÄLLET I HELA PLATTFORMEN som anropar `unsafeCreateTenantContext`. Två
+ * funktioner gör det, och båda bor här just för att en granskare ska hitta hela ytan på ett
+ * ställe: `resolveTenant` för vanliga förfrågningar, och `tenantForLifecycle` för avveckling och
+ * export. Kommer det någonsin en tredje ska den också stå här.
  * Ett kontext skapas först när (1) värdnamnet matchat allowlisten i vardnamn.ts — enda vägen
  * till ett `ParsedHost` — (2) registret bekräftat att appen finns och har just den version
  * värdnamnet pekar på, och (3) registret bekräftat att den inloggade har en roll i appen som
@@ -78,4 +81,37 @@ export async function resolveTenant(
   }
 
   return { tenant: unsafeCreateTenantContext(parsed.appId, parsed.kind), access: role };
+}
+
+/**
+ * Hyresgästerna för en apps LIVSCYKEL — export och avveckling. Ingen förfrågan till appen går
+ * genom den här vägen; den finns för att en app ska gå att tömma och ta bort.
+ *
+ * Här finns inget värdnamn att gå på, och det är precis vad som gör funktionen känslig: app-id:t
+ * kommer ur en sökväg, vilket `resolveTenant` aldrig tillåter. Därför står kravet i stället på
+ * ÄGARSKAP, och det prövas mot registret HÄR — inte bara hos den som ringer. Den som bara fått
+ * appen delad med sig är `user` och kommer inte förbi. En plattformsroll spelar ingen roll: en
+ * administratör har enligt kontraktet ingen åtkomst till någon apps data, och det gäller också
+ * när appen ska bort.
+ *
+ * Båda versionerna lämnas tillbaka. En avveckling som bara tömde den publicerade hade lämnat
+ * utkastets databas kvar på disken, och det är just sådant som gör ett gallringsbevis osant.
+ */
+export async function tenantForLifecycle(
+  registry: AppRegistry,
+  appId: AppId,
+  userId: string,
+  log: GatewayLogger,
+): Promise<{ readonly published: TenantContext; readonly draft: TenantContext }> {
+  const app = await registry.find(appId);
+  if (app === null || app.appId !== appId) throw appNotFound();
+  const role = await roleOf(registry, appId, userId, log);
+  if (role !== 'owner') {
+    log({ level: 'warn', event: 'app_access_denied' });
+    throw appNotFound();
+  }
+  return {
+    published: unsafeCreateTenantContext(appId, 'published'),
+    draft: unsafeCreateTenantContext(appId, 'draft'),
+  };
 }

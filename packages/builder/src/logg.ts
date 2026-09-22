@@ -24,6 +24,11 @@ export type BuilderLogEvent =
   | 'review_decided'
   | 'app_published'
   | 'publish_failed'
+  /** Ägaren hämtade ut appens innehåll. Antalet dokument står i `count`; inget innehåll loggas. */
+  | 'app_exported'
+  /** Appen avvecklades: data och filer raderade, registerposten arkiverad. Gallringsbeviset. */
+  | 'app_decommissioned'
+  | 'decommission_failed'
   | 'app_shared'
   | 'share_failed'
   | 'share_rate_limited'
@@ -51,6 +56,8 @@ export interface BuilderLogEntry {
   readonly rounds?: number;
   /** Antal, t.ex. hur många jobb som markerades som misslyckade vid start. */
   readonly count?: number;
+  /** Antal filer, t.ex. hur många som raderades vid en avveckling. */
+  readonly files?: number;
   /** Varför något hoppades över — en fast kod, aldrig en sökväg eller ett meddelande. */
   readonly reason?: string;
   /**

@@ -323,6 +323,7 @@ describe('AI-registret i kontrollrummet', () => {
         source: 'modell',
         classifiedAt: '2026-09-19T08:00:00.000Z',
         published: true,
+      decommissionedAt: null,
       },
     ]);
     expect(svar.headers['Cache-Control']).toBe('no-store');
@@ -341,6 +342,7 @@ describe('AI-registret i kontrollrummet', () => {
         source: 'fail-closed',
         classifiedAt: null,
         published: false,
+      decommissionedAt: null,
       },
     ]);
   });

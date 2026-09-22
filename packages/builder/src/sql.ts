@@ -8,7 +8,7 @@
  */
 
 /** Höjs vid varje schemaändring, tillsammans med ett nytt steg i `MIGRATIONS`. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /**
  * Steg N tar databasen från schemaversion N till N+1. Nya steg läggs SIST; ett steg som har körts
@@ -169,6 +169,14 @@ export const MIGRATIONS: readonly string[] = [
 
   CREATE INDEX reviews_by_app ON reviews (app_id, requested_at);
   `,
+  // 6: avveckling. Raden blir KVAR när appen avvecklas — det är hela poängen. Uppgifterna i
+  // appen raderas, men spåret av att appen fanns, vem som ägde den och hur känslig den var är
+  // precis det en tillsyn frågar efter. NULL = appen lever.
+  `
+  ALTER TABLE apps ADD COLUMN decommissioned_at TEXT;
+
+  CREATE INDEX apps_decommissioned ON apps (decommissioned_at);
+  `,
 ];
 
 // ── Hemligheter ──────────────────────────────────────────────────────────────────
@@ -193,13 +201,19 @@ const APP_COLUMNS = `
   EXISTS (SELECT 1 FROM revisions r WHERE r.app_id = a.app_id) AS has_draft
 `;
 
+/**
+ * En avvecklad app finns inte för sin ägare. Det är inte att dölja något — det finns ingenting
+ * kvar att göra med den, och att visa ett skal som inte går att öppna, bygga om eller dela vore
+ * grymmare än att den försvinner. Registret visar den, och det är där frågan hör hemma.
+ */
 export const SELECT_OWNED_APP = `
-  SELECT ${APP_COLUMNS} FROM apps a WHERE a.app_id = :appId AND a.owner_user_id = :owner
+  SELECT ${APP_COLUMNS} FROM apps a
+  WHERE a.app_id = :appId AND a.owner_user_id = :owner AND a.decommissioned_at IS NULL
 `;
 
 export const LIST_OWNED_APPS = `
   SELECT ${APP_COLUMNS} FROM apps a
-  WHERE a.owner_user_id = :owner
+  WHERE a.owner_user_id = :owner AND a.decommissioned_at IS NULL
   ORDER BY a.updated_at DESC, a.rowid DESC
 `;
 
@@ -244,6 +258,26 @@ export const SET_CLASSIFICATION = `
   SET classification = :classification, classification_source = :source, classified_at = :now
   WHERE app_id = :appId
 `;
+
+// ── Avveckling ───────────────────────────────────────────────────────────────────
+
+/**
+ * Arkiverar appen. Utkastet och publiceringen nollas: appen serveras inte längre någonstans, och
+ * en rad som säger att den är publicerad när den inte finns vore osann i registret.
+ *
+ * `name` och klassningen rörs INTE. De är vad registret ska kunna svara med efteråt.
+ */
+export const DECOMMISSION_APP = `
+  UPDATE apps
+  SET decommissioned_at = :now, published_version = NULL, updated_at = :now
+  WHERE app_id = :appId AND decommissioned_at IS NULL
+`;
+
+/** Appens revisioner bort: källkoden är en del av det som ska gallras. */
+export const DELETE_REVISIONS = `DELETE FROM revisions WHERE app_id = :appId`;
+
+/** Samtalet bort. Det kan bära personuppgifter och är det mest ordrika appen har. */
+export const DELETE_MESSAGES = `DELETE FROM messages WHERE app_id = :appId`;
 
 // ── Granskning ───────────────────────────────────────────────────────────────────
 

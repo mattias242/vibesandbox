@@ -65,6 +65,12 @@ import { sendFailure } from './svar.ts';
 import { createHostParser } from './vardnamn.ts';
 import type { BuilderHost, ParsedHost } from './vardnamn.ts';
 
+/**
+ * Livscykelns väg till en apps hyresgäster (export och avveckling). Exporteras för att
+ * plattformen ska kunna koppla in den — den är det enda undantaget från att app-id bara får komma
+ * ur ett värdnamn, och den prövar därför ägarskapet mot registret själv. Se hyresgast.ts.
+ */
+export { tenantForLifecycle } from './hyresgast.ts';
 export { createTestIdentityProvider, signTestIdentity, testLoginPath } from './testidentitet.ts';
 export type { SignTestIdentityOptions, TestIdentityProviderOptions } from './testidentitet.ts';
 export type { GatewayLogEntry, GatewayLogger } from './logg.ts';

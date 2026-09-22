@@ -261,6 +261,7 @@ export interface InspelatStoreAnrop {
     | 'getDocument'
     | 'replaceDocument'
     | 'deleteDocument'
+    | 'exportTenant'
     | 'destroyTenant'
     | 'close';
   readonly tenant?: TenantContext;
@@ -393,6 +394,11 @@ export function skapaFejkatTenantStore(): FejkatTenantStore {
         throw new DataApiError('not_found', 'dokumentet finns inte');
       }
       k.dokument.delete(id);
+    },
+
+    async exportTenant(tenant, identity): Promise<{ collections: Record<string, never>; documentCount: number }> {
+      anrop.push({ metod: 'exportTenant', tenant, identity });
+      return { collections: {}, documentCount: 0 };
     },
 
     async destroyTenant(tenant): Promise<void> {

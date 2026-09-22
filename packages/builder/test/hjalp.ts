@@ -104,6 +104,8 @@ export interface FejkControl extends BuilderControl {
   readonly publicerade: Map<string, string>;
   /** Sätts för att nästa import ska misslyckas. */
   importFel: Error | null;
+  /** Sätts för att nästa borttagning ska misslyckas — avvecklingens halvvägsläge. */
+  deleteFel: Error | null;
 }
 
 export function fejkControl(): FejkControl {
@@ -117,6 +119,7 @@ export function fejkControl(): FejkControl {
     atkomst: new Map(),
     tilldelningar: 0,
     importFel: null,
+    deleteFel: null,
     async createApp() {
       control.anrop.push('createApp');
       const appId = slumpatAppId();
@@ -171,6 +174,16 @@ export function fejkControl(): FejkControl {
       const rader = control.atkomst.get(appId) ?? [];
       const ordnade = [...rader.filter((rad) => rad.role === 'owner'), ...rader.filter((rad) => rad.role !== 'owner')];
       return ordnade.map((rad) => ({ ...rad, addedAt: '2026-09-19T08:00:00.000Z' }));
+    },
+
+    async deleteApp(appId) {
+      control.anrop.push('deleteApp');
+      if (control.deleteFel !== null) throw control.deleteFel;
+      if (!control.appar.has(appId)) throw new FejkControlFel('app_not_found');
+      control.appar.delete(appId);
+      control.utkast.delete(appId);
+      control.publicerade.delete(appId);
+      control.atkomst.delete(appId);
     },
   };
   return control;

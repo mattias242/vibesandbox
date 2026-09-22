@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
-import type { AgentEvent, BuilderAppDetail, BuilderJobStatus, BuilderReviewStatus } from '@vibesandbox/contracts';
+import type {
+  AgentEvent,
+  AppExport,
+  BuilderAppDetail,
+  BuilderJobStatus,
+  BuilderReviewStatus,
+  DecommissionEvidence,
+} from '@vibesandbox/contracts';
 import { ApiError } from './api.ts';
 import { appendToChat, registerChatInput } from './chatInput.ts';
 import { api, errorMessage, sessionFlash, sleep } from './client.ts';
@@ -12,12 +19,29 @@ import { GuideLink } from './ServicesGuide.tsx';
 import { SharePanel } from './SharePanel.tsx';
 import { summarizeJob } from './steps.ts';
 import {
+  DECOMMISSION_BUSY,
+  DECOMMISSION_BUTTON,
+  DECOMMISSION_CONFIRM_LABEL,
+  DECOMMISSION_DONE_BODY,
+  DECOMMISSION_DONE_HEADING,
+  DECOMMISSION_DONE_LINK,
+  DECOMMISSION_HEADING,
+  DECOMMISSION_LEAD,
+  DECOMMISSION_REMAINS,
+  DECOMMISSION_WARNING,
+  EXPORT_BUSY,
+  EXPORT_BUTTON,
+  EXPORT_FORMAT_NOTE,
+  EXPORT_WHY,
   PUBLISH_REQUEST_AGAIN_BUTTON,
   PUBLISH_REQUEST_AGAIN_HINT,
   PUBLISH_REQUEST_BUTTON,
   PUBLISH_REQUEST_HINT,
   PUBLISH_REQUEST_SENDING,
   REVIEW_REASON_LEAD,
+  decommissionConfirmHint,
+  decommissionEvidenceText,
+  exportFileName,
   reviewOwnerText,
 } from './texts.ts';
 
@@ -44,6 +68,9 @@ export function Workspace({ appId }: { appId: string }) {
   // hämtning (granskaren har avgjort, eller ett nytt bygge drog tillbaka ärendet) och ägarens egen
   // begäran. Båda kommer från servern — vyn hittar aldrig på ett läge.
   const [review, setReview] = useState<BuilderReviewStatus | null>(null);
+  // Gallringsbeviset, när appen har avvecklats. Så länge det är `null` finns appen; när det inte
+  // är det finns den inte längre, och då är arbetsytan inte en yta som går att visa.
+  const [decommissioned, setDecommissioned] = useState<DecommissionEvidence | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -90,6 +117,17 @@ export function Workspace({ appId }: { appId: string }) {
     });
     return () => controller.abort();
   }, [jobId, reload]);
+
+  // Avvecklad: ingenting av arbetsytan går att visa längre — förhandsvisningen har ingen adress
+  // att hämta, och att låta konversationen stå kvar hade sagt att appen finns. Kvar blir beskedet
+  // och vägen tillbaka till listan.
+  if (decommissioned !== null) {
+    return (
+      <div className="page">
+        <DecommissionDone evidence={decommissioned} />
+      </div>
+    );
+  }
 
   if (loadError !== null && app === null) {
     return (
@@ -165,6 +203,7 @@ export function Workspace({ appId }: { appId: string }) {
           onRequested={(status) => setReview(status)}
         />
         {publishedUrl !== null && <SharePanel appId={appId} publishedUrl={publishedUrl} />}
+        <DecommissionBar appId={appId} appName={app.name} onDone={setDecommissioned} />
       </div>
     </div>
   );
@@ -448,6 +487,219 @@ export function PublishPanel({
 
       <p className={error === null ? 'status-line' : 'status-line status-error'} aria-live="polite">
         {error ?? ''}
+      </p>
+    </div>
+  );
+}
+
+// ── Avveckling och export ─────────────────────────────────────────────────────
+//
+// Exporten först, avvecklingen sedan, i samma ruta. Ordningen är inte en artighet: det appen bär
+// kan vara allmän handling, och en väg ut ska finnas innan vägen bort erbjuds.
+
+export interface ExportFile {
+  /** Namnet filen får i hämtningsmappen. */
+  readonly name: string;
+  readonly type: string;
+  readonly contents: string;
+}
+
+/**
+ * Exporten som en fil. Ren funktion, och tidpunkten skickas in, så att det som faktiskt hamnar i
+ * filen går att pröva utan webbläsare — själva sparandet nedan är bara några rader DOM.
+ *
+ * Innehållet skrivs med indrag. Filen är gjord för att läsas av ett program, men den som öppnar
+ * den för att se efter vad som fanns i appen ska inte mötas av en enda oändlig rad.
+ */
+export function exportFile(appName: string, data: AppExport, at: Date): ExportFile {
+  return {
+    name: exportFileName(appName, at),
+    type: 'application/json',
+    contents: `${JSON.stringify(data, null, 2)}\n`,
+  };
+}
+
+/**
+ * Sparar filen i webbläsaren: en länk som aldrig syns, ett klick, och bort igen. Ingenting går via
+ * servern — exporten är redan hämtad och ligger i minnet.
+ *
+ * Adressen pekar på den kopian och frigörs inte av sig själv; utan `revokeObjectURL` ligger hela
+ * exporten kvar i minnet tills fliken stängs. Den frigörs i en timeout och inte direkt efter
+ * klicket, eftersom hämtningen i vissa webbläsare hinner starta först efter att anropet återvänt.
+ */
+function saveFile(file: ExportFile): void {
+  const url = URL.createObjectURL(new Blob([file.contents], { type: file.type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = file.name;
+  link.rel = 'noopener';
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/**
+ * Rutan med sitt eget minne: vad ägaren skrivit i bekräftelserutan, och vad servern svarat.
+ * Anropen bor här, texterna och knapparna i `DecommissionPanel` nedan.
+ */
+function DecommissionBar({ appId, appName, onDone }: { appId: string; appName: string; onDone: (evidence: DecommissionEvidence) => void }) {
+  const [confirmText, setConfirmText] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [decommissioning, setDecommissioning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function download() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      saveFile(exportFile(appName, await api.exportApp(appId), new Date()));
+    } catch (caught) {
+      setExportError(errorMessage(caught));
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function decommission() {
+    setDecommissioning(true);
+    setError(null);
+    try {
+      // Namnet skickas som ägaren skrev det. Servern prövar det själv, och gör den en annan
+      // bedömning än vyn är det serverns som gäller — vyn stänger knappen av omtanke, inte i stället.
+      onDone(await api.decommissionApp(appId, confirmText));
+    } catch (caught) {
+      setError(errorMessage(caught));
+      setDecommissioning(false);
+    }
+    // Inget `finally`: lyckades det finns appen inte längre, och då ska knappen inte gå att trycka
+    // igen medan vyn byts ut.
+  }
+
+  return (
+    <DecommissionPanel
+      appName={appName}
+      confirmText={confirmText}
+      onConfirmText={setConfirmText}
+      onExport={() => void download()}
+      exporting={exporting}
+      exportError={exportError}
+      onDecommission={() => void decommission()}
+      decommissioning={decommissioning}
+      error={error}
+    />
+  );
+}
+
+/**
+ * Ytan i sig, utan eget minne: allt den visar kommer utifrån, precis som `PublishPanel`. Då går
+ * det som är svårt att pröva var för sig — framför allt att knappen är STÄNGD tills appens namn
+ * står ordagrant i rutan, fel skiftläge inräknat.
+ *
+ * Jämförelsen är avsiktligt en rak likhet. Ingen trimning, ingen normalisering av versaler: den
+ * som skriver "bokning av mötesrum" om appen heter "Bokning av mötesrum" har inte läst namnet, och
+ * den som inte läst namnet har inte den app hon tror framför sig.
+ */
+export function DecommissionPanel({
+  appName,
+  confirmText,
+  onConfirmText,
+  onExport,
+  exporting,
+  exportError,
+  onDecommission,
+  decommissioning,
+  error,
+}: {
+  appName: string;
+  confirmText: string;
+  onConfirmText: (value: string) => void;
+  onExport: () => void;
+  exporting: boolean;
+  exportError: string | null;
+  onDecommission: () => void;
+  decommissioning: boolean;
+  error: string | null;
+}) {
+  const headingId = useId();
+  const confirmId = useId();
+  const confirmHintId = useId();
+  const matches = confirmText === appName;
+
+  return (
+    <section className="decommission" aria-labelledby={headingId}>
+      <h2 id={headingId}>{DECOMMISSION_HEADING}</h2>
+      <p className="hint">{DECOMMISSION_LEAD}</p>
+
+      {/* Exporten står först i rutan, och det är hela poängen med att den står här alls. */}
+      <div className="decommission-export">
+        <p className="hint">{EXPORT_WHY}</p>
+        <button type="button" className="button" onClick={onExport} disabled={exporting}>
+          {exporting ? EXPORT_BUSY : EXPORT_BUTTON}
+        </button>
+        <p className="hint">{EXPORT_FORMAT_NOTE}</p>
+        <p className={exportError === null ? 'status-line' : 'status-line status-error'} aria-live="polite">
+          {exportError ?? ''}
+        </p>
+      </div>
+
+      {/* Vad som raderas, och vad som blir kvar. Två stycken, inte ett: det som står kvar gör det
+          med flit, och den meningen får inte gömmas i slutet av varningen.
+
+          Varningen är avsiktligt INTE `notice-error`. Ingenting har gått fel — det är ägaren som
+          är på väg att göra något som inte går att ångra, och de två sakerna ska inte se likadana
+          ut. Stilmallen hör till en annan del av gränssnittet; `.decommission-warning` är kroken. */}
+      <p className="notice decommission-warning">{DECOMMISSION_WARNING}</p>
+      <p className="hint">{DECOMMISSION_REMAINS}</p>
+
+      <label className="field-label" htmlFor={confirmId}>
+        {DECOMMISSION_CONFIRM_LABEL}
+      </label>
+      <p id={confirmHintId} className="hint">
+        {decommissionConfirmHint(appName)}
+      </p>
+      <input
+        id={confirmId}
+        className="input"
+        type="text"
+        value={confirmText}
+        autoComplete="off"
+        spellCheck={false}
+        aria-describedby={confirmHintId}
+        onChange={(event) => onConfirmText(event.target.value)}
+        disabled={decommissioning}
+      />
+
+      <div className="form-actions">
+        <button type="button" className="button button-danger" onClick={onDecommission} disabled={!matches || decommissioning}>
+          {decommissioning ? DECOMMISSION_BUSY : DECOMMISSION_BUTTON}
+        </button>
+      </div>
+
+      <p className={error === null ? 'status-line' : 'status-line status-error'} aria-live="polite">
+        {error ?? ''}
+      </p>
+    </section>
+  );
+}
+
+/**
+ * Beskedet efteråt. Det säger samma två saker som varningen gjorde — vad som är borta och vad som
+ * står kvar — men nu i förfluten tid, plus siffrorna ur gallringsbeviset. Utan dem är "appen är
+ * borta" ett påstående ägaren inte kan pröva.
+ */
+export function DecommissionDone({ evidence }: { evidence: DecommissionEvidence }) {
+  return (
+    <div className="notice" role="status">
+      <h1>{DECOMMISSION_DONE_HEADING}</h1>
+      <p>{DECOMMISSION_DONE_BODY}</p>
+      <p className="hint">{decommissionEvidenceText(evidence.documentsDeleted, evidence.filesDeleted)}</p>
+      <p>
+        <a className="button button-primary" href="#/">
+          {DECOMMISSION_DONE_LINK}
+        </a>
       </p>
     </div>
   );

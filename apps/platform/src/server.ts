@@ -30,11 +30,12 @@ import { createAgent, createClassifier } from '@vibesandbox/agent';
 import { createBuilder } from '@vibesandbox/builder';
 import type { Builder } from '@vibesandbox/builder';
 import type { AgentKnowledge } from '@vibesandbox/agent';
-import type { AppMailer, AppServiceFactory, AppServiceName, BuildRunner, LlmProvider, Role } from '@vibesandbox/contracts';
+import { isAppId } from '@vibesandbox/contracts';
+import type { AppId, AppMailer, AppServiceFactory, AppServiceName, BuildRunner, LlmProvider, Role } from '@vibesandbox/contracts';
 import { createControl } from '@vibesandbox/control';
 import { createTenantStore } from '@vibesandbox/data-api';
-import { RECOMMENDED_SERVER_OPTIONS, createGateway, handleClientError } from '@vibesandbox/gateway';
-import type { RequestHandler } from '@vibesandbox/gateway';
+import { RECOMMENDED_SERVER_OPTIONS, createGateway, handleClientError, tenantForLifecycle } from '@vibesandbox/gateway';
+import type { GatewayLogger, RequestHandler } from '@vibesandbox/gateway';
 import type { AddedUser } from '@vibesandbox/identity';
 import { createMaskingProvider, createOpenAiCompatibleProvider } from '@vibesandbox/llm';
 import { checkRedlines, classify } from '@vibesandbox/policy';
@@ -116,6 +117,19 @@ function safeLogger(logger: PlatformLogger | undefined): PlatformLogger {
   };
 }
 
+/**
+ * App-id:t ur byggverktygets egen databas, prövat igen innan det lämnas till gatewayn. Kommer det
+ * någonsin något annat än ett giltigt id hit är det ett fel hos oss, inte hos den som ringer.
+ */
+function livscykelAppId(value: string): AppId {
+  if (!isAppId(value)) throw new Error('Ett sparat app-id har fel format.');
+  return value;
+}
+
+/**
+ * Loggen `tenantForLifecycle` skriver till. Den bär bara händelsenamn — inga adresser, inga
+ * app-id — precis som gatewayns egen logg.
+ */
 function languageModel(config: BuilderConfig, injected: LlmProvider | undefined): LlmProvider {
   const inner =
     injected ??
@@ -214,6 +228,30 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
         // Röda linjer: önskemålet prövas före agenten, så att ett förbjudet bygge aldrig når
         // modellen. Prövningen är mönsterbaserad och är försvar på djupet, inte en garanti.
         checkRedlines,
+        // Vägen till appens DATA, för export och avveckling. Byggverktyget når den aldrig själv:
+        // en TenantContext skapas bara i gatewayn, och `tenantForLifecycle` är den enda vägen dit
+        // som inte går över ett värdnamn. Den prövar ägarskapet mot registret själv, så ett app-id
+        // ur en sökväg räcker inte — det är hela skillnaden mot `resolveTenant`.
+        appData: (() => {
+          const livscykelLogg: GatewayLogger = (entry) => log({ source: 'gateway', ...entry });
+          return {
+          async export(appId, identity, exportOptions) {
+            const { published } = await tenantForLifecycle(openControl.registry, livscykelAppId(appId), identity.userId, livscykelLogg);
+            return openStore.exportTenant(published, identity, exportOptions);
+          },
+          async destroy(appId, identity) {
+            const { published, draft } = await tenantForLifecycle(openControl.registry, livscykelAppId(appId), identity.userId, livscykelLogg);
+            // Räknas FÖRE raderingen — efteråt finns inget att räkna, och gallringsbeviset ska
+            // kunna visa VAD som försvann.
+            const innan = await openStore.exportTenant(published, identity, { maxDocumentsPerCollection: Number.MAX_SAFE_INTEGER });
+            // Båda versionerna. En avveckling som bara tömde den publicerade hade lämnat
+            // utkastets databas kvar på disken, och då är beviset osant.
+            await openStore.destroyTenant(published);
+            await openStore.destroyTenant(draft);
+            return { documentsDeleted: innan.documentCount, filesDeleted: 0 };
+          },
+          };
+        })(),
         // Klassningen får aldrig kasta — allt som går fel är `fail-closed`, och `classify` gör om
         // ett `null` från modellen till den strängaste klassen. Därför ingen try/catch här: det
         // finns inget fall kvar att fånga, och en tom catch hade dolt om det ändå uppstod ett.

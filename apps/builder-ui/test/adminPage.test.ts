@@ -36,10 +36,14 @@ import {
   ADMIN_REVIEW_REASON_LABEL,
   ADMIN_REVIEW_REASON_NOTE,
   ADMIN_REVIEW_REJECT_BUTTON,
+  ADMIN_REGISTER_DECOMMISSIONED,
+  ADMIN_REGISTER_DECOMMISSIONED_NOTE,
   ADMIN_REGISTER_EMPTY,
   ADMIN_REGISTER_LEAD,
   ADMIN_REGISTER_NEVER_CLASSIFIED,
   ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE,
+  ADMIN_REGISTER_PUBLISHED,
+  ADMIN_REGISTER_UNPUBLISHED,
   ADMIN_SELF_NOTE,
   ADMIN_STOPS_EMPTY,
   ADMIN_STOPS_PATTERN_NOTE,
@@ -132,6 +136,7 @@ const REGISTER: readonly AdminRegisterEntry[] = [
     source: 'modell',
     classifiedAt: '2026-09-19T10:05:00Z',
     published: true,
+    decommissionedAt: null,
   },
   {
     appIdPrefix: OTHER_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
@@ -141,6 +146,7 @@ const REGISTER: readonly AdminRegisterEntry[] = [
     source: 'modell',
     classifiedAt: '2026-09-17T08:35:00Z',
     published: false,
+    decommissionedAt: null,
   },
   {
     appIdPrefix: '01jc3d4e',
@@ -150,6 +156,7 @@ const REGISTER: readonly AdminRegisterEntry[] = [
     source: 'signalord',
     classifiedAt: '2026-09-15T13:20:00Z',
     published: true,
+    decommissionedAt: null,
   },
   {
     appIdPrefix: '01jf5g6h',
@@ -159,6 +166,7 @@ const REGISTER: readonly AdminRegisterEntry[] = [
     source: 'fail-closed',
     classifiedAt: '2026-09-11T09:00:00Z',
     published: false,
+    decommissionedAt: null,
   },
   {
     appIdPrefix: '01jh7j8k',
@@ -168,6 +176,7 @@ const REGISTER: readonly AdminRegisterEntry[] = [
     source: 'fail-closed',
     classifiedAt: null,
     published: false,
+    decommissionedAt: null,
   },
 ];
 
@@ -840,5 +849,91 @@ describe('ett öppnat granskningsärende', () => {
     const html = renderCase();
     expect(html).not.toContain('href');
     expect(html).not.toContain(FULL_ID);
+  });
+});
+
+
+/**
+ * Avvecklade appar i AI-registret.
+ *
+ * En avvecklad app står KVAR i registret, och raden är då det enda som finns kvar av den. Det gör
+ * två saker nödvändiga, och båda låses här.
+ *
+ * Raden måste gå att skilja från en levande VID EN BLICK — inte genom att läsa en cell — eftersom
+ * den som läser registret annars räknar avvecklade appar som appar i bruk.
+ *
+ * Och att posten står kvar med flit måste stå i ord. Utan den meningen läses en avvecklad rad som
+ * ett bevis på att uppgifterna inte raderades, alltså tvärtemot vad som faktiskt hände.
+ */
+describe('avvecklade appar i AI-registret', () => {
+  const GONE: AdminRegisterEntry = {
+    appIdPrefix: '01jm9n0p',
+    name: 'Enkät om fikat 2024',
+    ownerEmail: 'karin@example.se',
+    classification: 'personuppgift',
+    source: 'signalord',
+    classifiedAt: '2026-09-11T09:00:00Z',
+    // Appen VAR publicerad när den levde. Raden får ändå aldrig visa den som publicerad.
+    published: true,
+    decommissionedAt: '2026-09-14T10:12:00Z',
+  };
+
+  const withGone = { ...loaded, register: [...REGISTER, GONE] };
+
+  function rows(html: string): readonly string[] {
+    const body = /<tbody>([\s\S]*)<\/tbody>/.exec(part(html, 'register'));
+    expect(body, 'registret ska vara en tabell med en kropp').not.toBeNull();
+    return (body![1] ?? '').split('<tr').slice(1);
+  }
+
+  it('går att skilja från en levande rad vid en blick, inte genom att läsa en cell', () => {
+    const all = rows(render(withGone));
+    const gone = all.at(-1)!;
+    expect(gone).toContain('Enkät om fikat 2024');
+    expect(gone, 'raden själv bär märket').toContain('admin-decommissioned');
+    for (const alive of all.slice(0, -1)) {
+      expect(alive, 'en levande rad bär det aldrig').not.toContain('admin-decommissioned');
+    }
+  });
+
+  it('visar när appen avvecklades, och säger vilken av radens tidpunkter det är', () => {
+    const gone = rows(render(withGone)).at(-1)!;
+    expect(gone).toContain(ADMIN_REGISTER_DECOMMISSIONED);
+    expect(gone, 'datumet i samma form som resten av kontrollrummet').toMatch(/14 sep/);
+    expect(gone, 'rå maskintid hör inte hemma i vyn').not.toContain('2026-09-14T10:12:00Z');
+    // Klassningens tidpunkt står kvar: raden bär två tidpunkter, och båda betyder något.
+    expect(gone).toMatch(/11 sep/);
+  });
+
+  it('visar aldrig en avvecklad app som publicerad, hur den än såg ut när den levde', () => {
+    const gone = rows(render(withGone)).at(-1)!;
+    expect(GONE.published, 'förutsättningen: appen VAR ute').toBe(true);
+    expect(gone).not.toContain(ADMIN_REGISTER_PUBLISHED);
+    expect(gone).not.toContain(ADMIN_REGISTER_UNPUBLISHED);
+    expect(gone).toContain(ADMIN_REGISTER_DECOMMISSIONED);
+  });
+
+  it('en levande rad ändras inte av att en avvecklad finns i listan', () => {
+    const [first, second] = rows(render(withGone));
+    expect(first).toContain(ADMIN_REGISTER_PUBLISHED);
+    expect(first).not.toContain(ADMIN_REGISTER_DECOMMISSIONED);
+    expect(second).toContain(ADMIN_REGISTER_UNPUBLISHED);
+  });
+
+  it('säger varför posten står kvar — annars läses raden som att ingenting raderades', () => {
+    const html = part(render(withGone), 'register');
+    expect(html).toContain(ADMIN_REGISTER_DECOMMISSIONED_NOTE);
+    expect(ADMIN_REGISTER_DECOMMISSIONED_NOTE, 'det är avsiktligt').toMatch(/med flit|avsiktligt/);
+    expect(ADMIN_REGISTER_DECOMMISSIONED_NOTE, 'uppgifterna ÄR raderade').toMatch(/raderade/);
+    expect(ADMIN_REGISTER_DECOMMISSIONED_NOTE, 'och vad som står kvar').toMatch(/har funnits/);
+    // Meningen står före tabellen: den förklarar raderna, inte tvärtom.
+    expect(html.indexOf(ADMIN_REGISTER_DECOMMISSIONED_NOTE)).toBeLessThan(html.indexOf('<table'));
+  });
+
+  it('är fortfarande ren läsning — registret är ingen väg in i en app som tagits bort', () => {
+    const html = part(render(withGone), 'register');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('<form');
+    expect(html).not.toContain('href');
   });
 });

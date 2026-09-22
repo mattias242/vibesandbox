@@ -28,6 +28,7 @@ import {
   createDocument,
   deleteDocument,
   getDocument,
+  exportDocuments,
   listDocuments,
   replaceDocument,
 } from './dokument.ts';
@@ -204,6 +205,15 @@ export function createTenantStore(options: TenantStoreOptions): TenantStore {
         if (handle === null) throw dataApiError('not_found', 'Dokumentet finns inte.');
         if (history === undefined) deleteDocument(handle, request);
         else deleteWithHistory(handle, history, request);
+      });
+    },
+
+    async exportTenant(tenant: TenantContext, identity: Identity, exportOptions: { readonly maxDocumentsPerCollection: number }) {
+      return guarded(() => {
+        const userId = validateUserId(identity);
+        const handle = handles.openExisting(tenantPaths(dataDir, tenant));
+        if (handle === null) return { collections: {}, documentCount: 0 };
+        return exportDocuments(handle, { userId, maxDocumentsPerCollection: exportOptions.maxDocumentsPerCollection });
       });
     },
 

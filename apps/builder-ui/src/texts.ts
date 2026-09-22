@@ -9,6 +9,7 @@
  * förut att bara du ser den tills du publicerar, och det är inte längre hela sanningen.
  */
 import { REVIEW_STATES, type ReviewState } from '@vibesandbox/contracts';
+import { formatCount } from './format.ts';
 
 export const SUGGESTIONS: readonly string[] = [
   'En todo-lista för vårt team',
@@ -112,4 +113,117 @@ export function reviewOwnerText(state: string): ReviewOwnerText {
   // Kontraktets lista, inte `in`: `'toString' in objektet` är sant, och då hade ett skräpvärde
   // kunnat slå upp något som inte är en text alls.
   return REVIEW_STATES.includes(state as ReviewState) ? REVIEW_OWNER_TEXTS[state as ReviewState] : REVIEW_OWNER_TEXTS.vantar;
+}
+
+// ── Avveckling och export: när appen ska sluta finnas ──────────────────────────
+//
+// Det här är den enda ytan i byggverktyget där ingenting går att ångra, och texterna är skrivna
+// därefter. Tre regler har styrt dem:
+//
+//   • Exporten står FÖRE avvecklingen, i samma ruta. Det appen bär kan vara allmän handling, och
+//     då får det inte försvinna för att någon tröttnat. Plattformen kan inte avgöra om just de
+//     här uppgifterna är det — men vägen ut ska alltid finnas, och den ska synas först.
+//   • Det ska stå EXAKT vad som raderas och exakt vad som blir kvar. "Appen tas bort" är inte
+//     sant nog: registerposten står kvar med flit, och det ska ägaren veta innan hon trycker,
+//     inte upptäcka efteråt.
+//   • Ingen skrämsel, ingen förminskning. Inga versaler, inga utropstecken — men inte heller
+//     "ta bort appen" som om det vore att stänga en flik. Avveckling ska vara lite jobbigt att
+//     göra, och bekräftelsen är appens namn skrivet för hand: den som skriver fel namn har inte
+//     den app hon tror framför sig.
+
+export const DECOMMISSION_HEADING = 'Avveckla appen';
+
+/** Står först i rutan: vad den är till för, och att ordningen mellan de två knapparna betyder något. */
+export const DECOMMISSION_LEAD =
+  'Behövs appen inte längre kan du avveckla den. Ladda ner innehållet först — efter avvecklingen ' +
+  'finns det inte kvar någonstans att hämta det ifrån.';
+
+export const EXPORT_BUTTON = 'Ladda ner appens innehåll';
+
+export const EXPORT_BUSY = 'Hämtar…';
+
+/**
+ * Varför exporten finns, och varför den står före knappen som raderar. Meningen om allmän handling
+ * är själva skälet — utan den ser nedladdningen ut som en bekvämlighet i stället för en skyldighet
+ * någon kan ha. Förbehållet är lika viktigt: plattformen VET inte, och ska inte låtsas veta.
+ */
+export const EXPORT_WHY =
+  'Uppgifter i en app hos en kommun kan vara allmän handling, och sådant får inte försvinna bara ' +
+  'för att den som byggde appen har tröttnat. Plattformen kan inte avgöra om just dina uppgifter ' +
+  'är det — men det ska alltid finnas en väg ut. Filen innehåller allt appen bär: det som lagts ' +
+  'in i den, vilka filer som sparats och samtalet där appen byggdes.';
+
+/** Vad som faktiskt hämtas, sagt kort vid knappen. En JSON-fil är inget ord att slänga ur sig. */
+export const EXPORT_FORMAT_NOTE =
+  'Du får en fil som går att spara och öppna senare. Den är gjord för att kunna läsas av ett ' +
+  'program — behöver du den i en tabell kan någon göra en sådan av filen.';
+
+/**
+ * Vad som raderas. Räknat, inte sammanfattat: "appen tas bort" hade lämnat ägaren att själv gissa
+ * om samtalet följer med. Det gör det.
+ */
+export const DECOMMISSION_WARNING =
+  'Det här går inte att ångra. Det som raderas är uppgifterna som lagts in i appen, filerna som ' +
+  'sparats i den, koden appen består av och samtalet där du byggde den. Adressen slutar svara, ' +
+  'och appen försvinner ur din lista och ur listan hos dem du har delat den med.';
+
+/**
+ * Vad som blir kvar. Står som ett eget stycke och inte som en bisats: det är en följd ägaren har
+ * rätt att känna till innan hon trycker, och den är avsiktlig — inte något plattformen glömt.
+ */
+export const DECOMMISSION_REMAINS =
+  'Det här står kvar: att appen har funnits, vem som ägde den och vilken nivå den hade finns kvar ' +
+  'i plattformens register. Det är med flit. Den som ska granska hur plattformen används måste ' +
+  'kunna se att appen har funnits och att den togs bort. Själva uppgifterna i appen finns inte ' +
+  'kvar där — bara spåret av att appen fanns.';
+
+export const DECOMMISSION_CONFIRM_LABEL = 'Skriv appens namn för att bekräfta';
+
+/** Vid rutan: precis vad som ska skrivas, och att det ska stämma bokstav för bokstav. */
+export function decommissionConfirmHint(appName: string): string {
+  return `Skriv ${appName} precis som det står, med samma stora och små bokstäver. Knappen nedanför öppnas när det stämmer.`;
+}
+
+export const DECOMMISSION_BUTTON = 'Avveckla appen för alltid';
+
+export const DECOMMISSION_BUSY = 'Avvecklar…';
+
+export const DECOMMISSION_DONE_HEADING = 'Appen är avvecklad';
+
+/** Beskedet efteråt. Säger vad som hände och vad som står kvar — samma två saker som varningen. */
+export const DECOMMISSION_DONE_BODY =
+  'Uppgifterna och filerna är raderade och adressen svarar inte längre. Att appen har funnits ' +
+  'står kvar i plattformens register.';
+
+/** Länken vidare. Appen finns inte längre, så det finns ingenting att stanna kvar på. */
+export const DECOMMISSION_DONE_LINK = 'Till mina appar';
+
+/**
+ * Gallringsbeviset i ord. Siffrorna räknades innan raderingen — efteråt finns inget att räkna —
+ * och de står här därför att "appen är borta" inte säger någonting om hur mycket som försvann.
+ */
+export function decommissionEvidenceText(documentsDeleted: number, filesDeleted: number): string {
+  const rader = documentsDeleted === 1 ? '1 sparad uppgift' : `${formatCount(documentsDeleted)} sparade uppgifter`;
+  const filer = filesDeleted === 1 ? '1 fil' : `${formatCount(filesDeleted)} filer`;
+  return `${rader} och ${filer} raderades.`;
+}
+
+/**
+ * Namnet på filen ägaren får. Appens namn OCH datumet, eftersom en export utan datum är omöjlig
+ * att skilja från en annan när den legat i hämtningsmappen ett halvår.
+ *
+ * Namnet är appens, och appens namn är skrivet av en människa: mellanslag, punkter och snedstreck
+ * hör inte hemma i ett filnamn, så allt som inte är en bokstav eller en siffra blir ett bindestreck.
+ * Bokstäverna behålls som de är — å, ä och ö är bokstäver, och en app som heter "Anmälan" ska inte
+ * bli "anm-lan".
+ */
+export function exportFileName(appName: string, at: Date): string {
+  const stem =
+    appName
+      .normalize('NFC')
+      .replace(/[^\p{L}\p{N}]+/gu, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'app';
+  const day = Number.isNaN(at.getTime()) ? 'utan-datum' : at.toISOString().slice(0, 10);
+  return `${stem}-${day}.json`;
 }

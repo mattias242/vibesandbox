@@ -570,6 +570,7 @@ describe('kontrollrummets AI-register', () => {
     source: 'signalord',
     classifiedAt: '2026-09-19T10:00:00Z',
     published: true,
+    decommissionedAt: null,
   };
 
   it('GET till rätt relativa adress, med kakor och utan skyddshuvud', async () => {
@@ -804,5 +805,135 @@ describe('kontrollrummets granskningskö', () => {
     const error = (await api.adminDecide('b'.repeat(32), 'avvisad').catch((caught: unknown) => caught)) as ApiError;
     expect(error.status).toBe(400);
     expect(error.message).toMatch(/Skriv varför/);
+  });
+});
+
+
+/**
+ * Avveckling och export, sedda från klienten.
+ *
+ * Två saker skiljer de här anropen från alla andra i filen. Exporten plockas INTE isär fält för
+ * fält — den ritas aldrig, den skrivs till en fil, och att kasta ett fält vi inte känner igen
+ * vore att tyst ta bort något ur en export vars hela poäng är att vara fullständig. Det låses
+ * nedan med en rad som kontraktet inte känner: den ska komma hela vägen fram.
+ *
+ * Gallringsbeviset är tvärtom. Siffrorna är hela svaret på vad som försvann, de går inte att
+ * räkna om i efterhand, och en siffra som inte är en siffra ska fälla svaret — aldrig bli en
+ * nolla som ägaren läser som ett besked om att appen var tom.
+ */
+describe('export och avveckling', () => {
+  const EXPORT = {
+    format: 1,
+    exportedAt: '2026-09-22T08:00:00Z',
+    app: { name: 'Bokning av mötesrum', classification: 'personuppgift', classificationSource: 'signalord', published: true },
+    collections: { bokningar: { documents: [{ id: 'r1', rum: 'Stora salen' }], truncated: false } },
+    files: [{ id: 'f1', name: 'dagordning.pdf', size: 1024 }],
+    conversation: [{ role: 'user', text: 'En lista där vi bokar mötesrum', createdAt: '2026-09-18T08:00:00Z' }],
+  };
+
+  const EVIDENCE = {
+    appIdPrefix: '01jabcde',
+    decommissionedAt: '2026-09-22T08:30:00Z',
+    documentsDeleted: 148,
+    filesDeleted: 3,
+  };
+
+  it('exporten hämtas med GET till appens egen adress, utan skyddshuvud', async () => {
+    const { api, calls } = client(() => json(200, EXPORT));
+    await expect(api.exportApp(APP_ID)).resolves.toEqual(EXPORT);
+    expect(`${calls[0]?.method} ${calls[0]?.url}`).toBe(`GET ${BUILDER_API_PREFIX}/apps/${APP_ID}/export`);
+    expect(calls[0]?.credentials).toBe('same-origin');
+    expect(calls[0]?.headers[CSRF_HEADER]).toBeUndefined();
+    expect(calls[0]?.body).toBeUndefined();
+  });
+
+  it('inget kastas bort ur exporten — den ska vara fullständig, inte välkänd', async () => {
+    const withExtra = { ...EXPORT, gallringsbeslut: 'KS 2026/144' };
+    const { api } = client(() => json(200, withExtra));
+    const data = (await api.exportApp(APP_ID)) as unknown as Record<string, unknown>;
+    expect(data['gallringsbeslut'], 'ett fält vi inte känner igen är inte ett fält att slänga').toBe('KS 2026/144');
+  });
+
+  it('ett svar som inte ens är ett objekt blir ett fel, aldrig en tom fil', async () => {
+    const { api } = client(() => json(200, 'inget'));
+    await expect(api.exportApp(APP_ID)).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('avvecklingen skickar appens namn, och ingenting annat', async () => {
+    const { api, calls } = client(() => json(200, { evidence: EVIDENCE }));
+    await expect(api.decommissionApp(APP_ID, 'Bokning av mötesrum')).resolves.toEqual(EVIDENCE);
+    expect(`${calls[0]?.method} ${calls[0]?.url}`).toBe(`POST ${BUILDER_API_PREFIX}/apps/${APP_ID}/avveckla`);
+    expect(calls[0]?.body).toBe(JSON.stringify({ confirm: 'Bokning av mötesrum' }));
+    expect(calls[0]?.headers[CSRF_HEADER]).toBe('1');
+  });
+
+  it('serverns nej till fel namn når fram ordagrant — den kontrollen sitter inte bara i vyn', async () => {
+    const message = 'Skriv appens namn för att bekräfta att den ska avvecklas: Bokning av mötesrum';
+    const { api } = client(() => json(400, { error: { code: 'invalid_request', message } }));
+    const error = (await api.decommissionApp(APP_ID, 'bokning av mötesrum').catch((caught: unknown) => caught)) as ApiError;
+    expect(error.status).toBe(400);
+    expect(error.message).toBe(message);
+  });
+
+  it('en installation utan appdata säger att funktionen inte är inkopplad, inte att något gått fel', async () => {
+    const message = 'Export och avveckling är inte inkopplade i den här installationen.';
+    const respond = () => json(503, { error: { code: 'unavailable', message } });
+    const { api } = client(respond);
+    for (const call of [api.exportApp(APP_ID), api.decommissionApp(APP_ID, 'Bokning av mötesrum')]) {
+      const error = (await call.catch((caught: unknown) => caught)) as ApiError;
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error.status).toBe(503);
+      expect(error.code).toBe('unavailable');
+      expect(error.message, 'serverns egen text är tydligare än vår').toBe(message);
+    }
+  });
+
+  it('ett 503 utan läsbar text blir ändå ett besked om läget, inte "något gick fel"', async () => {
+    const { api } = client(() => json(503, {}));
+    const error = (await api.exportApp(APP_ID).catch((caught: unknown) => caught)) as ApiError;
+    expect(error.status).toBe(503);
+    expect(error.message).toMatch(/går inte att använda just nu/);
+  });
+
+  it.each([
+    ['saknar bevis', {}],
+    ['beviset saknar tidpunkt', { evidence: { ...EVIDENCE, decommissionedAt: '' } }],
+    ['beviset saknar räknade uppgifter', { evidence: { ...EVIDENCE, documentsDeleted: undefined } }],
+    ['beviset räknar bakåt', { evidence: { ...EVIDENCE, filesDeleted: -1 } }],
+    ['beviset räknar i decimaler', { evidence: { ...EVIDENCE, documentsDeleted: 2.5 } }],
+    ['beviset bär hela app-id:t', { evidence: { ...EVIDENCE, appIdPrefix: APP_ID } }],
+  ])('ett svar som %s blir ett fel — en nolla här läses som att appen var tom', async (_name, body) => {
+    const { api } = client(() => json(200, body));
+    const error = (await api.decommissionApp(APP_ID, 'Bokning').catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.message).toMatch(/Något gick fel/);
+  });
+
+  it('ett app-id som inte kan stå i en sökväg skickas aldrig', async () => {
+    const { api, calls } = client();
+    for (const id of ['..', 'a/b', '', 'a?b=1', 'x'.repeat(200)]) {
+      await expect(api.exportApp(id)).rejects.toBeInstanceOf(ApiError);
+      await expect(api.decommissionApp(id, 'Bokning')).rejects.toBeInstanceOf(ApiError);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it('registret bär när en app avvecklades, och läser tomt som ett trasigt svar', async () => {
+    const entry = {
+      appIdPrefix: '01jabcde',
+      name: 'Enkät om fikat',
+      ownerEmail: 'anna@example.se',
+      classification: 'intern',
+      source: 'modell',
+      classifiedAt: '2026-09-11T09:00:00Z',
+      published: false,
+      decommissionedAt: '2026-09-14T10:12:00Z',
+    };
+    const { api } = client(() => json(200, { entries: [entry] }));
+    const entries = await api.adminRegister();
+    expect(entries[0]?.decommissionedAt).toBe('2026-09-14T10:12:00Z');
+
+    const { api: broken } = client(() => json(200, { entries: [{ ...entry, decommissionedAt: '' }] }));
+    await expect(broken.adminRegister()).rejects.toBeInstanceOf(ApiError);
   });
 });

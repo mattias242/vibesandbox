@@ -174,6 +174,12 @@ export function createAdmin(deps: AdminDependencies): {
    * (se atkomst.ts), ur identiteten. Saknas den båda ställena förblir den `null` —
    * kontrollrummet gissar aldrig vems appen är.
    *
+   * För en AVVECKLAD app finns ingen åtkomstlista kvar: `deleteApp` river den tillsammans med
+   * appen. Ägaren kan då bara komma ur identiteten, och utan den inkopplad tappar registret
+   * precis den uppgift det finns för att bevara. Plattformen kopplar alltid in den
+   * (`users: identity.users`); en installation som inte gör det får ett register som inte kan
+   * svara på vem som ägde en avvecklad app, och det är värt att veta om.
+   *
    * Ett control-anrop per app. Databasen är en fil på samma maskin och listan är plattformens
    * alla appar — går den någon gång i tusental är det här stället att slå ihop anropen.
    * Uppslagningen i identiteten görs däremot i EN vändning för hela listan, inte en per app.
@@ -343,6 +349,7 @@ export function createAdmin(deps: AdminDependencies): {
         // strängaste klassen, men den fick inte den klassen VID någon tidpunkt, och registret ska
         // inte hitta på en.
         classifiedAt: row.classification === null ? null : row.classifiedAt,
+        decommissionedAt: row.decommissionedAt,
         published: row.published,
       }));
       return json(200, { entries });

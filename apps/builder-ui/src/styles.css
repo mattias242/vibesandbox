@@ -1330,3 +1330,63 @@ body:has(.page-admin) .topbar-inner {
 .admin-role-form .status-line:empty {
   min-height: 0;
 }
+
+/* ── Avveckling och export ──
+   Rutan där ägaren hämtar ut appens innehåll och kan ta bort den för gott. Den ligger sist i
+   arbetsytan med flit: det är det sista man gör med en app, och det ska inte råka klickas på
+   vägen till något annat. */
+.decommission {
+  margin-top: 3rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1.5rem;
+}
+
+/* Exporten står FÖRE avvecklingen, och ser ut som ett erbjudande — inte som en varning. */
+.decommission-export {
+  margin-bottom: 1.5rem;
+}
+
+/* Varningen är INTE .notice-error. Ingenting har gått fel: det är ägaren som är på väg att göra
+   något som inte går att ångra. Gul kant i stället för röd — allvar, inte larm. */
+.decommission-warning {
+  background: var(--white);
+  border-left-color: var(--error);
+}
+
+.decommission-warning strong {
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+/* ── En avvecklad app i AI-registret ──
+   Raden ska gå att skilja ut vid en blick, inte genom att läsa en cell. Dämpad text plus en
+   markerad vänsterkant: uppgifterna är borta, men posten står kvar med flit. */
+.admin-decommissioned {
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.admin-decommissioned td:first-child {
+  border-left: 4px solid var(--muted);
+}
+
+/* Appens namn ska ändå gå att läsa — det är det registret svarar med. */
+.admin-decommissioned td:first-child,
+.admin-decommissioned th {
+  color: var(--ink);
+}
+
+.admin-decommissioned-at {
+  display: block;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+/* "Avvecklad" är varken bra eller dåligt — det är ett avslutat läge. Grått, inte grönt, inte rött. */
+.badge-gone {
+  background: var(--surface);
+  border-color: var(--muted);
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
