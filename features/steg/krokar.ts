@@ -18,7 +18,7 @@ Before(async function (this: Varld, { pickle }) {
   // bygga och dela appar, och för kontrollrummet som är byggverktygets adminvy — övriga scenarier
   // kör plattformen som i drift utan byggverktyg.
   const mappar = pickle.uri.split(/[\\/]/);
-  if (mappar.includes('bygga') || mappar.includes('delning') || mappar.includes('styrning')) this.byggverktyg = true;
+  if (['bygga', 'delning', 'styrning', 'livscykel'].some((mapp) => mappar.includes(mapp))) this.byggverktyg = true;
   // Plattformstjänster slås på med taggen `@tjanst-<namn>` på egenskapen eller scenariot.
   this.tjanster = tjansterIScenariot(pickle.tags.map((tagg) => tagg.name));
   try {

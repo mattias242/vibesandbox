@@ -23,6 +23,7 @@ const SVARSFRASER: ReadonlyMap<string, VantatFelsvar> = new Map([
   ['lagringsutrymmet är slut', { status: 507, kod: 'quota_exceeded' }],
   ['kollektionen har en annan synlighet', { status: 409, kod: 'scope_mismatch' }],
   ['konflikt', { status: 409, kod: 'conflict' }],
+  ['tjänsten är inte tillgänglig', { status: 503, kod: 'unavailable' }],
 ]);
 
 export function vantatFelsvar(fras: string): VantatFelsvar {
