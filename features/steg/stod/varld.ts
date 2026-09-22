@@ -15,6 +15,7 @@ import type { AgentEvent, AppId, BuilderJob, ChatMessage, Identity, JsonObject, 
 import { createControl } from '@vibesandbox/control';
 import type { Control } from '@vibesandbox/control';
 import { signTestIdentity, testLoginPath } from '@vibesandbox/gateway';
+import { CLASSIFICATION_SYSTEM_PROMPT } from '@vibesandbox/agent';
 import { createFakeProvider } from '@vibesandbox/llm';
 import type { FakeProvider, FakeReply } from '@vibesandbox/llm';
 import type { AppMailer, AppServiceName } from '@vibesandbox/contracts';
@@ -104,6 +105,14 @@ export interface FoljtJobb {
   readonly events: readonly AgentEvent[];
 }
 
+/**
+ * Är det här klassningens fråga till modellen, och inte agentens? Prövas på systemprompten ur
+ * `@vibesandbox/agent`, inte på en avskriven kopia: ändras prompten följer scenarierna med.
+ */
+function arKlassning(messages: readonly ChatMessage[]): boolean {
+  return messages.some((m) => m.role === 'system' && m.content === CLASSIFICATION_SYSTEM_PROMPT);
+}
+
 export class Varld extends World {
   kvot: TenantLimits | undefined;
   port = 0;
@@ -149,8 +158,19 @@ export class Varld extends World {
   /** Plattformstjänster scenariot slagit på med `@tjanst-<namn>` (se stod/tjanster.ts). */
   tjanster: AppServiceName[] = [];
   #tjanstForberedelser: TjanstForberedelse[] = [];
-  /** Allt som skickades till språkmodellen, EFTER plattformens maskning. */
+  /** Allt som skickades till språkmodellen, EFTER plattformens maskning — klassningen inräknad. */
   readonly modellanrop: ChatMessage[][] = [];
+  /**
+   * Klassningen frågar modellen en egen fråga före varje bygge, med en egen systemprompt. Ett
+   * scenario som räknar agentens turer ska inte behöva veta om den — men ett scenario som prövar
+   * vad som LÄMNAR servern ska se den. Därför skiljs de åt här, i stället för att klassningen
+   * göms undan.
+   */
+  get agentanrop(): readonly ChatMessage[][] {
+    return this.modellanrop.filter((anrop) => !arKlassning(anrop));
+  }
+  /** Det modellen svarar när den ombeds klassa ett önskemål. Byts av `sattKlassning`. */
+  #klassningssvar: FakeReply = 'oppen';
   /** Varje persons app i byggverktyget ("Annas app"). */
   readonly byggappar = new Map<string, string>();
   /** Det senaste jobbet, följt till sitt slut. */
@@ -194,7 +214,12 @@ export class Varld extends World {
     const modell: LlmProvider = {
       name: 'fejk',
       complete: (request) => {
-        this.modellanrop.push(request.messages.map((m) => ({ role: m.role, content: m.content })));
+        const messages = request.messages.map((m) => ({ role: m.role, content: m.content }));
+        this.modellanrop.push(messages);
+        // Klassningen är en EGEN fråga till modellen, inte ett varv i agentens loop. Den får därför
+        // sitt eget svar och rör inte scenariots manus — annars hade varje scenario som säger
+        // "språkmodellen svarar med en giltig app" fått sitt svar uppätet av klassningen.
+        if (arKlassning(messages)) return createFakeProvider([this.#klassningssvar]).complete(request);
         return this.#modell.complete(request);
       },
     };
@@ -387,6 +412,11 @@ export class Varld extends World {
   /** Språkmodellen svarar härefter med de här svaren, i tur och ordning. */
   sattModellsvar(svar: readonly FakeReply[]): void {
     this.#modell = createFakeProvider(svar);
+  }
+
+  /** Vad modellen svarar när den ombeds klassa ett önskemål. Ett fel eller `{ hang: true }` går bra. */
+  sattKlassning(svar: FakeReply): void {
+    this.#klassningssvar = svar;
   }
 
   loggaInSomByggare(namn: string): Person {

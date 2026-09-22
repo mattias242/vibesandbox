@@ -182,17 +182,18 @@ Then(/^Anna får veta i klarspråk varför det inte gick$/, async function (this
 Then(/^blir bygget klart efter två försök$/, function (this: Varld) {
   const jobb = jobbet(this);
   assert.equal(jobb.status, 'done');
-  assert.equal(this.modellanrop.length, 2, `Språkmodellen anropades ${this.modellanrop.length} gånger.`);
+  // Agentens turer, inte klassningens fråga — den ställs en gång per önskemål och hör inte hit.
+  assert.equal(this.agentanrop.length, 2, `Agenten anropade språkmodellen ${this.agentanrop.length} gånger.`);
   assert.ok(jobb.events.some((h) => h.type === 'check' && !h.ok), 'Det första försöket misslyckades inte.');
   assert.ok(jobb.events.some((h) => h.type === 'status' && /försök 2/.test(h.message)));
   // Andra varvet fick se felet från det första.
-  const andra = JSON.stringify(this.modellanrop[1]);
+  const andra = JSON.stringify(this.agentanrop[1]);
   assert.ok(andra.includes('BYGGFEL'), 'Modellen fick inte se felet den skulle rätta.');
 });
 
 Then(/^får språkmodellen se appens nuvarande kod$/, function (this: Varld) {
-  assert.ok(this.modellanrop.length > 0, 'Inget skickades till språkmodellen.');
-  const anvandare = this.modellanrop[0]?.filter((m) => m.role === 'user').map((m) => m.content).join('\n') ?? '';
+  assert.ok(this.agentanrop.length > 0, 'Inget skickades till språkmodellen av agenten.');
+  const anvandare = this.agentanrop[0]?.filter((m) => m.role === 'user').map((m) => m.content).join('\n') ?? '';
   assert.ok(anvandare.includes(FORSTA_VERSIONEN), 'Språkmodellen fick inte se appens nuvarande kod.');
 });
 
@@ -204,6 +205,7 @@ Then(/^appens utkast är den ändrade versionen$/, async function (this: Varld) 
   assert.ok(!svar.kropp.includes(FORSTA_VERSIONEN));
 });
 
+/** Allt som lämnade servern, klassningens egen fråga inräknad — inte bara agentens turer. */
 Then(/^innehåller inget som skickades till språkmodellen personnumret$/, function (this: Varld) {
   assert.ok(this.modellanrop.length > 0, 'Inget skickades till språkmodellen — scenariot prövar då ingenting.');
   const skickat = JSON.stringify(this.modellanrop);
