@@ -8,12 +8,16 @@
 import {
   ADMIN_APP_ID_PREFIX_LENGTH,
   BUILDER_API_PREFIX,
+  CLASSIFICATION_SOURCES,
   CSRF_HEADER,
   REDLINE_CATEGORIES,
+  asClassification,
   type AdminApp,
   type AdminOverview,
+  type AdminRegisterEntry,
   type AdminStop,
   type AdminUser,
+  type ClassificationSource,
   type RedlineCategory,
   type ApiErrorCode,
   type BuilderAppDetail,
@@ -71,6 +75,8 @@ export interface ApiClient {
   adminApps(): Promise<readonly AdminApp[]>;
   /** Kontrollrummet: önskemål som stoppats av en röd linje. Aldrig med texten som stoppades. */
   adminStops(): Promise<readonly AdminStop[]>;
+  /** Kontrollrummet: AI-registret — varje app med sin känslighetsnivå och hur nivån sattes. */
+  adminRegister(): Promise<readonly AdminRegisterEntry[]>;
   /** Kontrollrummet: alla adresser som får logga in, och med vilken roll. */
   adminUsers(): Promise<readonly AdminUser[]>;
   /**
@@ -191,6 +197,51 @@ function checkAdminStops(value: unknown): readonly AdminStop[] {
       throw new ApiError(500, GENERIC_ERROR_MESSAGE);
     }
     return { appIdPrefix, category: category as RedlineCategory, at };
+  });
+}
+
+/**
+ * AI-registret. Formen kontrolleras lika hårt som applistans — samma förkortade app-id, samma
+ * ägarfält — men nivån och källan avvisas INTE när de är okända, till skillnad från stopplistans
+ * kategori. Skillnaden är avsiktlig: en okänd kategori i stopplistan går att hoppa över utan att
+ * något blir osant, medan en okänd nivå i registret läses som den STRÄNGASTE (`asClassification`
+ * i kontraktet). Att fälla hela registret på en rad vore att visa en tillsyn ingenting alls, och
+ * att rita raden som den är vore att gissa lågt. Fail-closed är det tredje svaret: visa raden,
+ * på den strängaste nivån, med källan "det gick inte att avgöra".
+ *
+ * Fälten plockas ett och ett, så att ett fält för mycket — önskemålets text — aldrig följer med.
+ */
+function checkAdminRegister(value: unknown): readonly AdminRegisterEntry[] {
+  if (!Array.isArray(value)) throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  return value.map((item: unknown) => {
+    const row = fields(item);
+    const { appIdPrefix, name, ownerEmail, classifiedAt, published } = row;
+    if (
+      typeof appIdPrefix !== 'string' ||
+      appIdPrefix.length === 0 ||
+      appIdPrefix.length > ADMIN_APP_ID_PREFIX_LENGTH ||
+      !ID_PATTERN.test(appIdPrefix) ||
+      typeof name !== 'string' ||
+      name === '' ||
+      name.length > 200 ||
+      (ownerEmail !== null && (typeof ownerEmail !== 'string' || ownerEmail === '' || ownerEmail.length > 254)) ||
+      (classifiedAt !== null && (typeof classifiedAt !== 'string' || classifiedAt === '')) ||
+      typeof published !== 'boolean'
+    ) {
+      throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+    }
+    const source = row['source'];
+    return {
+      appIdPrefix,
+      name,
+      ownerEmail,
+      classification: asClassification(row['classification']),
+      source: CLASSIFICATION_SOURCES.includes(source as ClassificationSource)
+        ? (source as ClassificationSource)
+        : 'fail-closed',
+      classifiedAt,
+      published,
+    };
   });
 }
 
@@ -373,6 +424,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
     adminApps: async () => checkAdminApps((await request<{ apps?: unknown }>('GET', '/admin/appar')).apps),
     adminStops: async () => checkAdminStops((await request<{ stops?: unknown }>('GET', '/admin/stopp')).stops),
+
+    adminRegister: async () =>
+      checkAdminRegister((await request<{ entries?: unknown }>('GET', '/admin/register')).entries),
 
     adminUsers: async () => checkAdminUsers((await request<{ users?: unknown }>('GET', '/admin/anvandare')).users),
 

@@ -12,20 +12,29 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import {
   ADMIN_APP_ID_PREFIX_LENGTH,
+  CLASSIFICATIONS,
+  CLASSIFICATION_SOURCES,
   REDLINE_CATEGORIES,
   type AdminApp,
   type AdminOverview,
+  type AdminRegisterEntry,
   type AdminStop,
   type AdminUser,
 } from '@vibesandbox/contracts';
 import {
   ADMIN_FORBIDDEN,
   ADMIN_OWNER_MISSING,
+  ADMIN_REGISTER_EMPTY,
+  ADMIN_REGISTER_LEAD,
+  ADMIN_REGISTER_NEVER_CLASSIFIED,
+  ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE,
   ADMIN_SELF_NOTE,
   ADMIN_STOPS_EMPTY,
   ADMIN_STOPS_PATTERN_NOTE,
   ADMIN_STOPS_PRIVACY_NOTE,
   ADMIN_TITLE,
+  CLASSIFICATION_SOURCE_TEXTS,
+  CLASSIFICATION_TEXTS,
   REDLINE_TEXTS,
   ROLES,
   ROLE_TEXTS,
@@ -97,6 +106,59 @@ const STOPS: readonly AdminStop[] = [
   },
 ];
 
+/**
+ * AI-registret: varje nivå och varje källa företrädd minst en gång, plus de två raderna som är
+ * lätta att göra fel — en app utan känd ägaradress, och en app som aldrig klassats och därför
+ * saknar tidpunkt men ändå står på den strängaste nivån.
+ */
+const REGISTER: readonly AdminRegisterEntry[] = [
+  {
+    appIdPrefix: FULL_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: 'Bokning av mötesrum',
+    ownerEmail: 'anna@example.se',
+    classification: 'oppen',
+    source: 'modell',
+    classifiedAt: '2026-09-19T10:05:00Z',
+    published: true,
+  },
+  {
+    appIdPrefix: OTHER_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: 'Enkät om fikat',
+    ownerEmail: null,
+    classification: 'intern',
+    source: 'modell',
+    classifiedAt: '2026-09-17T08:35:00Z',
+    published: false,
+  },
+  {
+    appIdPrefix: '01jc3d4e',
+    name: 'Anmälan till kursen',
+    ownerEmail: 'karin@example.se',
+    classification: 'personuppgift',
+    source: 'signalord',
+    classifiedAt: '2026-09-15T13:20:00Z',
+    published: true,
+  },
+  {
+    appIdPrefix: '01jf5g6h',
+    name: 'Uppföljning av rehab',
+    ownerEmail: 'johan@example.se',
+    classification: 'kanslig',
+    source: 'fail-closed',
+    classifiedAt: '2026-09-11T09:00:00Z',
+    published: false,
+  },
+  {
+    appIdPrefix: '01jh7j8k',
+    name: 'Ny app',
+    ownerEmail: 'johan@example.se',
+    classification: 'kanslig',
+    source: 'fail-closed',
+    classifiedAt: null,
+    published: false,
+  },
+];
+
 const CALLBACKS = { onInvite: async () => '', onSetRole: async () => '' };
 
 function render(props: Parameters<typeof AdminView>[0]): string {
@@ -108,29 +170,32 @@ const loaded = {
   apps: APPS,
   users: USERS,
   stops: STOPS,
+  register: REGISTER,
   error: null,
   ...CALLBACKS,
 };
 
-/** Vyn innan den vet något: alla fyra hämtningarna är obesvarade. */
+/** Vyn innan den vet något: alla fem hämtningarna är obesvarade. */
 const pending = {
   ...CALLBACKS,
   overview: null,
   apps: null,
   users: null,
   stops: null,
+  register: null,
   error: null,
 };
 
-/** Märkspråket för en av vyns fyra delar, så att en del går att pröva utan de andra. */
-function part(html: string, name: 'figures' | 'apps' | 'users' | 'stops'): string {
+/** Märkspråket för en av vyns fem delar, så att en del går att pröva utan de andra. */
+function part(html: string, name: 'figures' | 'apps' | 'users' | 'stops' | 'register'): string {
   const starts = {
     figures: 'admin-figures-heading',
     apps: 'admin-apps-heading',
     users: 'admin-users-heading',
     stops: 'admin-stops-heading',
+    register: 'admin-register-heading',
   };
-  const order: Array<keyof typeof starts> = ['figures', 'apps', 'users', 'stops'];
+  const order: Array<keyof typeof starts> = ['figures', 'apps', 'users', 'stops', 'register'];
   const from = html.indexOf(starts[name]);
   expect(from, `delen ${name} ska finnas`).toBeGreaterThan(0);
   const next = order[order.indexOf(name) + 1];
@@ -386,3 +451,148 @@ describe('kontrollrummets stoppade önskemål', () => {
   });
 });
 
+
+/**
+ * Kontrollrummets femte del: AI-registret.
+ *
+ * Registret är det svar en tillsyn får — vilka appar finns, vem äger dem, hur känsliga uppgifter
+ * hanterar de. Två saker låses hårt här. Kontraktets ord för nivå och källa (`personuppgift`,
+ * `fail-closed`) är maskintext och får aldrig nå sidan: den som förvaltar plattformen ska läsa
+ * nivån i klartext OCH förstå hur den sattes, eftersom "ett ord satte ett golv" och "det gick inte
+ * att avgöra" inte betyder samma sak som en gjord bedömning. Och en app utan tidpunkt får inte se
+ * ut som ett fel: den har aldrig beskrivits, står därför på den strängaste nivån, och registret
+ * hittar inte på ett datum åt den.
+ */
+describe('kontrollrummets AI-register', () => {
+  /** Raderna i registrets tabellkropp, en sträng var — i serverns ordning. */
+  function registerRows(html: string): readonly string[] {
+    const body = /<tbody>([\s\S]*)<\/tbody>/.exec(part(html, 'register'));
+    expect(body, 'registret ska vara en tabell med en kropp').not.toBeNull();
+    return (body![1] ?? '').split('<tr').slice(1);
+  }
+
+  it('är en egen del med rubrik, efter de fyra som redan fanns', () => {
+    const html = render(loaded);
+    expect(html).toContain('admin-register-heading');
+    expect(html.indexOf('admin-register-heading')).toBeGreaterThan(html.indexOf('admin-stops-heading'));
+  });
+
+  it('säger vad registret är och varför det finns, innan en enda rad', () => {
+    const html = part(render(loaded), 'register');
+    expect(html).toContain(ADMIN_REGISTER_LEAD);
+    expect(ADMIN_REGISTER_LEAD, 'frågan är en tillsyns').toMatch(/tillsyn/i);
+    expect(ADMIN_REGISTER_LEAD, 'vem som äger appen är halva svaret').toMatch(/äger/);
+    expect(ADMIN_REGISTER_LEAD, 'nivån är inte något man väljer själv').toMatch(/sätts åt/);
+    expect(html.indexOf(ADMIN_REGISTER_LEAD)).toBeLessThan(html.indexOf('<table'));
+  });
+
+  it('varje nivå står med sitt läsbara namn, aldrig kontraktets maskintext', () => {
+    const html = part(render(loaded), 'register');
+    for (const classification of CLASSIFICATIONS) {
+      expect(html, `nivån ${classification} saknar läsbart namn`).toContain(CLASSIFICATION_TEXTS[classification].label);
+      expect(html, 'maskintexten hör inte hemma i vyn').not.toContain(classification);
+    }
+    expect(html).toContain('Personuppgifter');
+    expect(html).toContain('Känsliga uppgifter');
+  });
+
+  it('förklarar vad varje nivå betyder, så att en förvaltare förstår skillnaden', () => {
+    const html = part(render(loaded), 'register');
+    for (const classification of CLASSIFICATIONS) {
+      expect(html).toContain(CLASSIFICATION_TEXTS[classification].explanation);
+    }
+  });
+
+  it('varje källa förklarar HUR nivån sattes, inte bara vad källan heter', () => {
+    const html = part(render(loaded), 'register');
+    for (const source of CLASSIFICATION_SOURCES) {
+      expect(html, `källan ${source} saknar förklaring`).toContain(CLASSIFICATION_SOURCE_TEXTS[source].explanation);
+      expect(html).toContain(CLASSIFICATION_SOURCE_TEXTS[source].label);
+      expect(html, 'maskintexten hör inte hemma i vyn').not.toContain(source);
+    }
+    // De tre skiljer sig i sak, och skillnaden ska gå att läsa: en gjord bedömning, ett golv som
+    // bedömningen inte fick underskrida, och ingen bedömning alls.
+    expect(CLASSIFICATION_SOURCE_TEXTS['signalord'].explanation).toMatch(/golv|lägsta|underskrida/);
+    expect(CLASSIFICATION_SOURCE_TEXTS['fail-closed'].explanation).toMatch(/strängaste/);
+  });
+
+  it('en app som aldrig beskrivits visar ingen tidpunkt, och säger att den aldrig klassats', () => {
+    const rows = registerRows(render(loaded));
+    expect(rows).toHaveLength(REGISTER.length);
+    const never = rows.at(-1)!;
+    expect(never).toContain('Ny app');
+    expect(never).toContain(ADMIN_REGISTER_NEVER_CLASSIFIED);
+    expect(never, 'ingen påhittad tidpunkt').not.toMatch(/\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}/);
+    // Den står ändå på strängaste nivån — och sidan säger varför, annars ser raden ut som ett fel.
+    expect(never).toContain(CLASSIFICATION_TEXTS['kanslig'].label);
+    expect(part(render(loaded), 'register')).toContain(ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE);
+    expect(ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE).toMatch(/strängaste/);
+    expect(ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE, 'säg att det inte är ett fel').toMatch(/inte ett fel|avsiktligt/);
+  });
+
+  it('en klassad app visar när nivån sattes, i samma form som resten av kontrollrummet', () => {
+    const [first] = registerRows(render(loaded));
+    expect(first).toMatch(/19 sep/);
+    expect(first, 'rå maskintid hör inte hemma i vyn').not.toContain('2026-09-19T10:05:00Z');
+  });
+
+  it('en nivå eller källa utanför kontraktet kraschar inte vyn — den läses som det strängaste', () => {
+    const odd = [
+      {
+        ...REGISTER[0]!,
+        classification: 'ganska-hemlig' as Classification,
+        source: 'gissning' as ClassificationSource,
+      },
+    ];
+    const html = part(render({ ...loaded, register: odd }), 'register');
+    expect(html).toContain('Bokning av mötesrum');
+    expect(html, 'det okända väger strängast').toContain(CLASSIFICATION_TEXTS['kanslig'].label);
+    expect(html).toContain(CLASSIFICATION_SOURCE_TEXTS['fail-closed'].label);
+    expect(html, 'maskintexten hör inte hemma i vyn').not.toContain('ganska-hemlig');
+    expect(html).not.toContain('gissning');
+    expect(html).not.toContain('undefined');
+  });
+
+  it('en ägare utan känd adress får en begriplig text, aldrig "null" eller en tom cell', () => {
+    const [, withoutOwner] = registerRows(render(loaded));
+    expect(withoutOwner).toContain(ADMIN_OWNER_MISSING);
+    expect(withoutOwner).not.toContain('null');
+    expect(withoutOwner, 'en app utan känd adress har ändå en ägare').not.toMatch(/[Ss]aknar ägare|[Ii]ngen ägare/);
+    expect(withoutOwner).not.toMatch(/<td><\/td>/);
+  });
+
+  it('visar om appen är publicerad, eftersom en tillsyn frågar vad som är i bruk', () => {
+    const rows = registerRows(render(loaded));
+    expect(rows[0]).toContain('Publicerad');
+    expect(rows[1]).toContain('Inte publicerad');
+  });
+
+  it('är en riktig tabell med appen som radrubrik, och ren läsning', () => {
+    const html = part(render(loaded), 'register');
+    expect(html).toContain('<table');
+    expect(html).toMatch(/<th scope="row"/);
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('<form');
+    expect(html).not.toContain('<select');
+    expect(html, 'registret är ingen väg in i någon annans app').not.toContain('href');
+  });
+
+  it('visar bara början av app-id:t, och gör aldrig en länk av den', () => {
+    const html = part(render(loaded), 'register');
+    for (const id of [FULL_ID, OTHER_ID]) {
+      expect(html).not.toContain(id);
+      expect(html).not.toContain(id.slice(0, ADMIN_APP_ID_PREFIX_LENGTH + 1));
+    }
+    expect(html).toContain(FULL_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH));
+    expect(html).not.toContain('#/app/');
+  });
+
+  it('tomt register är en vänlig mening, inte en tom yta — och förklaringarna står kvar', () => {
+    const html = part(render({ ...loaded, register: [] }), 'register');
+    expect(html).toContain(ADMIN_REGISTER_EMPTY);
+    expect(html).not.toContain('<table');
+    // Vad nivåerna betyder står kvar: det förklarar vad den tomma ytan skulle ha innehållit.
+    expect(html).toContain(CLASSIFICATION_TEXTS['oppen'].explanation);
+    expect(html).toContain(ADMIN_REGISTER_LEAD);
+  });
+});

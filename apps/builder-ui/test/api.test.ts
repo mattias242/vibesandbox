@@ -547,3 +547,93 @@ describe('kontrollrummets stoppade önskemål', () => {
   });
 });
 
+
+/**
+ * Kontrollrummets AI-register. Formen kontrolleras lika hårt som applistans, men nivån och källan
+ * behandlas annorlunda än stopplistans kategori: ett okänt värde AVVISAS INTE, det läses som det
+ * strängaste. Skälet är vad de två listorna svarar på. En okänd kategori i stopplistan går att
+ * avvisa utan att något blir osant; ett register som fälls på en enda rad visar en tillsyn
+ * ingenting alls, och en rad som ritas som den står vore en gissning åt det ofarliga hållet.
+ */
+describe('kontrollrummets AI-register', () => {
+  const ENTRY = {
+    appIdPrefix: '01jabcde',
+    name: 'Bokning',
+    ownerEmail: 'anna@example.se',
+    classification: 'personuppgift',
+    source: 'signalord',
+    classifiedAt: '2026-09-19T10:00:00Z',
+    published: true,
+  };
+
+  it('GET till rätt relativa adress, med kakor och utan skyddshuvud', async () => {
+    const { api, calls } = client(() => json(200, { entries: [ENTRY] }));
+    await expect(api.adminRegister()).resolves.toEqual([ENTRY]);
+    expect(`${calls[0]?.method} ${calls[0]?.url}`).toBe(`GET ${BUILDER_API_PREFIX}/admin/register`);
+    expect(calls[0]?.credentials).toBe('same-origin');
+    expect(calls[0]?.headers[CSRF_HEADER]).toBeUndefined();
+    expect(calls[0]?.body).toBeUndefined();
+  });
+
+  it('ett tomt register är ett giltigt svar — ingen har byggt något än', async () => {
+    const { api } = client(() => json(200, { entries: [] }));
+    await expect(api.adminRegister()).resolves.toEqual([]);
+  });
+
+  it('ägare får saknas — då är det null, aldrig en gissning', async () => {
+    const { api } = client(() => json(200, { entries: [{ ...ENTRY, ownerEmail: null }] }));
+    const entries = await api.adminRegister();
+    expect(entries[0]?.ownerEmail).toBeNull();
+  });
+
+  it('en app som aldrig klassats har ingen tidpunkt, och den hittas inte på', async () => {
+    const { api } = client(() => json(200, { entries: [{ ...ENTRY, classifiedAt: null }] }));
+    const entries = await api.adminRegister();
+    expect(entries[0]?.classifiedAt).toBeNull();
+  });
+
+  it.each([
+    ['en nivå utanför kontraktet', 'ganska-hemlig'],
+    ['en nivå som saknas', undefined],
+    ['en nivå som inte är text', 7],
+  ])('%s läses som den strängaste, inte som ett fel — fail-closed', async (_name, classification) => {
+    const { api } = client(() => json(200, { entries: [{ ...ENTRY, classification }] }));
+    const entries = await api.adminRegister();
+    expect(entries[0]?.classification).toBe('kanslig');
+  });
+
+  it.each([
+    ['en källa utanför kontraktet', 'gissning'],
+    ['en källa som saknas', undefined],
+  ])('%s betyder att vi inte vet hur nivån sattes', async (_name, source) => {
+    const { api } = client(() => json(200, { entries: [{ ...ENTRY, source }] }));
+    const entries = await api.adminRegister();
+    expect(entries[0]?.source).toBe('fail-closed');
+  });
+
+  it.each([
+    ['saknar listan', {}],
+    ['listan är inget fält', { entries: 'Bokning' }],
+    ['en rad saknar namn', { entries: [{ ...ENTRY, name: undefined }] }],
+    ['en rad har fel sorts ägare', { entries: [{ ...ENTRY, ownerEmail: 7 }] }],
+    ['en rad har tom tidpunkt', { entries: [{ ...ENTRY, classifiedAt: '' }] }],
+    ['en rad saknar läge', { entries: [{ ...ENTRY, published: undefined }] }],
+    ['en rad saknar app', { entries: [{ ...ENTRY, appIdPrefix: undefined }] }],
+  ])('ett svar som %s blir ett fel i klarspråk', async (_name, body) => {
+    const { api } = client(() => json(200, body));
+    const error = (await api.adminRegister().catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.message).toMatch(/Något gick fel/);
+  });
+
+  it('en rad med mer än förkortningen av app-id:t avvisas, precis som i applistan', async () => {
+    const { api } = client(() => json(200, { entries: [{ ...ENTRY, appIdPrefix: APP_ID }] }));
+    await expect(api.adminRegister()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('svaret bär aldrig önskemålets text — ett fält för mycket plockas bort', async () => {
+    const { api } = client(() => json(200, { entries: [{ ...ENTRY, text: 'namn och personnummer på alla elever' }] }));
+    const entries = await api.adminRegister();
+    expect(JSON.stringify(entries)).not.toContain('personnummer');
+  });
+});

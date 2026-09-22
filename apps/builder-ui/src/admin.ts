@@ -11,9 +11,13 @@
  */
 import {
   ADMIN_TOKEN_WINDOW_DAYS,
+  CLASSIFICATION_SOURCES,
   REDLINE_CATEGORIES,
+  asClassification,
   type AdminStop,
   type AdminUser,
+  type Classification,
+  type ClassificationSource,
   type RedlineCategory,
   type Role,
 } from '@vibesandbox/contracts';
@@ -312,3 +316,121 @@ export function countStops(stops: readonly AdminStop[]): readonly { category: Re
  * rollen på. Ett tankstreck är ärligare än ett påhittat datum.
  */
 export const ADMIN_DATE_UNKNOWN = '—';
+
+// ── AI-registret: vilka appar finns, vem äger dem, hur känsliga är de ──────────
+//
+// Registret är kontrollrummets svar på det en tillsyn frågar. Kontraktets ord för nivå och källa
+// är maskintext — `oppen`, `personuppgift`, `fail-closed` — och säger ingenting för den som
+// förvaltar plattformen. Därför har varje värde ett läsbart namn OCH en mening om vad det
+// innebär, på samma sätt som rollerna och de röda linjerna.
+//
+// Källan är det som gör nivån möjlig att bedöma. En nivå som satts av ett golv, eller för att
+// bedömningen inte gick att göra alls, betyder inte samma sak som en nivå som faktiskt bedömts —
+// och den skillnaden syns inte i själva nivån.
+
+export const ADMIN_REGISTER_HEADING = 'AI-registret';
+
+/** Vad registret ÄR, och varför det finns. Frågan är en tillsyns, inte en utvecklares. */
+export const ADMIN_REGISTER_LEAD =
+  'Registret svarar på det en tillsyn frågar: vilka appar som finns i plattformen, vem som äger ' +
+  'dem, och hur känsliga uppgifter de hanterar. Nivån sätts åt den som bygger appen — hen väljer ' +
+  'den aldrig själv — och den höjs men sänks aldrig.';
+
+export const ADMIN_REGISTER_LEVELS_HEADING = 'Nivåerna, från minst till mest känslig';
+
+export const ADMIN_REGISTER_SOURCES_HEADING = 'Så kan nivån ha satts';
+
+/** Kolumnrubrikerna. Appens namn är radens rubrik, så att en cell hör ihop med rätt app. */
+export const ADMIN_REGISTER_COLUMNS = {
+  app: 'App',
+  owner: 'Ägare',
+  level: 'Nivå',
+  source: 'Hur nivån sattes',
+  classified: 'Nivån sattes',
+  state: 'Läge',
+} as const;
+
+/** Tomt läge. Registret är tomt därför att plattformen är tom — ingenting är trasigt. */
+export const ADMIN_REGISTER_EMPTY =
+  'Inga appar ännu, så registret är tomt. Den första någon bygger står här med sin nivå.';
+
+/** Vad som står i tidkolumnen för en app som aldrig klassats. Aldrig ett påhittat datum. */
+export const ADMIN_REGISTER_NEVER_CLASSIFIED = 'Aldrig klassad';
+
+/**
+ * En app utan tidpunkt står ändå på den strängaste nivån, och utan den här meningen läses det som
+ * ett fel i registret. Det är tvärtom: att det okända väger strängast är hela poängen.
+ */
+export const ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE =
+  'En app som ännu inte beskrivits har aldrig klassats. Den står ändå på den strängaste nivån, ' +
+  'och det är avsiktligt: en app vars känslighet ingen känner ska aldrig se ofarligare ut än en ' +
+  'som prövats. Någon tidpunkt visas inte, eftersom det inte finns någon. Det är alltså inte ett ' +
+  'fel i registret.';
+
+export const ADMIN_REGISTER_PUBLISHED = 'Publicerad';
+export const ADMIN_REGISTER_UNPUBLISHED = 'Inte publicerad';
+
+/** Ett läsbart namn och en mening om vad värdet innebär. Samma form för nivå som för källa. */
+export interface ClassificationText {
+  readonly label: string;
+  readonly explanation: string;
+}
+
+export const CLASSIFICATION_TEXTS: Readonly<Record<Classification, ClassificationText>> = {
+  oppen: {
+    label: 'Öppen',
+    explanation: 'Uppgifter som kan visas för vem som helst utan att någon tar skada av det.',
+  },
+  intern: {
+    label: 'Intern',
+    explanation:
+      'Uppgifter som hör till verksamheten och inte ska spridas utanför den, men som inte pekar ut någon enskild.',
+  },
+  personuppgift: {
+    label: 'Personuppgifter',
+    explanation: 'Uppgifter som går att knyta till en enskild människa — namn, adress, eller vem som gjort vad och när.',
+  },
+  kanslig: {
+    label: 'Känsliga uppgifter',
+    explanation:
+      'Uppgifter som kräver extra skydd: hälsa, etnicitet, religion, sexualliv, fackligt medlemskap eller brott.',
+  },
+};
+
+/**
+ * Källorna säger HUR nivån sattes, inte vad källan heter. "Ett ord satte en lägsta nivå" är en
+ * upplysning; kontraktets `signalord` är ett ord man antingen känner eller inte.
+ */
+export const CLASSIFICATION_SOURCE_TEXTS: Readonly<Record<ClassificationSource, ClassificationText>> = {
+  modell: {
+    label: 'Plattformen läste beskrivningen',
+    explanation: 'Nivån är en bedömning av det appen beskrevs som, gjord när den byggdes.',
+  },
+  signalord: {
+    label: 'Ett ord satte en lägsta nivå',
+    explanation:
+      'Ett ord i det som skrevs satte ett golv som bedömningen inte fick underskrida. Nivån kan alltså vara ' +
+      'högre än bedömningen kom fram till, aldrig lägre.',
+  },
+  'fail-closed': {
+    label: 'Gick inte att avgöra',
+    explanation:
+      'Nivån kunde inte bedömas, och då gäller den strängaste. Appen kan alltså hantera mindre känsliga ' +
+      'uppgifter än den ser ut att göra här, och ingen har prövat saken sedan dess.',
+  },
+};
+
+/**
+ * Nivåns text. Ett värde som inte är en känd nivå — en rad skriven av en annan version av vår egen
+ * kod — läses som den strängaste, samma regel som `asClassification` i kontraktet. Vyn ritar då
+ * något sant i stället för att falla på ett `undefined`.
+ */
+export function classificationText(value: unknown): ClassificationText {
+  return CLASSIFICATION_TEXTS[asClassification(value)];
+}
+
+/** Källans text. En källa vi inte känner igen säger inget sant om hur nivån sattes — då vet vi inte. */
+export function classificationSourceText(value: unknown): ClassificationText {
+  const known = CLASSIFICATION_SOURCES.includes(value as ClassificationSource);
+  return CLASSIFICATION_SOURCE_TEXTS[known ? (value as ClassificationSource) : 'fail-closed'];
+}

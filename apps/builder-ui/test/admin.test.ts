@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  CLASSIFICATIONS,
+  CLASSIFICATION_SOURCES,
   REDLINE_CATEGORIES,
   type AdminStop,
   type AdminUser,
@@ -20,15 +22,25 @@ import {
   ADMIN_FORBIDDEN,
   ADMIN_INVALID_EMAIL,
   ADMIN_RATE_LIMITED,
+  ADMIN_REGISTER_COLUMNS,
+  ADMIN_REGISTER_EMPTY,
+  ADMIN_REGISTER_HEADING,
+  ADMIN_REGISTER_LEAD,
+  ADMIN_REGISTER_NEVER_CLASSIFIED,
+  ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE,
   ADMIN_SELF_REFUSED,
   ADMIN_STOPS_EMPTY,
   ADMIN_STOPS_PATTERN_NOTE,
   ADMIN_STOPS_PRIVACY_NOTE,
   ADMIN_WRITE_FORBIDDEN,
+  CLASSIFICATION_SOURCE_TEXTS,
+  CLASSIFICATION_TEXTS,
   REDLINE_TEXTS,
   ROLES,
   ROLE_TEXTS,
   adminErrorMessage,
+  classificationSourceText,
+  classificationText,
   countRoles,
   countStops,
   inviteErrorMessage,
@@ -39,6 +51,7 @@ import {
   statusOf,
   validateInviteEmail,
   withUser,
+  type ClassificationText,
   type RedlineText,
 } from '../src/admin.ts';
 
@@ -310,5 +323,153 @@ describe('countStops', () => {
 
   it('inga stopp ger en tom lista, inte sex nollor', () => {
     expect(countStops([])).toEqual([]);
+  });
+});
+
+/**
+ * Kontrollrummets femte del: AI-registret.
+ *
+ * Kontraktets ord för nivå och källa är maskintext. Här låses att var och en av dem har ett
+ * läsbart namn och en mening om vad den innebär — en ny nivå eller källa i kontraktet fäller
+ * testet tills den fått sin text, i stället för att tyst visas som `fail-closed` för en
+ * förvaltare. Och uppslagningen ska vara fail-closed: ett värde som inte är ett känt värde läses
+ * som den strängaste nivån respektive "det gick inte att avgöra", aldrig som `undefined`.
+ */
+describe('AI-registrets nivåer och källor', () => {
+  it('varje nivå i kontraktet har ett läsbart namn och en förklaring', () => {
+    expect(CLASSIFICATIONS).toEqual(['oppen', 'intern', 'personuppgift', 'kanslig']);
+    for (const classification of CLASSIFICATIONS) {
+      const text = CLASSIFICATION_TEXTS[classification] as ClassificationText | undefined;
+      expect(text, `nivån ${classification} saknar text`).toBeDefined();
+      expect(text!.label.length, `${classification}: namnet är för kort`).toBeGreaterThan(4);
+      expect(text!.explanation.length, `${classification}: förklaringen är för kort`).toBeGreaterThan(30);
+      expect(text!.explanation).toMatch(/\.$/);
+    }
+  });
+
+  it('namnen är läsbara svenska ord, aldrig kontraktets maskintext', () => {
+    const labels = CLASSIFICATIONS.map((classification) => CLASSIFICATION_TEXTS[classification].label);
+    expect(labels).toEqual(['Öppen', 'Intern', 'Personuppgifter', 'Känsliga uppgifter']);
+    for (const classification of CLASSIFICATIONS) {
+      const { label, explanation } = CLASSIFICATION_TEXTS[classification];
+      expect(label, 'maskintexten hör inte hemma i vyn').not.toContain(classification);
+      expect(explanation).not.toContain(classification);
+      expect(label, 'ett namn med bindestreck ser ut som en kod').not.toMatch(/-[a-z]/);
+    }
+  });
+
+  it('varje källa i kontraktet har ett namn som säger HUR nivån sattes, och en förklaring', () => {
+    expect(CLASSIFICATION_SOURCES).toEqual(['modell', 'signalord', 'fail-closed']);
+    for (const source of CLASSIFICATION_SOURCES) {
+      const text = CLASSIFICATION_SOURCE_TEXTS[source] as ClassificationText | undefined;
+      expect(text, `källan ${source} saknar text`).toBeDefined();
+      expect(text!.label.length, `${source}: namnet är för kort`).toBeGreaterThan(10);
+      expect(text!.explanation.length, `${source}: förklaringen är för kort`).toBeGreaterThan(30);
+      // Namnet får inte bara vara ordet om igen: det ska säga hur nivån blev vad den blev.
+      expect(text!.label, 'maskintexten förklarar ingenting').not.toContain(source);
+      expect(text!.explanation).not.toContain(source);
+    }
+  });
+
+  it('de tre källorna säger tre olika saker, inte samma sak tre gånger', () => {
+    const labels = CLASSIFICATION_SOURCES.map((source) => CLASSIFICATION_SOURCE_TEXTS[source].label);
+    const explanations = CLASSIFICATION_SOURCES.map((source) => CLASSIFICATION_SOURCE_TEXTS[source].explanation);
+    expect(new Set(labels).size).toBe(CLASSIFICATION_SOURCES.length);
+    expect(new Set(explanations).size).toBe(CLASSIFICATION_SOURCES.length);
+    // Golvet: ett ord satte en lägsta nivå som bedömningen inte fick underskrida.
+    expect(CLASSIFICATION_SOURCE_TEXTS['signalord'].explanation).toMatch(/golv|lägsta|underskrida/);
+    // Fail-closed: det gick inte att avgöra, och då gäller den strängaste nivån.
+    expect(CLASSIFICATION_SOURCE_TEXTS['fail-closed'].label).toMatch(/avgöra|vet inte|okänd/i);
+    expect(CLASSIFICATION_SOURCE_TEXTS['fail-closed'].explanation).toMatch(/strängaste/);
+  });
+
+  it('ingen nivå delar namn eller förklaring med en annan', () => {
+    const labels = CLASSIFICATIONS.map((classification) => CLASSIFICATION_TEXTS[classification].label);
+    const explanations = CLASSIFICATIONS.map((classification) => CLASSIFICATION_TEXTS[classification].explanation);
+    expect(new Set(labels).size).toBe(CLASSIFICATIONS.length);
+    expect(new Set(explanations).size).toBe(CLASSIFICATIONS.length);
+  });
+
+  it('ingen förklaring hänvisar till en paragraf i stället för att förklara', () => {
+    const texts = [
+      ...CLASSIFICATIONS.map((classification) => CLASSIFICATION_TEXTS[classification].explanation),
+      ...CLASSIFICATION_SOURCES.map((source) => CLASSIFICATION_SOURCE_TEXTS[source].explanation),
+    ];
+    for (const text of texts) {
+      expect(text, 'en paragraf är ingen förklaring').not.toMatch(/artikel \d|§|dataskyddsförordning|GDPR|EU 20/i);
+    }
+  });
+});
+
+describe('classificationText och classificationSourceText', () => {
+  it('en känd nivå ger sin egen text', () => {
+    expect(classificationText('personuppgift')).toBe(CLASSIFICATION_TEXTS['personuppgift']);
+    expect(classificationText('oppen').label).toBe('Öppen');
+  });
+
+  it.each([['ett okänt ord', 'ganska-hemlig'], ['null', null], ['undefined', undefined], ['ett tal', 3]])(
+    '%s läses som den strängaste nivån — vyn ritar aldrig ett undefined',
+    (_name, value) => {
+      expect(classificationText(value)).toBe(CLASSIFICATION_TEXTS['kanslig']);
+    },
+  );
+
+  it('en känd källa ger sin egen text', () => {
+    expect(classificationSourceText('signalord')).toBe(CLASSIFICATION_SOURCE_TEXTS['signalord']);
+  });
+
+  it.each([['ett okänt ord', 'gissning'], ['null', null], ['undefined', undefined]])(
+    '%s betyder att vi inte vet hur nivån sattes',
+    (_name, value) => {
+      expect(classificationSourceText(value)).toBe(CLASSIFICATION_SOURCE_TEXTS['fail-closed']);
+    },
+  );
+});
+
+describe('AI-registrets egna texter', () => {
+  it('rubriken och inledningen säger vad registret är och varför det finns', () => {
+    expect(ADMIN_REGISTER_HEADING.length).toBeGreaterThan(5);
+    expect(ADMIN_REGISTER_LEAD, 'frågan är en tillsyns, inte en utvecklares').toMatch(/tillsyn/i);
+    expect(ADMIN_REGISTER_LEAD, 'vem som äger appen hör till svaret').toMatch(/äger/);
+    expect(ADMIN_REGISTER_LEAD, 'hur känsliga uppgifterna är hör till svaret').toMatch(/känslig/);
+    expect(ADMIN_REGISTER_LEAD, 'nivån väljer man inte själv').toMatch(/sätts åt/);
+    expect(ADMIN_REGISTER_LEAD).not.toMatch(/API|endpoint|klass(?:en|ning)?ID|JSON/i);
+  });
+
+  it('en app som aldrig klassats får en text som säger just det, utan en tidpunkt', () => {
+    expect(ADMIN_REGISTER_NEVER_CLASSIFIED).toMatch(/[Aa]ldrig/);
+    expect(ADMIN_REGISTER_NEVER_CLASSIFIED, 'ingen påhittad tidpunkt').not.toMatch(/\d/);
+  });
+
+  it('och sidan förklarar varför den ändå står på den strängaste nivån', () => {
+    expect(ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE).toMatch(/aldrig (?:beskrivits|klassats)/);
+    expect(ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE).toMatch(/strängaste/);
+    expect(ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE, 'det är avsiktligt, inte ett fel').toMatch(/avsiktligt|inte ett fel/);
+    expect(ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE, 'säg att ingen tidpunkt visas').toMatch(/tidpunkt/);
+  });
+
+  it('tomt register är en god nyhet om en tom plattform, inte ett fel', () => {
+    expect(ADMIN_REGISTER_EMPTY).toMatch(/[Ii]nga appar/);
+    expect(ADMIN_REGISTER_EMPTY).not.toMatch(/fel|trasig|kunde inte/i);
+  });
+
+  it('ingen av registrets texter smiter undan med kontraktets maskintext', () => {
+    const texts = [
+      ADMIN_REGISTER_HEADING,
+      ADMIN_REGISTER_LEAD,
+      ADMIN_REGISTER_EMPTY,
+      ADMIN_REGISTER_NEVER_CLASSIFIED,
+      ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE,
+      ...Object.values(ADMIN_REGISTER_COLUMNS),
+    ].join(' ');
+    for (const code of [...CLASSIFICATIONS, ...CLASSIFICATION_SOURCES]) {
+      expect(texts, `maskintexten ${code} hör inte hemma i vyn`).not.toContain(code);
+    }
+  });
+
+  it('kolumnrubrikerna är begripliga och säger både nivå och hur den sattes', () => {
+    expect(ADMIN_REGISTER_COLUMNS.level).toMatch(/[Nn]ivå/);
+    expect(ADMIN_REGISTER_COLUMNS.source).toMatch(/[Hh]ur/);
+    expect(new Set(Object.values(ADMIN_REGISTER_COLUMNS)).size).toBe(Object.keys(ADMIN_REGISTER_COLUMNS).length);
   });
 });

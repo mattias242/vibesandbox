@@ -1,8 +1,11 @@
 import { useEffect, useId, useState, type FormEvent } from 'react';
 import {
   ADMIN_TOKEN_WINDOW_DAYS,
+  CLASSIFICATIONS,
+  CLASSIFICATION_SOURCES,
   type AdminApp,
   type AdminOverview,
+  type AdminRegisterEntry,
   type AdminStop,
   type AdminUser,
   type Role,
@@ -22,6 +25,16 @@ import {
   ADMIN_LEAD,
   ADMIN_LOADING,
   ADMIN_OWNER_MISSING,
+  ADMIN_REGISTER_COLUMNS,
+  ADMIN_REGISTER_EMPTY,
+  ADMIN_REGISTER_HEADING,
+  ADMIN_REGISTER_LEAD,
+  ADMIN_REGISTER_LEVELS_HEADING,
+  ADMIN_REGISTER_NEVER_CLASSIFIED,
+  ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE,
+  ADMIN_REGISTER_PUBLISHED,
+  ADMIN_REGISTER_SOURCES_HEADING,
+  ADMIN_REGISTER_UNPUBLISHED,
   ADMIN_ROLE_BUTTON,
   ADMIN_ROLE_SAVING,
   ADMIN_ROLE_SELECT_LABEL,
@@ -35,10 +48,14 @@ import {
   ADMIN_USERS_COLUMNS,
   ADMIN_USERS_HEADING,
   ADMIN_USERS_LEAD,
+  CLASSIFICATION_SOURCE_TEXTS,
+  CLASSIFICATION_TEXTS,
   REDLINE_TEXTS,
   ROLES,
   ROLE_TEXTS,
   adminErrorMessage,
+  classificationSourceText,
+  classificationText,
   countRoles,
   countStops,
   inviteErrorMessage,
@@ -73,19 +90,27 @@ export function AdminPage() {
   const [apps, setApps] = useState<readonly AdminApp[] | null>(null);
   const [users, setUsers] = useState<readonly AdminUser[] | null>(null);
   const [stops, setStops] = useState<readonly AdminStop[] | null>(null);
+  const [register, setRegister] = useState<readonly AdminRegisterEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    // Alla fyra anropen tillsammans: vyn visar ingenting förrän den har hela bilden, och ett nekat
+    // Alla fem anropen tillsammans: vyn visar ingenting förrän den har hela bilden, och ett nekat
     // anrop ska ge ett besked — inte en halv sida.
-    Promise.all([api.adminOverview(), api.adminApps(), api.adminUsers(), api.adminStops()]).then(
-      ([nextOverview, nextApps, nextUsers, nextStops]) => {
+    Promise.all([
+      api.adminOverview(),
+      api.adminApps(),
+      api.adminUsers(),
+      api.adminStops(),
+      api.adminRegister(),
+    ]).then(
+      ([nextOverview, nextApps, nextUsers, nextStops, nextRegister]) => {
         if (cancelled) return;
         setOverview(nextOverview);
         setApps(nextApps);
         setUsers(nextUsers);
         setStops(nextStops);
+        setRegister(nextRegister);
       },
       (caught: unknown) => {
         if (!cancelled) setError(adminErrorMessage(caught));
@@ -127,6 +152,7 @@ export function AdminPage() {
       apps={apps}
       users={users}
       stops={stops}
+      register={register}
       error={error}
       onInvite={(email, role) => invite(email, role)}
       onSetRole={(userId, role) => setRole(userId, role)}
@@ -139,13 +165,14 @@ export interface AdminViewProps {
   readonly apps: readonly AdminApp[] | null;
   readonly users: readonly AdminUser[] | null;
   readonly stops: readonly AdminStop[] | null;
+  readonly register: readonly AdminRegisterEntry[] | null;
   readonly error: string | null;
   /** Löser ut med beskedet att visa; kastar serverns fel, som vyn översätter till klarspråk. */
   readonly onInvite: (email: string, role: Role) => Promise<string>;
   readonly onSetRole: (userId: string, role: Role) => Promise<string>;
 }
 
-export function AdminView({ overview, apps, users, stops, error, onInvite, onSetRole }: AdminViewProps) {
+export function AdminView({ overview, apps, users, stops, register, error, onInvite, onSetRole }: AdminViewProps) {
   return (
     <div className="page page-admin">
       <h1>{ADMIN_TITLE}</h1>
@@ -155,7 +182,7 @@ export function AdminView({ overview, apps, users, stops, error, onInvite, onSet
         <p className="notice notice-error" role="alert">
           {error}
         </p>
-      ) : overview === null || apps === null || users === null || stops === null ? (
+      ) : overview === null || apps === null || users === null || stops === null || register === null ? (
         <p className="muted" aria-live="polite">
           {ADMIN_LOADING}
         </p>
@@ -189,6 +216,8 @@ export function AdminView({ overview, apps, users, stops, error, onInvite, onSet
           <UsersSection users={users} onInvite={onInvite} onSetRole={onSetRole} />
 
           <StopsSection stops={stops} />
+
+          <RegisterSection register={register} />
         </>
       )}
     </div>
@@ -231,6 +260,108 @@ function StopsSection({ stops }: { stops: readonly AdminStop[] }) {
         </table>
       )}
     </section>
+  );
+}
+
+/**
+ * AI-registret. Ren läsning, som applistan och stopplistan: en tillsyn ska kunna se vilka appar
+ * som finns, vem som äger dem och hur känsliga uppgifter de hanterar — aldrig gå in i dem. Därför
+ * står app-id:t här som förkortad text och aldrig som länk, precis som i applistan.
+ *
+ * Nivåns och källans ord slås upp genom `classificationText`/`classificationSourceText`, som läser
+ * ett okänt värde som den strängaste nivån respektive "det gick inte att avgöra". Vyn faller alltså
+ * inte på en rad från en annan version av vår egen kod — den ritar det strängaste svaret.
+ */
+function RegisterSection({ register }: { register: readonly AdminRegisterEntry[] }) {
+  return (
+    <section className="admin-block" aria-labelledby="admin-register-heading">
+      <h2 id="admin-register-heading">{ADMIN_REGISTER_HEADING}</h2>
+      <p className="hint">{ADMIN_REGISTER_LEAD}</p>
+
+      {/* Nivåerna och källorna förklaras en gång, här, i stället för i varje rad: det är en skala
+          med fyra steg och tre sätt att hamna på ett steg, och ingetdera går att gissa sig till.
+          Kortrutnätet är samma som rollernas — stilmallen hör till en annan del av gränssnittet. */}
+      <h3>{ADMIN_REGISTER_LEVELS_HEADING}</h3>
+      <dl className="admin-roles admin-levels">
+        {CLASSIFICATIONS.map((classification) => (
+          <div className="admin-role" key={classification}>
+            <dt>{CLASSIFICATION_TEXTS[classification].label}</dt>
+            <dd>{CLASSIFICATION_TEXTS[classification].explanation}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <h3>{ADMIN_REGISTER_SOURCES_HEADING}</h3>
+      <dl className="admin-roles admin-sources">
+        {CLASSIFICATION_SOURCES.map((source) => (
+          <div className="admin-role" key={source}>
+            <dt>{CLASSIFICATION_SOURCE_TEXTS[source].label}</dt>
+            <dd>{CLASSIFICATION_SOURCE_TEXTS[source].explanation}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {/* Varför en rad kan stå på strängaste nivån utan tidpunkt. Utan den här meningen ser den
+          raden ut som ett fel i registret, och det är precis vad den inte är. */}
+      <p className="hint">{ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE}</p>
+
+      {register.length === 0 ? <p className="muted">{ADMIN_REGISTER_EMPTY}</p> : <RegisterTable register={register} />}
+    </section>
+  );
+}
+
+function RegisterTable({ register }: { register: readonly AdminRegisterEntry[] }) {
+  return (
+    <div className="admin-table-scroll" role="region" aria-label={ADMIN_REGISTER_HEADING} tabIndex={0}>
+      <table className="admin-table admin-register">
+        <caption className="visually-hidden">
+          Varje app i plattformen med sin känslighetsnivå, den som ändrats senast först
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">{ADMIN_REGISTER_COLUMNS.app}</th>
+            <th scope="col">{ADMIN_REGISTER_COLUMNS.owner}</th>
+            <th scope="col">{ADMIN_REGISTER_COLUMNS.level}</th>
+            <th scope="col">{ADMIN_REGISTER_COLUMNS.source}</th>
+            <th scope="col">{ADMIN_REGISTER_COLUMNS.classified}</th>
+            <th scope="col">{ADMIN_REGISTER_COLUMNS.state}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {register.map((entry, index) => {
+            const level = classificationText(entry.classification);
+            const source = classificationSourceText(entry.source);
+            return (
+              <tr key={`${entry.appIdPrefix}-${index}`}>
+                <th scope="row" className="admin-app">
+                  <span className="admin-app-name">{entry.name}</span>
+                  {/* Bara början av adressen — och som text, aldrig som länk. */}
+                  <span className="admin-prefix">Börjar med {entry.appIdPrefix}</span>
+                </th>
+                <td>{entry.ownerEmail ?? <span className="muted">{ADMIN_OWNER_MISSING}</span>}</td>
+                <td>
+                  <span className="badge">{level.label}</span>
+                </td>
+                <td>{source.label}</td>
+                <td>
+                  {entry.classifiedAt === null ? (
+                    // Ingen påhittad tidpunkt: appen har aldrig beskrivits, och då finns ingen.
+                    <span className="muted">{ADMIN_REGISTER_NEVER_CLASSIFIED}</span>
+                  ) : (
+                    formatUpdated(entry.classifiedAt) || ADMIN_DATE_UNKNOWN
+                  )}
+                </td>
+                <td>
+                  <span className={entry.published ? 'badge badge-published' : 'badge'}>
+                    {entry.published ? ADMIN_REGISTER_PUBLISHED : ADMIN_REGISTER_UNPUBLISHED}
+                  </span>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
