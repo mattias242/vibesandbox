@@ -932,6 +932,47 @@ export interface AdminOverview {
   readonly failedJobs: number;
 }
 
+// ── Röda linjer: förbjuden användning stoppas innan något byggs ─────────────────
+//
+// Ett önskemål prövas mot de röda linjerna INNAN språkmodellen får skriva en rad kod. Träff
+// betyder att jobbet aldrig startar: ingen kod genereras, inget utkast ändras, och den som bad
+// om det får veta varför i klarspråk. Det är en spärr, inte en varning att klicka förbi.
+//
+//   GET /_api/builder/admin/stopp → { stops: AdminStop[] }   (senast först)
+//
+// Kategorierna följer EU:s AI-förordnings förbjudna användningar, plus plattformens egna
+// gränser. Koden är fast text ur vår egen kod — aldrig något som kommit in med önskemålet.
+
+export const REDLINE_CATEGORIES = [
+  /** Poängsättning av människor utifrån beteende eller egenskaper. */
+  'social-poangsattning',
+  /** Känsloigenkänning på arbetsplats eller i skola. */
+  'kansloigenkanning',
+  /** Biometrisk identifiering eller kategorisering av människor. */
+  'biometri',
+  /** Förutsäga att en enskild person ska begå brott. */
+  'prediktiv-brottsbekampning',
+  /** Beslut som rör en enskild och fattas utan att en människa prövar det. */
+  'automatiskt-beslut-om-enskild',
+  /** Utnyttja någons sårbarhet, eller påverka utan att personen märker det. */
+  'manipulation',
+] as const;
+
+export type RedlineCategory = (typeof REDLINE_CATEGORIES)[number];
+
+/**
+ * Ett stoppat önskemål, så som kontrollrummet visar det.
+ *
+ * Här står ALDRIG önskemålets text. Den kan innehålla personuppgifter, och ett stopp får inte
+ * bli vägen som sparar undan just det någon inte borde ha skrivit. Kategorin och tidpunkten
+ * räcker för att se om en regel är för bred.
+ */
+export interface AdminStop {
+  readonly appIdPrefix: string;
+  readonly category: RedlineCategory;
+  readonly at: string;
+}
+
 // ── Kontrollrummet: adresser och roller ─────────────────────────────────────────
 //
 //   GET  /_api/builder/admin/anvandare              → { users: AdminUser[] }
