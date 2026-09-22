@@ -516,9 +516,36 @@ body:has(.workspace) .topbar-inner {
   margin-bottom: 0.75rem;
 }
 
+/* Rubriken och knappen "Byt namn" på samma rad. Knappen hamnar under på riktigt smal skärm. */
+.app-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1rem;
+  margin-bottom: 1.25rem;
+}
+
 .app-title {
   font-size: 1.6rem;
+  margin-bottom: 0;
+}
+
+/* Bekräftelsen tar hela bredden under rubriken, så att knappen inte flyttar sig när den dyker upp. */
+.app-title-row .status-line {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.app-title-form {
   margin-bottom: 1.25rem;
+  max-width: 32rem;
+}
+
+.app-title-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
 }
 
 .messages {

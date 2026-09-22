@@ -161,12 +161,23 @@ describe('adresser', () => {
     }
   });
 
+  it('döpa om appen: POST med namnet, och svaret är serverns namn — inte fältets', async () => {
+    const { api, calls } = client(() => json(200, { name: 'Bokning av mötesrum' }));
+    // Fältet kan ha blanksteg i kanterna; servern trimmar, och det är dess svar vyn visar.
+    await expect(api.renameApp(APP_ID, 'Bokning av mötesrum ')).resolves.toEqual({ name: 'Bokning av mötesrum' });
+    expect(calls.map((call) => [call.method, call.url, call.body])).toEqual([
+      ['POST', `${BUILDER_API_PREFIX}/apps/${APP_ID}/namn`, JSON.stringify({ name: 'Bokning av mötesrum ' })],
+    ]);
+    expect(calls[0]?.headers[CSRF_HEADER]).toBe('1');
+  });
+
   it('fientliga id:n skickas aldrig — de kunde annars leda anropet till en annan sökväg', async () => {
     const hostile = ['..', '../me', 'a/b', 'a?b=1', 'a#b', '', 'a\u0000b', '%2e%2e', 'å', 'x'.repeat(200)];
     const { api, calls } = client();
     for (const id of hostile) {
       await expect(api.getApp(id)).rejects.toBeInstanceOf(ApiError);
       await expect(api.sendMessage(id, 'x')).rejects.toBeInstanceOf(ApiError);
+      await expect(api.renameApp(id, 'Rumsbokning')).rejects.toBeInstanceOf(ApiError);
       await expect(api.getJob(id, 0)).rejects.toBeInstanceOf(ApiError);
     }
     expect(calls).toEqual([]);

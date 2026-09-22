@@ -57,6 +57,8 @@ export const MOCK_MARKER = 'vibesandbox-builder-ui-mock';
 interface MockApp {
   appId: string;
   name: string;
+  /** Sant när ÄGAREN valt namnet. Ett valt namn följer med till kontrollrummet; en avskrift gör det inte. */
+  namnValt: boolean;
   updatedAt: string;
   hasDraft: boolean;
   published: boolean;
@@ -117,7 +119,9 @@ function now(): string {
  */
 const ADMIN_DEMO_APPS: readonly AdminApp[] = [
   {
-    appIdPrefix: 'a01f3c7d'.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    appId: 'a01f3c7d0000000000000000dm',
+    appIdPrefix: 'a01f3c7d',
+    appUrl: 'https://a01f3c7d0000000000000000dm.example.test/',
     name: 'Bokning av mötesrum',
     ownerEmail: 'anna@example.se',
     updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
@@ -127,7 +131,9 @@ const ADMIN_DEMO_APPS: readonly AdminApp[] = [
     tokens: { input: 184_200, output: 61_400 },
   },
   {
-    appIdPrefix: 'b92ka4m1'.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    appId: 'b92ka4m10000000000000000dm',
+    appIdPrefix: 'b92ka4m1',
+    appUrl: 'https://b92ka4m10000000000000000dm.example.test/',
     name: 'Anmälan till städdagen',
     ownerEmail: 'karin@example.se',
     updatedAt: new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(),
@@ -137,7 +143,9 @@ const ADMIN_DEMO_APPS: readonly AdminApp[] = [
     tokens: { input: 92_800, output: 31_100 },
   },
   {
-    appIdPrefix: 'c55prt09'.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    appId: 'c55prt090000000000000000dm',
+    appIdPrefix: 'c55prt09',
+    appUrl: 'https://c55prt090000000000000000dm.example.test/',
     name: 'Checklista för nyanställda',
     ownerEmail: 'johan@example.se',
     updatedAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
@@ -147,7 +155,9 @@ const ADMIN_DEMO_APPS: readonly AdminApp[] = [
     tokens: { input: 40_150, output: 12_900 },
   },
   {
-    appIdPrefix: 'd7zq2x88'.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    appId: 'd7zq2x880000000000000000dm',
+    appIdPrefix: 'd7zq2x88',
+    appUrl: 'https://d7zq2x880000000000000000dm.example.test/',
     name: 'Enkät om fikat',
     ownerEmail: null,
     updatedAt: new Date(Date.now() - 41 * 24 * 60 * 60 * 1000).toISOString(),
@@ -208,16 +218,25 @@ function countAdminUsers(): { admin: number; builder: number; viewer: number } {
 
 /** Låtsas-appar man byggt under körningen, som rader i kontrollrummet. */
 function adminRows(): AdminApp[] {
-  const own = [...apps.values()].map((app) => ({
-    appIdPrefix: app.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
-    name: app.name,
-    ownerEmail: 'anna@example.se',
-    updatedAt: app.updatedAt,
-    hasDraft: app.hasDraft && app.decommissionedAt === null,
-    published: app.published && app.decommissionedAt === null,
-    members: 1 + app.members.size,
-    tokens: { input: app.draftVersion * 18_400, output: app.draftVersion * 6_200 },
-  }));
+  const own = [...apps.values()].map((app) => {
+    const hasDraft = app.hasDraft && app.decommissionedAt === null;
+    const published = app.published && app.decommissionedAt === null;
+    return {
+      appId: app.appId,
+      appIdPrefix: app.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+      // Den publicerade adressen när den finns, annars förhandsvisningen. Ingenting att öppna för
+      // en app som aldrig byggts.
+      appUrl: published ? `https://${app.appId}.example.test/` : hasDraft ? `https://p-${app.appId}.example.test/` : null,
+      // Ägarens egen lista visar avskriften; kontrollrummet gör det inte. Samma regel som servern.
+      name: app.namnValt ? app.name : 'Namnlös app',
+      ownerEmail: 'anna@example.se',
+      updatedAt: app.updatedAt,
+      hasDraft,
+      published,
+      members: 1 + app.members.size,
+      tokens: { input: app.draftVersion * 18_400, output: app.draftVersion * 6_200 },
+    };
+  });
   return [...own, ...ADMIN_DEMO_APPS].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -535,6 +554,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       apps.set(appId, {
         appId,
         name: typeof body['name'] === 'string' && body['name'].trim() !== '' ? body['name'].trim().slice(0, 80) : 'Ny app',
+        namnValt: typeof body['name'] === 'string' && body['name'].trim() !== '',
         updatedAt: now(),
         hasDraft: false,
         published: false,
@@ -585,7 +605,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
   }
 
-  const appMatch = /^\/apps\/([\w-]+)(?:\/(messages|publish|open|share|feedback|export|avveckla))?$/.exec(path);
+  const appMatch = /^\/apps\/([\w-]+)(?:\/(messages|namn|publish|open|share|feedback|export|avveckla))?$/.exec(path);
   const app = appMatch === null ? undefined : apps.get(appMatch[1] ?? '');
   // En avvecklad app svarar som en app som aldrig funnits — samma 404, ingen särskild text som
   // röjer att den har funnits. Den upplysningen hör hemma i registret, inte här.
@@ -604,13 +624,26 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const body = await readJson(req);
     const text = typeof body['text'] === 'string' ? body['text'].trim() : '';
     if (text === '') return fail(res, 400, 'invalid_request', 'Skriv vad du vill att appen ska göra.');
-    if (app.messages.length === 0 && app.name === 'Ny app') app.name = nameFrom(text);
+    if (app.messages.length === 0 && !app.namnValt) app.name = nameFrom(text);
     app.messages.push({ role: 'user', text, createdAt: now() });
     app.updatedAt = now();
     const jobId = newId('j');
     jobs.set(jobId, { jobId, appId: app.appId, startedAt: Date.now(), settled: false, ...scriptFor(text) });
     app.job = { jobId };
     return send(res, 202, { jobId });
+  }
+
+  // Ägaren döper sin app. `namnValt` är hela poängen: ett valt namn skrivs aldrig över av
+  // plattformens avskrift av det första önskemålet, och det följer med till kontrollrummet.
+  if (action === 'namn' && method === 'POST') {
+    const body = await readJson(req);
+    const name = typeof body['name'] === 'string' ? body['name'].trim() : '';
+    if (name === '') return fail(res, 400, 'invalid_request', 'Skriv vad appen ska heta.');
+    if ([...name].length > 80) return fail(res, 400, 'invalid_request', 'Namnet får vara högst 80 tecken.');
+    app.name = name;
+    app.namnValt = true;
+    app.updatedAt = now();
+    return send(res, 200, { name });
   }
 
   if (action === 'publish' && method === 'POST') {

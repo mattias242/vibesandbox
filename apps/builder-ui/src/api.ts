@@ -63,6 +63,12 @@ export interface ApiClient {
   createApp(name?: string): Promise<{ appId: string }>;
   getApp(appId: string): Promise<BuilderAppDetail>;
   sendMessage(appId: string, text: string): Promise<{ jobId: string }>;
+  /**
+   * Ägaren döper sin app. Namnet hon skriver ersätter plattformens avskrift av det första
+   * önskemålet, och följer till skillnad från den med till kontrollrummet. Svaret är namnet som
+   * det SPARADES (trimmat) — vyn visar serverns svar, aldrig det som hann skrivas i fältet.
+   */
+  renameApp(appId: string, name: string): Promise<{ name: string }>;
   getJob(jobId: string, after: number): Promise<BuilderJob>;
   /**
    * Ägaren BEGÄR publicering — hon publicerar inte. Rutten heter fortfarande `publish`, för det är
@@ -538,6 +544,8 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     getApp: async (appId) => request<BuilderAppDetail>('GET', `/apps/${checkId(appId)}`),
 
     sendMessage: async (appId, text) => request('POST', `/apps/${checkId(appId)}/messages`, { text }),
+
+    renameApp: async (appId, name) => request('POST', `/apps/${checkId(appId)}/namn`, { name }),
 
     getJob: async (jobId, after) => {
       if (!Number.isSafeInteger(after) || after < 0) throw new ApiError(400, fallbackMessage(400));

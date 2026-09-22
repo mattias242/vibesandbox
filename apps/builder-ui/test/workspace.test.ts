@@ -12,6 +12,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { APP_NAME_LIMITS } from '@vibesandbox/contracts';
 import type { AppExport, BuilderReviewStatus, DecommissionEvidence } from '@vibesandbox/contracts';
 import {
   DECOMMISSION_BUSY,
@@ -29,13 +30,22 @@ import {
   PUBLISH_REQUEST_BUTTON,
   PUBLISH_REQUEST_HINT,
   PUBLISH_REQUEST_SENDING,
+  RENAME_BUTTON,
+  RENAME_CANCEL,
+  RENAME_DONE,
+  RENAME_EMPTY,
+  RENAME_HINT,
+  RENAME_LABEL,
+  RENAME_SAVE,
+  RENAME_SAVING,
   REVIEW_OWNER_TEXTS,
   REVIEW_REASON_LEAD,
   decommissionConfirmHint,
   decommissionEvidenceText,
   exportFileName,
 } from '../src/texts.ts';
-import { DecommissionDone, DecommissionPanel, PublishPanel, exportFile } from '../src/Workspace.tsx';
+import { validateAppName } from '../src/namn.ts';
+import { AppTitleForm, AppTitleHeading, DecommissionDone, DecommissionPanel, PublishPanel, exportFile } from '../src/Workspace.tsx';
 
 function review(state: BuilderReviewStatus['state'], reason: string | null = null): BuilderReviewStatus {
   return {
@@ -342,5 +352,108 @@ describe('exporten som en fil', () => {
     expect(file.contents).toContain('En lista där vi bokar mötesrum');
     // Med indrag: den som öppnar filen för att se efter ska inte mötas av en enda oändlig rad.
     expect(file.contents.split('\n').length).toBeGreaterThan(5);
+  });
+});
+
+/**
+ * Appens namn. Ett namn ägaren själv valt är hennes eget omdöme om vad appen är, och det skiljer
+ * sig i art från plattformens avskrift av hennes första önskemål: avskriften stannar hos henne,
+ * det valda namnet följer med till kontrollrummet. Vyn säger inte det med så många ord — knappen
+ * står där, och den som vill döpa sin app gör det.
+ */
+describe('appens namn', () => {
+  function heading(props: Partial<Parameters<typeof AppTitleHeading>[0]> = {}): string {
+    return renderToStaticMarkup(createElement(AppTitleHeading, { name: 'Bokning av mötesrum', saved: false, onRename: () => {}, ...props }));
+  }
+
+  function form(props: Partial<Parameters<typeof AppTitleForm>[0]> = {}): string {
+    return renderToStaticMarkup(
+      createElement(AppTitleForm, {
+        draft: 'Bokning av mötesrum',
+        saving: false,
+        error: null,
+        onChange: () => {},
+        onSubmit: () => {},
+        onCancel: () => {},
+        ...props,
+      }),
+    );
+  }
+
+  it('visar appens namn som rubrik, med en väg att byta det', () => {
+    const html = heading();
+    expect(html).toContain('Bokning av mötesrum');
+    expect(html).toContain(RENAME_BUTTON);
+  });
+
+  it('uppmanar inte till att döpa appen — knappen står där, det är allt', () => {
+    const html = heading({ name: 'En lista där vi bokar mötesrum och ser vilka som' });
+    expect(html, 'ett provisoriskt namn är inget att åtgärda').not.toMatch(/glöm inte|du bör|namnlös|saknar namn/i);
+  });
+
+  it('säger till när namnet är sparat, för den som inte såg rubriken ändras', () => {
+    expect(heading({ saved: true })).toContain(RENAME_DONE);
+    expect(heading({ saved: false })).not.toContain(RENAME_DONE);
+  });
+
+  it('fältet är märkt, förklarat och håller samma gräns som servern', () => {
+    const html = form();
+    expect(html).toContain(RENAME_LABEL);
+    expect(html).toContain(RENAME_HINT);
+    expect(html).toContain(`maxLength="${APP_NAME_LIMITS.maxChars}"`);
+    expect(html).toContain('value="Bokning av mötesrum"');
+  });
+
+  it('ett fel står som ett larm, och fältet pekas ut som felaktigt', () => {
+    const html = form({ error: RENAME_EMPTY });
+    expect(html).toContain(RENAME_EMPTY);
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('aria-invalid="true"');
+  });
+
+  it('medan namnet sparas går varken fältet eller knapparna att röra', () => {
+    const html = form({ saving: true });
+    expect(html).toContain(RENAME_SAVING);
+    expect(html).not.toContain(RENAME_SAVE);
+    // Fältet och båda knapparna: inget av det ska gå att trycka på två gånger.
+    expect(html.match(/disabled=""/g) ?? []).toHaveLength(3);
+  });
+
+  it('det går att ångra sig utan att spara', () => {
+    expect(form()).toContain(RENAME_CANCEL);
+  });
+});
+
+/**
+ * Prövningen i vyn är en vänlighet, inte en spärr — servern gör samma kontroll igen. Den är därför
+ * slappare med flit: tomt och för långt säger den ifrån om, styrtecken låter den servern svara på
+ * i klarspråk.
+ */
+describe('prövningen av ett namn innan det skickas', () => {
+  it('trimmar namnet, precis som servern gör', () => {
+    expect(validateAppName('  Bokning av mötesrum  ')).toEqual({ ok: true, name: 'Bokning av mötesrum' });
+  });
+
+  it('ett tomt fält är inget namn', () => {
+    for (const raw of ['', '   ', '\t\n']) {
+      expect(validateAppName(raw), JSON.stringify(raw)).toEqual({ ok: false, message: RENAME_EMPTY });
+    }
+  });
+
+  it('räknar tecken, inte UTF-16-enheter — å och emoji är ett tecken var', () => {
+    expect(validateAppName('å'.repeat(APP_NAME_LIMITS.maxChars)).ok).toBe(true);
+    expect(validateAppName('å'.repeat(APP_NAME_LIMITS.maxChars + 1)).ok).toBe(false);
+    expect(validateAppName('🚲'.repeat(APP_NAME_LIMITS.maxChars)).ok).toBe(true);
+  });
+
+  it('beskedet om ett för långt namn bär måttet — annars går det inte att rätta sig efter', () => {
+    const utfall = validateAppName('x'.repeat(APP_NAME_LIMITS.maxChars + 1));
+    expect(utfall.ok).toBe(false);
+    expect(utfall.ok ? '' : utfall.message).toContain(String(APP_NAME_LIMITS.maxChars));
+  });
+
+  it('släpper igenom det servern får svara på i klarspråk', () => {
+    // Styrtecken avvisas av servern. Ett fält som tyst vägrar tecken ägaren inte kan se vore en gåta.
+    expect(validateAppName('Rum\u0000bokning').ok).toBe(true);
   });
 });

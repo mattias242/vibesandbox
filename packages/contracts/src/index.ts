@@ -883,6 +883,14 @@ export interface BuilderMe {
   readonly version?: string;
 }
 
+export const APP_NAME_LIMITS = {
+  /**
+   * Så långt namn ägaren får ge sin app, i TECKEN (kodpunkter) — å och emoji räknas som ett var.
+   * Gränssnittet håller fältet till samma mått, men det är servern som avgör.
+   */
+  maxChars: 80,
+} as const;
+
 export interface BuilderAppSummary {
   readonly appId: string;
   readonly name: string;

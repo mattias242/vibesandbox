@@ -14,6 +14,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import {
+  APP_NAME_LIMITS,
   asClassification,
   BUILDER_API_PREFIX,
   CLASSIFICATION_SOURCES,
@@ -119,7 +120,7 @@ export function newReviewId(): string {
 const REVIEW_ALREADY_PENDING =
   'Appen väntar redan på granskning. Du får besked så snart någon har tittat på den.';
 
-const MAX_NAME_CHARS = 80;
+const MAX_NAME_CHARS = APP_NAME_LIMITS.maxChars;
 const MAX_TEXT_CHARS = 4000;
 const MAX_EMAIL_CHARS = 254;
 const DEFAULT_NAME = 'Namnlös app';

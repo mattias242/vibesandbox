@@ -8,7 +8,7 @@
  * (`packages/builder/src/admin.ts`). Punkten om vem som ser appen är ändrad därefter — den sa
  * förut att bara du ser den tills du publicerar, och det är inte längre hela sanningen.
  */
-import { REVIEW_STATES, type ReviewState } from '@vibesandbox/contracts';
+import { APP_NAME_LIMITS, REVIEW_STATES, type ReviewState } from '@vibesandbox/contracts';
 import { formatCount } from './format.ts';
 
 export const SUGGESTIONS: readonly string[] = [
@@ -58,6 +58,41 @@ export const SAFETY_POINTS: readonly string[] = [
 //     ett underkännande tror hon att appen är fel, när det enda som hänt är att hon byggde om.
 //
 // Inget av lägena är ett fel, och inget av dem skrivs som ett.
+
+// ── Appens namn ─────────────────────────────────────────────────────────────────
+//
+// En app som ägaren inte döpt får sitt namn av plattformen: de första tecknen ur hennes första
+// önskemål. Det är begripligt i hennes egen lista — det är hennes egen text om hennes egen app —
+// men det är inte ett namn hon har VALT, och därför följer det inte med till kontrollrummet.
+//
+// Texterna här säger inte det rakt ut. Att appen heter något provisoriskt är inget hon behöver
+// åtgärda, och en uppmaning att döpa den hade läst som en tillsägelse. Knappen står där, och den
+// som vill använda den gör det.
+
+export const RENAME_BUTTON = 'Byt namn';
+
+export const RENAME_LABEL = 'Vad ska appen heta?';
+
+export const RENAME_SAVE = 'Spara namnet';
+
+export const RENAME_SAVING = 'Sparar…';
+
+export const RENAME_CANCEL = 'Avbryt';
+
+/** Ett tomt fält är inget namn. Sagt som ett påpekande, inte som en anklagelse. */
+export const RENAME_EMPTY = 'Skriv vad appen ska heta.';
+
+/** Gränsen sagd med sin siffra: ett besked om "för långt" utan mått är inget att rätta sig efter. */
+export function renameTooLong(): string {
+  return `Namnet får vara högst ${APP_NAME_LIMITS.maxChars} tecken. Korta ner det lite.`;
+}
+
+/** Sagt när namnet sparats, för den som inte ser att rubriken ändrats. */
+export const RENAME_DONE = 'Namnet är sparat.';
+
+/** Står vid fältet: varför det är värt att döpa appen, utan att göra det till ett krav. */
+export const RENAME_HINT =
+  'Namnet syns i din lista och för den som förvaltar plattformen. Har du inte valt ett heter appen början av det du först bad om.';
 
 export const PUBLISH_REQUEST_BUTTON = 'Begär publicering';
 

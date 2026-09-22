@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type RefObject } from 'react';
+import { APP_NAME_LIMITS } from '@vibesandbox/contracts';
 import type {
   AgentEvent,
   AppExport,
@@ -12,6 +13,7 @@ import { appendToChat, registerChatInput } from './chatInput.ts';
 import { api, errorMessage, sessionFlash, sleep } from './client.ts';
 import { ToolFeedback } from './Feedback.tsx';
 import { lastAssistantIndex } from './feedback.ts';
+import { validateAppName } from './namn.ts';
 import { JobSteps } from './JobSteps.tsx';
 import { OpenLink } from './OpenLink.tsx';
 import { followJob } from './polling.ts';
@@ -38,6 +40,13 @@ import {
   PUBLISH_REQUEST_BUTTON,
   PUBLISH_REQUEST_HINT,
   PUBLISH_REQUEST_SENDING,
+  RENAME_BUTTON,
+  RENAME_CANCEL,
+  RENAME_DONE,
+  RENAME_HINT,
+  RENAME_LABEL,
+  RENAME_SAVE,
+  RENAME_SAVING,
   REVIEW_REASON_LEAD,
   decommissionConfirmHint,
   decommissionEvidenceText,
@@ -160,7 +169,11 @@ export function Workspace({ appId }: { appId: string }) {
         <p className="back">
           <a href="#/">← Mina appar</a>
         </p>
-        <h1 className="app-title">{app.name}</h1>
+        <AppTitle
+          appId={appId}
+          name={app.name}
+          onRenamed={(name) => setApp((current) => (current === null ? current : { ...current, name }))}
+        />
 
         <Conversation appId={appId} app={app} />
 
@@ -206,6 +219,146 @@ export function Workspace({ appId }: { appId: string }) {
         <DecommissionBar appId={appId} appName={app.name} onDone={setDecommissioned} />
       </div>
     </div>
+  );
+}
+
+/**
+ * Appens namn — och vägen att ändra det.
+ *
+ * Ett namn är en etikett, ingen uppgift att bocka av, så ingenting här uppmanar till att döpa
+ * appen: knappen står där, och den som vill använder den.
+ *
+ * Delad i tre av samma skäl som publiceringsdelen: `AppTitle` håller läget och anropar servern,
+ * `AppTitleHeading` och `AppTitleForm` visar det. Då går båda lägena att pröva utan webbläsare.
+ *
+ * Det som visas efteråt är SERVERNS namn, inte det som stod i fältet. Skillnaden märks när namnet
+ * har blanksteg i kanterna — servern trimmar, och rubriken ska visa det som faktiskt sparades.
+ * Misslyckas anropet står det gamla namnet kvar, med ett besked om varför.
+ */
+function AppTitle({ appId, name, onRenamed }: { appId: string; name: string; onRenamed: (name: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(name);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const fieldRef = useRef<HTMLInputElement>(null);
+
+  function start(): void {
+    setDraft(name);
+    setError(null);
+    setSaved(false);
+    setOpen(true);
+    // Efter att fältet monterats — annars finns det inget att flytta fokus till.
+    requestAnimationFrame(() => fieldRef.current?.focus());
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const wanted = validateAppName(draft);
+    if (!wanted.ok) {
+      setError(wanted.message);
+      fieldRef.current?.focus();
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await api.renameApp(appId, wanted.name);
+      onRenamed(result.name);
+      setOpen(false);
+      setSaved(true);
+    } catch (renameError) {
+      setError(errorMessage(renameError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) return <AppTitleHeading name={name} saved={saved} onRename={start} />;
+  return (
+    <AppTitleForm
+      draft={draft}
+      saving={saving}
+      error={error}
+      fieldRef={fieldRef}
+      onChange={setDraft}
+      onSubmit={submit}
+      onCancel={() => setOpen(false)}
+    />
+  );
+}
+
+export function AppTitleHeading({ name, saved, onRename }: { name: string; saved: boolean; onRename: () => void }) {
+  return (
+    <div className="app-title-row">
+      <h1 className="app-title">{name}</h1>
+      <button type="button" className="button button-small" onClick={onRename}>
+        {RENAME_BUTTON}
+      </button>
+      {/* Bekräftelsen står kvar tills fältet öppnas igen: rubriken ovanför har redan ändrats, men
+          den som inte såg det ska få veta att något faktiskt sparades. */}
+      <p className="status-line" aria-live="polite">
+        {saved ? RENAME_DONE : ''}
+      </p>
+    </div>
+  );
+}
+
+export function AppTitleForm({
+  draft,
+  saving,
+  error,
+  fieldRef,
+  onChange,
+  onSubmit,
+  onCancel,
+}: {
+  draft: string;
+  saving: boolean;
+  error: string | null;
+  fieldRef?: RefObject<HTMLInputElement | null>;
+  onChange: (value: string) => void;
+  onSubmit: (event: FormEvent) => void;
+  onCancel: () => void;
+}) {
+  const fieldId = useId();
+  const hintId = useId();
+  const errorId = useId();
+  return (
+    <form className="app-title-form" onSubmit={onSubmit} noValidate>
+      <label className="field-label" htmlFor={fieldId}>
+        {RENAME_LABEL}
+      </label>
+      <input
+        id={fieldId}
+        ref={fieldRef}
+        className="input"
+        type="text"
+        value={draft}
+        maxLength={APP_NAME_LIMITS.maxChars}
+        autoComplete="off"
+        onChange={(event) => onChange(event.target.value)}
+        aria-describedby={error === null ? hintId : `${hintId} ${errorId}`}
+        aria-invalid={error !== null}
+        disabled={saving}
+      />
+      <p id={hintId} className="hint">
+        {RENAME_HINT}
+      </p>
+      {error !== null && (
+        <p id={errorId} className="notice notice-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="app-title-actions">
+        <button type="submit" className="button button-primary button-small" disabled={saving}>
+          {saving ? RENAME_SAVING : RENAME_SAVE}
+        </button>
+        <button type="button" className="button button-small" onClick={onCancel} disabled={saving}>
+          {RENAME_CANCEL}
+        </button>
+      </div>
+    </form>
   );
 }
 
