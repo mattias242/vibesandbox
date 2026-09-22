@@ -451,6 +451,34 @@ plus det krypterade arkivet för NAS:en. `--behall` styr båda.
 Innan hämtningen kan köras skarpt: NAS:ens publika SSH-nyckel måste in i `ops` `authorized_keys`
 på värden, och `gpg` måste finnas på DSM för `--prov` (`opkg install gnupg` via Entware).
 
+### Larmet: tystnad, inte ett meddelande
+
+`verify.sh` hittar avdrift varje timme och skriver den i journalen — där ingen läser den. Larmet
+måste därför ut, och det får **inte** gå från värden: en push till Uptime Kuma skulle kräva att
+värden når tailnetet, och att den inte får det är ett av de bärande besluten. En ntfy-adress vore
+heller inte gratis — `den egna ntfy-servern` går via Cloudflare, och det finns ett eget beslut om att
+inte ha Cloudflare i datavägen (`docs/adr/0002`).
+
+Riktningen blir därför densamma som för säkerhetskopian: **NAS:en tittar in, värden ropar inte
+ut.** `hamta-backup.sh --puls <url>` kvitterar till en push-monitor i Uptime Kuma, och **bara när
+hela hämtningen gick igenom**.
+
+Det som gör det till ett riktigt larm är att **tystnaden** är signalen. En push-monitor som inte
+får sin puls larmar själv när tidsgränsen löper ut, och det täcker tre fall med samma mekanism:
+hämtningen misslyckades, värden är oåtkomlig, eller NAS:en körde aldrig jobbet. Ett larm som
+kräver att något fungerar för att kunna skickas är inget larm.
+
+Två monitorer behöver läggas till i `seed/monitors.json` på NAS:en (`seed/run-seed.sh` är
+idempotent och rör inte befintliga):
+
+| Monitor | Typ | Vad den fångar |
+|---|---|---|
+| `vibesandbox — byggverktyget` | HTTP(s) mot `https://bygg.<byggdomän>/`, förväntar 303 | plattformen är nere; ingen tailnet-åtkomst krävs |
+| `vibesandbox — säkerhetskopia` | Push, tidsgräns ~36 h | hämtningen slutade fungera, oavsett varför |
+
+Kvar även efter det: `verify.sh`:s avdrift syns fortfarande bara i journalen på värden. Att läsa
+den under samma SSH-session som hämtningen redan gör är nästa steg, och det är inte byggt.
+
 ---
 
 ## Designval

@@ -63,6 +63,10 @@ PRIVNYCKEL="${VIBESANDBOX_BACKUP_PRIVNYCKEL:-}"
 PASSFRASFIL="${VIBESANDBOX_BACKUP_PASSFRAS_FIL:-}"
 DRY_RUN=0
 LAGE=hamta
+# Kuma-pulsen. En push-monitor som INTE får sin puls slår larm av sig själv efter sin tidsgräns —
+# därför pulsar vi bara när hämtningen HELT gick igenom. Tystnad är signalen, och tystnad är det
+# enda som också fungerar när värden är helt borta eller när den här maskinen inte kör.
+PULS="${VIBESANDBOX_PULS:-}"
 KOPIA=""
 
 # ── Utskrift ───────────────────────────────────────────────────────────────────────────────
@@ -96,6 +100,11 @@ Användning: hamta-backup.sh [flaggor]
                        Går också att sätta med VIBESANDBOX_BACKUP_PRIVNYCKEL.
   --passfras-fil <fil> Lösenfras till den privata nyckeln, om den har en.
 
+  --puls <url>         Kvittera en lyckad hämtning till en push-monitor (Uptime Kuma).
+                       Pulsen skickas BARA när allt gick igenom. Uteblir den larmar monitorn
+                       själv när dess tidsgräns löper ut — vilket också täcker att den här
+                       maskinen inte kört alls. Går också att sätta med VIBESANDBOX_PULS.
+
   --hjalp              Den här texten.
 
 Körs PÅ NAS:EN. Säkerhetskopiorna skapas av backup.sh på driftvärden.
@@ -113,6 +122,7 @@ while (( $# > 0 )); do
     --kopia) shift; KOPIA="${1:-}" ;;
     --privat-nyckel) shift; PRIVNYCKEL="${1:-}" ;;
     --passfras-fil) shift; PASSFRASFIL="${1:-}" ;;
+    --puls) shift; PULS="${1:-}" ;;
     --hjalp | -h) anvandning; exit 0 ;;
     *) printf 'okänd flagga: %s\n\n' "$1" >&2; anvandning >&2; exit 2 ;;
   esac
@@ -502,8 +512,26 @@ db.close()
   printf '  Klartexten är borta igen — den låg i %s under provet.\n' "$PROVKATALOG"
 }
 
+# Pulsen ligger EFTER hämtningen och utanför den, så att ett fel i pulsandet aldrig kan få en
+# lyckad hämtning att se misslyckad ut — och så att en misslyckad hämtning aldrig kan pulsa.
+skicka_puls() {
+  [[ -n "$PULS" ]] || return 0
+  if (( DRY_RUN )); then
+    klart "skulle pulsa ${PULS%%\?*}"
+    return 0
+  fi
+  # Kuma svarar 200 på en giltig push. Misslyckas den är det ingen katastrof: monitorn larmar då
+  # av sig själv, vilket är precis rätt utfall.
+  if curl -fsS --max-time 15 -o /dev/null "$PULS"; then
+    klart "pulsen kvitterad"
+  else
+    varna "pulsen gick inte fram — monitorn kommer att larma av sig själv, och det är rätt."
+  fi
+}
+
 if [[ "$LAGE" == prov ]]; then
   prov
 else
   kor_hamtning
+  skicka_puls
 fi
