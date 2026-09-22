@@ -10,6 +10,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import type { Classification, ClassificationSource } from '@vibesandbox/contracts';
 import {
   ADMIN_APP_ID_PREFIX_LENGTH,
   CLASSIFICATIONS,
@@ -18,12 +19,23 @@ import {
   type AdminApp,
   type AdminOverview,
   type AdminRegisterEntry,
+  type AdminReview,
   type AdminStop,
   type AdminUser,
 } from '@vibesandbox/contracts';
 import {
   ADMIN_FORBIDDEN,
   ADMIN_OWNER_MISSING,
+  ADMIN_REVIEWS_EMPTY,
+  ADMIN_REVIEWS_LEAD,
+  ADMIN_REVIEW_APPROVE_BUTTON,
+  ADMIN_REVIEW_APPROVE_NOTE,
+  ADMIN_REVIEW_CODE_NOTE,
+  ADMIN_REVIEW_NO_FILES,
+  ADMIN_REVIEW_OPEN_BUTTON,
+  ADMIN_REVIEW_REASON_LABEL,
+  ADMIN_REVIEW_REASON_NOTE,
+  ADMIN_REVIEW_REJECT_BUTTON,
   ADMIN_REGISTER_EMPTY,
   ADMIN_REGISTER_LEAD,
   ADMIN_REGISTER_NEVER_CLASSIFIED,
@@ -39,7 +51,7 @@ import {
   ROLES,
   ROLE_TEXTS,
 } from '../src/admin.ts';
-import { AdminView } from '../src/AdminPage.tsx';
+import { AdminView, ReviewCase } from '../src/AdminPage.tsx';
 
 /** Ett riktigt app-id. Bara de första tecknen får nå märkspråket. */
 const FULL_ID = '01jabcdefghjkmnpqrstvwxyz0';
@@ -159,7 +171,43 @@ const REGISTER: readonly AdminRegisterEntry[] = [
   },
 ];
 
-const CALLBACKS = { onInvite: async () => '', onSetRole: async () => '' };
+/**
+ * Granskningskön: äldst först, och de två raderna som säger mest för den som ska läsa koden —
+ * en app vars nivå är en gjord bedömning, och en vars nivå ingen kunnat avgöra.
+ */
+const REVIEWS: readonly AdminReview[] = [
+  {
+    reviewId: 'a'.repeat(32),
+    appIdPrefix: FULL_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: 'Bokning av mötesrum',
+    ownerEmail: 'anna@example.se',
+    classification: 'personuppgift',
+    classificationSource: 'signalord',
+    state: 'vantar',
+    requestedAt: '2026-09-20T09:00:00Z',
+    decidedAt: null,
+    reason: null,
+  },
+  {
+    reviewId: 'b'.repeat(32),
+    appIdPrefix: OTHER_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: 'Uppföljning av rehab',
+    ownerEmail: null,
+    classification: 'kanslig',
+    classificationSource: 'fail-closed',
+    state: 'vantar',
+    requestedAt: '2026-09-21T11:30:00Z',
+    decidedAt: null,
+    reason: null,
+  },
+];
+
+const CALLBACKS = {
+  onInvite: async () => '',
+  onSetRole: async () => '',
+  onOpenReview: async () => ({ review: REVIEWS[0]!, files: {} }),
+  onDecide: async () => '',
+};
 
 function render(props: Parameters<typeof AdminView>[0]): string {
   return renderToStaticMarkup(createElement(AdminView, props));
@@ -171,11 +219,12 @@ const loaded = {
   users: USERS,
   stops: STOPS,
   register: REGISTER,
+  reviews: REVIEWS,
   error: null,
   ...CALLBACKS,
 };
 
-/** Vyn innan den vet något: alla fem hämtningarna är obesvarade. */
+/** Vyn innan den vet något: alla sex hämtningarna är obesvarade. */
 const pending = {
   ...CALLBACKS,
   overview: null,
@@ -183,19 +232,21 @@ const pending = {
   users: null,
   stops: null,
   register: null,
+  reviews: null,
   error: null,
 };
 
-/** Märkspråket för en av vyns fem delar, så att en del går att pröva utan de andra. */
-function part(html: string, name: 'figures' | 'apps' | 'users' | 'stops' | 'register'): string {
+/** Märkspråket för en av vyns sex delar, så att en del går att pröva utan de andra. */
+function part(html: string, name: 'figures' | 'apps' | 'users' | 'stops' | 'register' | 'granskning'): string {
   const starts = {
     figures: 'admin-figures-heading',
     apps: 'admin-apps-heading',
     users: 'admin-users-heading',
     stops: 'admin-stops-heading',
     register: 'admin-register-heading',
+    granskning: 'admin-reviews-heading',
   };
-  const order: Array<keyof typeof starts> = ['figures', 'apps', 'users', 'stops', 'register'];
+  const order: Array<keyof typeof starts> = ['figures', 'apps', 'users', 'stops', 'register', 'granskning'];
   const from = html.indexOf(starts[name]);
   expect(from, `delen ${name} ska finnas`).toBeGreaterThan(0);
   const next = order[order.indexOf(name) + 1];
@@ -594,5 +645,200 @@ describe('kontrollrummets AI-register', () => {
     // Vad nivåerna betyder står kvar: det förklarar vad den tomma ytan skulle ha innehållit.
     expect(html).toContain(CLASSIFICATION_TEXTS['oppen'].explanation);
     expect(html).toContain(ADMIN_REGISTER_LEAD);
+  });
+});
+
+
+/**
+ * Kontrollrummets sjätte del: granskningskön.
+ *
+ * Den skiljer sig från de fem andra på två punkter, och båda låses här. Nivån ur AI-registret
+ * står i KÖN, inte bara i registret: granskaren ska se om nivån är ett omdöme eller ett
+ * misslyckande innan hon öppnar koden, eftersom en app vars känslighet ingen kunnat avgöra inte
+ * är samma sak att släppa ut som en prövad app. Och ett öppnat ärende visar appens kod — det enda
+ * stället i hela kontrollrummet där innehållet i någons app syns, och sidan säger varför.
+ */
+describe('kontrollrummets granskningskö', () => {
+  function reviewRows(html: string): readonly string[] {
+    const body = /<tbody>([\s\S]*)<\/tbody>/.exec(part(html, 'granskning'));
+    expect(body, 'kön ska vara en tabell med en kropp').not.toBeNull();
+    return (body![1] ?? '').split('<tr').slice(1);
+  }
+
+  it('är en egen del med rubrik, efter de fem som redan fanns', () => {
+    const html = render(loaded);
+    expect(html).toContain('admin-reviews-heading');
+    expect(html.indexOf('admin-reviews-heading')).toBeGreaterThan(html.indexOf('admin-register-heading'));
+  });
+
+  it('säger vad kön är innan en enda rad: någon läser koden, och ägaren väntar', () => {
+    const html = part(render(loaded), 'granskning');
+    expect(html).toContain(ADMIN_REVIEWS_LEAD);
+    expect(html.indexOf(ADMIN_REVIEWS_LEAD)).toBeLessThan(html.indexOf('<table'));
+  });
+
+  it('visar ärendena i den ordning servern gav dem — äldst först', () => {
+    const rows = reviewRows(render(loaded));
+    expect(rows).toHaveLength(REVIEWS.length);
+    expect(rows[0]).toContain('Bokning av mötesrum');
+    expect(rows[1]).toContain('Uppföljning av rehab');
+  });
+
+  it('varje rad bär appens namn, ägarens adress och när publiceringen begärdes', () => {
+    const rows = reviewRows(render(loaded));
+    expect(rows[0]).toMatch(/<th scope="row"[^>]*>[\s\S]*Bokning av mötesrum/);
+    expect(rows[0]).toContain('anna@example.se');
+    expect(rows[0], 'rå maskintid hör inte hemma i vyn').not.toContain('2026-09-20T09:00:00Z');
+    expect(rows[0]).toMatch(/20 sep/);
+    // En ägare utan känd adress har ändå en ägare — samma text som i applistan och registret.
+    expect(rows[1]).toContain(ADMIN_OWNER_MISSING);
+    expect(rows[1]).not.toContain('null');
+  });
+
+  it('nivån OCH hur den sattes står i kön, innan någon har öppnat koden', () => {
+    const rows = reviewRows(render(loaded));
+    expect(rows[0]).toContain(CLASSIFICATION_TEXTS['personuppgift'].label);
+    expect(rows[0], 'ett golv är inte samma sak som en gjord bedömning').toContain(
+      CLASSIFICATION_SOURCE_TEXTS['signalord'].label,
+    );
+    // Den app ingen kunnat bedöma ska synas som just det, inte som en prövad app.
+    expect(rows[1]).toContain(CLASSIFICATION_TEXTS['kanslig'].label);
+    expect(rows[1]).toContain(CLASSIFICATION_SOURCE_TEXTS['fail-closed'].label);
+    const html = part(render(loaded), 'granskning');
+    for (const code of ['personuppgift', 'kanslig', 'signalord', 'fail-closed']) {
+      expect(html, 'maskintexten hör inte hemma i vyn').not.toContain(code);
+    }
+  });
+
+  it('visar bara början av app-id:t och gör aldrig en länk av den — kön är ingen väg in i appen', () => {
+    const html = part(render(loaded), 'granskning');
+    for (const id of [FULL_ID, OTHER_ID]) {
+      expect(html).not.toContain(id);
+      expect(html).not.toContain(id.slice(0, ADMIN_APP_ID_PREFIX_LENGTH + 1));
+    }
+    expect(html).toContain(FULL_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH));
+    expect(html).not.toContain('href');
+    expect(html).not.toContain('#/app/');
+  });
+
+  it('kön bär aldrig koden — den enda knappen hämtar den, ett ärende i taget', () => {
+    const html = part(render(loaded), 'granskning');
+    const buttons = html.match(/<button[^>]*>[\s\S]*?<\/button>/g) ?? [];
+    expect(buttons).toHaveLength(REVIEWS.length);
+    for (const button of buttons) expect(button).toContain(ADMIN_REVIEW_OPEN_BUTTON);
+    expect(html, 'inget ärende är öppet från början').not.toContain('<pre>');
+    expect(html).not.toContain(ADMIN_REVIEW_APPROVE_BUTTON);
+  });
+
+  it('tom kö är en god nyhet, och ingen tabell — men upplysningen står kvar', () => {
+    const html = part(render({ ...loaded, reviews: [] }), 'granskning');
+    expect(html).toContain(ADMIN_REVIEWS_EMPTY);
+    expect(html).not.toContain('<table');
+    expect(html).not.toContain('<button');
+    expect(html).toContain(ADMIN_REVIEWS_LEAD);
+  });
+
+  it('väntar man på svaret syns det, och ingen halv sida ritas', () => {
+    const html = render(pending);
+    expect(html).toMatch(/Hämtar|Laddar/);
+    expect(html).not.toContain('admin-reviews-heading');
+  });
+
+  it('403 tar med sig kön också — inget av kontrollrummet ritas utan behörighet', () => {
+    const html = render({ ...pending, error: ADMIN_FORBIDDEN });
+    expect(html).toContain(ADMIN_FORBIDDEN);
+    expect(html).not.toContain('admin-reviews-heading');
+  });
+});
+
+/**
+ * Det öppnade ärendet: den enda ytan i kontrollrummet som visar innehållet i någons app.
+ *
+ * Tre saker låses. Koden syns, och sidan säger varför den får göra det just här. Skälet har en
+ * ruta, och upplysningen om att ägaren får texten ordagrant står FÖRE den — den som skriver ska
+ * veta vart orden tar vägen innan hon skriver dem, inte efter att hon skickat. Och ett ärende
+ * utan kod går inte att avgöra alls: då erbjuds inga beslut.
+ */
+describe('ett öppnat granskningsärende', () => {
+  const FILES = {
+    'index.html': '<h1>Bokning av mötesrum</h1>',
+    'app.js': "const rooms = ['Stora', 'Lilla'];",
+  };
+
+  function renderCase(files: Record<string, string> = FILES, reason = ''): string {
+    return renderToStaticMarkup(
+      createElement(ReviewCase, {
+        review: REVIEWS[0]!,
+        files,
+        reason,
+        deciding: false,
+        onReasonChange: () => {},
+        onDecide: () => {},
+        onClose: () => {},
+      }),
+    );
+  }
+
+  it('visar koden, fil för fil, med filnamnet som rubrik', () => {
+    const html = renderCase();
+    expect(html).toContain('index.html');
+    expect(html).toContain('app.js');
+    expect(html).toContain('Bokning av mötesrum');
+    expect(html).toContain('const rooms');
+    expect(html.match(/<pre>/g) ?? []).toHaveLength(2);
+  });
+
+  it('koden skrivs ut som text, aldrig som märkspråk — den är skriven av en modell', () => {
+    const html = renderCase({ 'index.html': '<script>alert(1)</script>' });
+    expect(html, 'taggarna ska stå som tecken, inte som element').toContain('&lt;script&gt;');
+    expect(html).not.toContain('<script>');
+  });
+
+  it('säger varför koden visas här och ingen annanstans i kontrollrummet', () => {
+    const html = renderCase();
+    expect(html).toContain(ADMIN_REVIEW_CODE_NOTE);
+    expect(html.indexOf(ADMIN_REVIEW_CODE_NOTE)).toBeLessThan(html.indexOf('<pre>'));
+  });
+
+  it('nivån och källan står kvar vid koden, så att de finns för ögat när beslutet fattas', () => {
+    const html = renderCase();
+    expect(html).toContain(CLASSIFICATION_TEXTS['personuppgift'].label);
+    expect(html).toContain(CLASSIFICATION_SOURCE_TEXTS['signalord'].label);
+  });
+
+  it('har två beslut: en knapp som publicerar och en som avvisar', () => {
+    const html = renderCase();
+    expect(html).toContain(ADMIN_REVIEW_APPROVE_BUTTON);
+    expect(html).toContain(ADMIN_REVIEW_REJECT_BUTTON);
+    expect(html).toContain(ADMIN_REVIEW_APPROVE_NOTE);
+  });
+
+  it('skälet har en riktig etikett och en riktig ruta — och upplysningen står före den', () => {
+    const html = renderCase();
+    const field = /<label[^>]*for="([^"]+)"/.exec(html)?.[1];
+    expect(field, 'rutan ska ha en etikett som pekar på den').toBeDefined();
+    expect(html).toContain(`id="${field ?? ''}"`);
+    expect(html).toContain(ADMIN_REVIEW_REASON_LABEL);
+    expect(html).toContain(ADMIN_REVIEW_REASON_NOTE);
+    expect(html.indexOf(ADMIN_REVIEW_REASON_NOTE)).toBeLessThan(html.indexOf('<textarea'));
+  });
+
+  it('det granskaren skrivit står kvar i rutan, ordagrant', () => {
+    const html = renderCase(FILES, 'Ta bort personnumret ur formuläret.');
+    expect(html).toContain('Ta bort personnumret ur formuläret.');
+  });
+
+  it('ett ärende utan kod går inte att avgöra — då erbjuds inga beslut', () => {
+    const html = renderCase({});
+    expect(html).toContain(ADMIN_REVIEW_NO_FILES);
+    expect(html).not.toContain(ADMIN_REVIEW_APPROVE_BUTTON);
+    expect(html).not.toContain(ADMIN_REVIEW_REJECT_BUTTON);
+    expect(html).not.toContain('<textarea');
+  });
+
+  it('är ingen väg in i appen: ingen länk, inget helt app-id', () => {
+    const html = renderCase();
+    expect(html).not.toContain('href');
+    expect(html).not.toContain(FULL_ID);
   });
 });

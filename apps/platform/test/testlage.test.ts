@@ -11,6 +11,8 @@ import { BYGG, BYGG_ORIGIN, TESTHEMLIGHET, startaPlattform } from './stod/plattf
 import type { Testplattform } from './stod/plattform.ts';
 
 const ANNA = signTestIdentity({ userId: 'anv-anna', email: 'anna@example.org', roles: ['builder'] }, TESTHEMLIGHET);
+/** Granskaren. Aldrig samma person som ägaren — en granskare får inte avgöra sin egen app. */
+const ADAM = signTestIdentity({ userId: 'anv-adam', email: 'adam@example.org', roles: ['admin'] }, TESTHEMLIGHET);
 
 describe('Byggverktyget i testläge', () => {
   let plattform: Testplattform | undefined;
@@ -67,7 +69,19 @@ describe('Byggverktyget i testläge', () => {
     const appId = await byggApp(plattform);
     const webblasare = new Webblasare(plattform.port);
     const skriv = { Authorization: ANNA, 'x-vibesandbox-request': '1', Origin: BYGG_ORIGIN, 'Content-Type': 'application/json' };
-    expect((await webblasare.skicka(BYGG, { method: 'POST', path: `/_api/builder/apps/${appId}/publish`, headers: skriv })).status).toBe(200);
+    const granska = { ...skriv, Authorization: ADAM };
+    // Publiceringen går via granskningen: Anna begär, Adam läser koden och godkänner.
+    expect((await webblasare.skicka(BYGG, { method: 'POST', path: `/_api/builder/apps/${appId}/publish`, headers: skriv })).status).toBe(202);
+    const kon = await webblasare.skicka(BYGG, { method: 'GET', path: '/_api/builder/admin/granskning', headers: granska });
+    expect(kon.status).toBe(200);
+    const { reviews } = JSON.parse(kon.body) as { reviews: { reviewId: string }[] };
+    const beslut = await webblasare.skicka(BYGG, {
+      method: 'POST',
+      path: `/_api/builder/admin/granskning/${reviews[0]?.reviewId}`,
+      body: JSON.stringify({ decision: 'godkand' }),
+      headers: granska,
+    });
+    expect(beslut.status).toBe(200);
 
     const delad = await webblasare.skicka(BYGG, {
       method: 'POST',

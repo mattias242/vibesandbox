@@ -89,6 +89,24 @@ export interface StoredRegisterRow {
   readonly published: boolean;
 }
 
+/** Ett granskningsärende, rått ur databasen. Klass och källa prövas av den som läser, som i registret. */
+export interface StoredReview {
+  readonly reviewId: string;
+  readonly appId: string;
+  readonly versionId: string;
+  readonly state: string;
+  readonly requestedBy: string;
+  readonly requestedAt: string;
+  readonly decidedBy: string | null;
+  readonly decidedAt: string | null;
+  readonly reason: string | null;
+  readonly name: string;
+  readonly nameIsDefault: boolean;
+  readonly ownerUserId: string;
+  readonly classification: string | null;
+  readonly classificationSource: string | null;
+}
+
 export interface JobOutcome {
   readonly status: 'done' | 'failed';
   readonly model?: string | undefined;
@@ -113,6 +131,30 @@ function integer(row: Row, column: string): number {
   if (typeof value === 'bigint') return Number(value);
   if (typeof value !== 'number') throw new Error(`Kolumnen ${column} är inte ett tal.`);
   return value;
+}
+
+/**
+ * En rad ur reviews. Kön (`LIST_PENDING_REVIEWS`) saknar några kolumner med flit — den ska inte
+ * läsa varje apps källkod — så de fälten faller tillbaka på tomma värden. Det är säkert eftersom
+ * kön bara visar väntande ärenden, som per definition inte är avgjorda.
+ */
+function toReview(row: Row): StoredReview {
+  return {
+    reviewId: text(row, 'review_id'),
+    appId: text(row, 'app_id'),
+    versionId: optionalText(row, 'version_id') ?? '',
+    state: text(row, 'state'),
+    requestedBy: optionalText(row, 'requested_by') ?? '',
+    requestedAt: text(row, 'requested_at'),
+    decidedBy: optionalText(row, 'decided_by'),
+    decidedAt: optionalText(row, 'decided_at'),
+    reason: optionalText(row, 'reason'),
+    name: text(row, 'name'),
+    nameIsDefault: integer(row, 'name_is_default') === 1,
+    ownerUserId: text(row, 'owner_user_id'),
+    classification: optionalText(row, 'classification'),
+    classificationSource: optionalText(row, 'classification_source'),
+  };
 }
 
 function toApp(row: Row): StoredApp {
@@ -242,6 +284,10 @@ export function createStorage(db: BuilderDatabase) {
         const finished = finishJob(jobId, outcome, now);
         if (!finished) return false;
         db.run(sql.INSERT_REVISION, { appId, files: JSON.stringify(files), versionId, jobId, now });
+        // Ett nytt bygge drar tillbaka en väntande granskning. Granskaren ska inte läsa kod som
+        // redan är ersatt, och ägaren ska inte tro att någon läser. I samma transaktion som
+        // revisionen: annars finns ett ögonblick där ärendet pekar på kod som inte är den senaste.
+        db.run(sql.WITHDRAW_PENDING_REVIEW, { appId, now });
         const next = integer(db.get(sql.NEXT_MESSAGE_SEQ, { appId }) ?? {}, 'next');
         db.run(sql.INSERT_MESSAGE, { appId, seq: next, role: 'assistant', text: summary, now });
         db.run(sql.TOUCH_APP, { appId, now });
@@ -434,6 +480,60 @@ export function createStorage(db: BuilderDatabase) {
         db.run(sql.SET_CLASSIFICATION, { appId, classification: next.classification, source: next.source, now });
         return { ...next, raised: true };
       });
+    },
+
+    // ── Granskning ─────────────────────────────────────────────────────────────
+
+    /**
+     * Begär granskning av appens senaste gröna utkast. `null` betyder att det redan finns ett
+     * väntande ärende — det partiella indexet i databasen är facit, inte en kontroll här.
+     *
+     * Versionen låses fast NU. Godkännandet publicerar exakt den, inte det som råkar vara senast
+     * byggt när granskaren hinner titta.
+     */
+    requestReview(appId: string, reviewId: string, versionId: string, requestedBy: string, now: string): string | null {
+      return db.transaction(() => {
+        if (db.get(sql.SELECT_PENDING_REVIEW, { appId }) !== undefined) return null;
+        db.run(sql.INSERT_REVIEW, { reviewId, appId, versionId, requestedBy, now });
+        return reviewId;
+      });
+    },
+
+    /** Appens senaste ärende, oavsett läge — det ägaren ser. `null` om hon aldrig begärt något. */
+    latestReview(appId: string): { state: string; requestedAt: string; decidedAt: string | null; reason: string | null } | null {
+      const row = db.get(sql.SELECT_LATEST_REVIEW_FOR_APP, { appId });
+      if (row === undefined) return null;
+      return {
+        state: text(row, 'state'),
+        requestedAt: text(row, 'requested_at'),
+        decidedAt: optionalText(row, 'decided_at'),
+        reason: optionalText(row, 'reason'),
+      };
+    },
+
+    review(reviewId: string): StoredReview | null {
+      const row = db.get(sql.SELECT_REVIEW, { reviewId });
+      return row === undefined ? null : toReview(row);
+    },
+
+    /** Källkoden ett ärende gäller. `null` om revisionen är borta — då finns inget att granska. */
+    reviewFiles(appId: string, versionId: string): SourceFiles | null {
+      const row = db.get(sql.SELECT_REVISION_FILES, { appId, versionId });
+      if (row === undefined) return null;
+      const parsed: unknown = JSON.parse(text(row, 'files'));
+      return parsed as SourceFiles;
+    },
+
+    /**
+     * Avgör ett ärende. `false` betyder att det inte längre väntade — någon annan hann före, eller
+     * ägaren byggde om. Villkoret sitter i satsen, så två granskare kan inte båda avgöra.
+     */
+    decideReview(reviewId: string, state: string, decidedBy: string, reason: string | null, now: string): boolean {
+      return db.run(sql.DECIDE_REVIEW, { reviewId, state, decidedBy, reason, now }).changes > 0;
+    },
+
+    listPendingReviews(limit: number): StoredReview[] {
+      return db.all(adminSql.LIST_PENDING_REVIEWS, { limit }).map(toReview);
     },
 
     listRegister(): StoredRegisterRow[] {

@@ -88,26 +88,30 @@ describe('läsande anrop', () => {
   });
 
   it('en adress som inte är http(s) från servern används aldrig (t.ex. javascript:)', async () => {
+    // Publiceringen står inte längre med här: den ger ingen adress, utan ett väntande ärende.
+    // En adress till den publicerade appen finns först när en granskare sagt ja, och kommer då
+    // med `getApp`. Se granskningens egna skivor längre ned.
     for (const url of ['javascript:alert(1)', 'data:text/html,x', '//evil.example/', 'inte en adress', '']) {
-      const { api } = client(() => json(200, { url, publishedUrl: url }));
+      const { api } = client(() => json(200, { url }));
       await expect(api.openUrl(APP_ID, 'preview')).rejects.toBeInstanceOf(ApiError);
-      await expect(api.publish(APP_ID)).rejects.toBeInstanceOf(ApiError);
     }
   });
 });
 
 describe('skrivande anrop', () => {
-  it('skapa app, skicka önskemål, publicera och dela: POST med skyddshuvud och JSON-kropp', async () => {
+  it('skapa app, skicka önskemål, begära publicering och dela: POST med skyddshuvud och JSON-kropp', async () => {
     const { api, calls } = client((call) => {
       if (call.url.endsWith('/apps')) return json(201, { appId: APP_ID });
       if (call.url.endsWith('/messages')) return json(202, { jobId: 'job-1' });
-      if (call.url.endsWith('/publish')) return json(200, { publishedUrl: 'https://abc.example.se/' });
+      if (call.url.endsWith('/publish')) {
+        return json(202, { review: { state: 'vantar', requestedAt: '2026-09-21T09:00:00Z' } });
+      }
       return json(200, { shared: true });
     });
 
     await expect(api.createApp('Todo')).resolves.toEqual({ appId: APP_ID });
     await expect(api.sendMessage(APP_ID, 'En todo-lista')).resolves.toEqual({ jobId: 'job-1' });
-    await expect(api.publish(APP_ID)).resolves.toEqual({ publishedUrl: 'https://abc.example.se/' });
+    await expect(api.requestReview(APP_ID)).resolves.toEqual({ state: 'vantar', requestedAt: '2026-09-21T09:00:00Z' });
     await expect(api.share(APP_ID, 'kollega@example.se')).resolves.toBeUndefined();
 
     expect(calls.map((call) => [call.method, call.url, call.body])).toEqual([
@@ -135,7 +139,9 @@ describe('adresser', () => {
     const { api, calls } = client((call) => {
       if (call.url.endsWith('/apps')) return json(200, { apps: [] });
       if (call.url.includes('/open')) return json(200, { url: 'https://p.example.se/' });
-      if (call.url.endsWith('/publish')) return json(200, { publishedUrl: 'https://a.example.se/' });
+      if (call.url.endsWith('/publish')) {
+        return json(202, { review: { state: 'vantar', requestedAt: '2026-09-21T09:00:00Z' } });
+      }
       return json(200, { appId: APP_ID, jobId: 'j' });
     });
     await api.me();
@@ -144,7 +150,7 @@ describe('adresser', () => {
     await api.getApp(APP_ID);
     await api.sendMessage(APP_ID, 'x');
     await api.getJob('j', 0);
-    await api.publish(APP_ID);
+    await api.requestReview(APP_ID);
     await api.openUrl(APP_ID, 'preview');
     await api.share(APP_ID, 'a@b.se');
     await api.sendFeedback(APP_ID, { helpful: true });
@@ -635,5 +641,168 @@ describe('kontrollrummets AI-register', () => {
     const { api } = client(() => json(200, { entries: [{ ...ENTRY, text: 'namn och personnummer på alla elever' }] }));
     const entries = await api.adminRegister();
     expect(JSON.stringify(entries)).not.toContain('personnummer');
+  });
+});
+
+
+/**
+ * Granskningen, sedd från klienten.
+ *
+ * Två saker skiljer den från kontrollrummets övriga anrop. Svaret på en begäran om publicering är
+ * ett VÄNTANDE ärende, aldrig en adress: ägaren publicerar inte, hon ber om att få göra det, och
+ * en klient som tog emot "publicerad" i samma andetag skulle visa henne något som inte hänt.
+ *
+ * Och ett öppnat ärende bär appens KOD. Det är det enda svaret i hela kontrollrummet som gör det,
+ * och därför det enda som fälls helt när en fil inte går att lita på: en halv kodbas är värre än
+ * ingen, eftersom granskaren då tror att hon läst appen.
+ */
+describe('begäran om publicering', () => {
+  it('går till publiceringsrutten och ger ett väntande ärende, inte en adress', async () => {
+    const { api, calls } = client(() => json(202, { review: { state: 'vantar', requestedAt: '2026-09-21T09:00:00Z' } }));
+    const review = await api.requestReview(APP_ID);
+    expect(review).toEqual({ state: 'vantar', requestedAt: '2026-09-21T09:00:00Z' });
+    expect(JSON.stringify(review), 'ingen adress till appen följer med en begäran').not.toMatch(/https?:/);
+    expect(`${calls[0]?.method} ${calls[0]?.url}`).toBe(`POST ${BUILDER_API_PREFIX}/apps/${APP_ID}/publish`);
+    expect(calls[0]?.headers[CSRF_HEADER]).toBe('1');
+  });
+
+  it.each([
+    ['ett läge som säger att appen redan publicerats', { review: { state: 'godkand', requestedAt: '2026-09-21T09:00:00Z' } }],
+    ['ett läge utanför kontraktet', { review: { state: 'utskickad', requestedAt: '2026-09-21T09:00:00Z' } }],
+    ['ingen tidpunkt', { review: { state: 'vantar' } }],
+    ['en tom tidpunkt', { review: { state: 'vantar', requestedAt: '' } }],
+    ['inget ärende alls', {}],
+    ['en gammal publicering med adress', { publishedUrl: 'https://abc.example.se/' }],
+  ])('%s blir ett fel i klarspråk — vyn ska aldrig påstå att appen gått ut', async (_name, body) => {
+    const { api } = client(() => json(202, body));
+    const error = (await api.requestReview(APP_ID).catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.message).toMatch(/Något gick fel/);
+  });
+});
+
+describe('kontrollrummets granskningskö', () => {
+  const REVIEW = {
+    reviewId: 'a'.repeat(32),
+    appIdPrefix: '01jabcde',
+    name: 'Bokning',
+    ownerEmail: 'anna@example.se',
+    classification: 'personuppgift',
+    classificationSource: 'signalord',
+    state: 'vantar',
+    requestedAt: '2026-09-21T09:00:00Z',
+    decidedAt: null,
+    reason: null,
+  };
+
+  it('GET till rätt relativa adress, med kakor och utan skyddshuvud', async () => {
+    const { api, calls } = client(() => json(200, { reviews: [REVIEW] }));
+    await expect(api.adminReviews()).resolves.toEqual([REVIEW]);
+    expect(`${calls[0]?.method} ${calls[0]?.url}`).toBe(`GET ${BUILDER_API_PREFIX}/admin/granskning`);
+    expect(calls[0]?.credentials).toBe('same-origin');
+    expect(calls[0]?.headers[CSRF_HEADER]).toBeUndefined();
+  });
+
+  it('en tom kö är ett giltigt svar — ingen väntar på besked', async () => {
+    const { api } = client(() => json(200, { reviews: [] }));
+    await expect(api.adminReviews()).resolves.toEqual([]);
+  });
+
+  it('kön bär aldrig koden — den hämtas för ett ärende i taget', async () => {
+    const { api } = client(() => json(200, { reviews: [{ ...REVIEW, files: { 'index.html': '<h1>hej</h1>' } }] }));
+    const reviews = await api.adminReviews();
+    expect(JSON.stringify(reviews)).not.toContain('hej');
+  });
+
+  it.each([
+    ['en nivå utanför kontraktet', 'ganska-hemlig'],
+    ['en nivå som saknas', undefined],
+  ])('%s läses som den strängaste — granskaren ska inte se appen som ofarligare än den är', async (_name, value) => {
+    const { api } = client(() => json(200, { reviews: [{ ...REVIEW, classification: value }] }));
+    const reviews = await api.adminReviews();
+    expect(reviews[0]?.classification).toBe('kanslig');
+  });
+
+  it('en källa vi inte känner igen betyder att vi inte vet hur nivån sattes', async () => {
+    const { api } = client(() => json(200, { reviews: [{ ...REVIEW, classificationSource: 'gissning' }] }));
+    const reviews = await api.adminReviews();
+    expect(reviews[0]?.classificationSource).toBe('fail-closed');
+  });
+
+  it('ett läge vi inte känner igen läses som väntande, alltså som något som behöver en läsare', async () => {
+    const { api } = client(() => json(200, { reviews: [{ ...REVIEW, state: 'kanske' }] }));
+    const reviews = await api.adminReviews();
+    expect(reviews[0]?.state).toBe('vantar');
+  });
+
+  it.each([
+    ['saknar listan', {}],
+    ['listan är inget fält', { reviews: 'Bokning' }],
+    ['ett ärende saknar id', { reviews: [{ ...REVIEW, reviewId: undefined }] }],
+    ['ett ärende har ett id som inte kan stå i en sökväg', { reviews: [{ ...REVIEW, reviewId: '../me' }] }],
+    ['ett ärende saknar namn', { reviews: [{ ...REVIEW, name: undefined }] }],
+    ['ett ärende saknar tidpunkt', { reviews: [{ ...REVIEW, requestedAt: '' }] }],
+    ['ett ärende bär mer än förkortningen av app-id:t', { reviews: [{ ...REVIEW, appIdPrefix: APP_ID }] }],
+  ])('ett svar som %s blir ett fel i klarspråk', async (_name, body) => {
+    const { api } = client(() => json(200, body));
+    const error = (await api.adminReviews().catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.message).toMatch(/Något gick fel/);
+  });
+
+  it('ett öppnat ärende hämtas med sitt id och bär koden', async () => {
+    const files = { 'index.html': '<h1>Bokning</h1>', 'app.js': 'console.log(1)' };
+    const { api, calls } = client(() => json(200, { review: REVIEW, files }));
+    const opened = await api.adminReview(REVIEW.reviewId);
+    expect(opened.review).toEqual(REVIEW);
+    expect(opened.files).toEqual(files);
+    expect(`${calls[0]?.method} ${calls[0]?.url}`).toBe(
+      `GET ${BUILDER_API_PREFIX}/admin/granskning/${REVIEW.reviewId}`,
+    );
+  });
+
+  it('ett ärende-id som inte kan stå i en sökväg skickas aldrig', async () => {
+    const { api, calls } = client();
+    for (const id of ['..', 'a/b', '', 'a?b=1', 'x'.repeat(200)]) {
+      await expect(api.adminReview(id)).rejects.toBeInstanceOf(ApiError);
+      await expect(api.adminDecide(id, 'godkand')).rejects.toBeInstanceOf(ApiError);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ['ett filnamn som klättrar i sökvägen', { '../../etc/passwd': 'x' }],
+    ['ett filnamn med styrtecken', { 'a\u0000b.js': 'x' }],
+    ['ett innehåll som inte är text', { 'index.html': 42 }],
+    ['inga filer alls som fält', 'index.html'],
+  ])('%s fäller hela svaret — en halv kodbas är värre än ingen', async (_name, files) => {
+    const { api } = client(() => json(200, { review: REVIEW, files }));
+    await expect(api.adminReview(REVIEW.reviewId)).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('ett godkännande skickar beslutet, och ingen text som råkat stå kvar', async () => {
+    const decided = { ...REVIEW, state: 'godkand', decidedAt: '2026-09-21T10:00:00Z' };
+    const { api, calls } = client(() => json(200, { review: decided }));
+    await expect(api.adminDecide(REVIEW.reviewId, 'godkand')).resolves.toEqual(decided);
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.body).toBe(JSON.stringify({ decision: 'godkand' }));
+    expect(calls[0]?.headers[CSRF_HEADER]).toBe('1');
+  });
+
+  it('ett nej skickar skälet ordagrant, eftersom ägaren får det ordagrant', async () => {
+    const reason = 'Appen sparar personnummer i klartext. Ta bort fältet först.';
+    const decided = { ...REVIEW, state: 'avvisad', decidedAt: '2026-09-21T10:00:00Z', reason };
+    const { api, calls } = client(() => json(200, { review: decided }));
+    await expect(api.adminDecide(REVIEW.reviewId, 'avvisad', reason)).resolves.toEqual(decided);
+    expect(calls[0]?.body).toBe(JSON.stringify({ decision: 'avvisad', reason }));
+  });
+
+  it('serverns nej till ett nej utan skäl når fram i klarspråk', async () => {
+    const { api } = client(() =>
+      json(400, { error: { code: 'invalid_request', message: 'Skriv varför appen inte kan publiceras. Ägaren får skälet ordagrant.' } }),
+    );
+    const error = (await api.adminDecide('b'.repeat(32), 'avvisad').catch((caught: unknown) => caught)) as ApiError;
+    expect(error.status).toBe(400);
+    expect(error.message).toMatch(/Skriv varför/);
   });
 });

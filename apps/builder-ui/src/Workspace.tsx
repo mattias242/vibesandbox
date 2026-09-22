@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
-import type { AgentEvent, BuilderAppDetail, BuilderJobStatus } from '@vibesandbox/contracts';
+import type { AgentEvent, BuilderAppDetail, BuilderJobStatus, BuilderReviewStatus } from '@vibesandbox/contracts';
 import { ApiError } from './api.ts';
 import { appendToChat, registerChatInput } from './chatInput.ts';
 import { api, errorMessage, sessionFlash, sleep } from './client.ts';
@@ -11,6 +11,15 @@ import { followJob } from './polling.ts';
 import { GuideLink } from './ServicesGuide.tsx';
 import { SharePanel } from './SharePanel.tsx';
 import { summarizeJob } from './steps.ts';
+import {
+  PUBLISH_REQUEST_AGAIN_BUTTON,
+  PUBLISH_REQUEST_AGAIN_HINT,
+  PUBLISH_REQUEST_BUTTON,
+  PUBLISH_REQUEST_HINT,
+  PUBLISH_REQUEST_SENDING,
+  REVIEW_REASON_LEAD,
+  reviewOwnerText,
+} from './texts.ts';
 
 interface ActiveJob {
   readonly jobId: string;
@@ -19,7 +28,6 @@ interface ActiveJob {
 }
 
 const BUSY_MESSAGE = 'Appen byggs redan. Vänta tills det pågående arbetet är klart, så kan du skriva nästa önskemål.';
-const NOTHING_TO_PUBLISH = 'Det finns ingen färdig version att publicera än. Vänta tills bygget är klart.';
 
 function isRunning(status: BuilderJobStatus | undefined): boolean {
   return status === 'queued' || status === 'running';
@@ -32,12 +40,17 @@ export function Workspace({ appId }: { appId: string }) {
   const [jobNote, setJobNote] = useState<string | null>(null);
   const [previewVersion, setPreviewVersion] = useState(0);
   const [publishedUrl, setPublishedUrl] = useState<string | null>(null);
+  // Begäran om publicering, så som servern senast beskrev den. Den ändras på två sätt: en ny
+  // hämtning (granskaren har avgjort, eller ett nytt bygge drog tillbaka ärendet) och ägarens egen
+  // begäran. Båda kommer från servern — vyn hittar aldrig på ett läge.
+  const [review, setReview] = useState<BuilderReviewStatus | null>(null);
 
   const reload = useCallback(async () => {
     try {
       const detail = await api.getApp(appId);
       setApp(detail);
       if (detail.publishedUrl !== undefined) setPublishedUrl(detail.publishedUrl);
+      setReview(detail.review ?? null);
       return detail;
     } catch (error) {
       setLoadError(errorMessage(error));
@@ -144,12 +157,12 @@ export function Workspace({ appId }: { appId: string }) {
         <Preview appId={appId} hasDraft={app.hasDraft} version={previewVersion} />
         <PublishBar
           appId={appId}
-          canPublish={app.hasDraft && !running}
+          // Ett ärende som väntar stänger knappen: servern svarar ändå att appen redan ligger i kö,
+          // och en knapp som bara kan misslyckas är ett löfte vyn inte kan hålla.
+          canRequest={app.hasDraft && !running && review?.state !== 'vantar'}
           published={app.published}
-          onPublished={(url) => {
-            setPublishedUrl(url);
-            setApp((current) => (current === null ? current : { ...current, published: true }));
-          }}
+          review={review}
+          onRequested={(status) => setReview(status)}
         />
         {publishedUrl !== null && <SharePanel appId={appId} publishedUrl={publishedUrl} />}
       </div>
@@ -346,49 +359,95 @@ function Preview({ appId, hasDraft, version }: { appId: string; hasDraft: boolea
   );
 }
 
+/**
+ * Knappen som förut publicerade. Nu BEGÄR den publicering: ägaren släpper inte ut appen själv,
+ * utan en granskare läser koden och avgör. Anropet går till samma rutt som förut, men svaret är
+ * ett väntande ärende — och det är läget, inte knappen, som är den viktiga delen av den här ytan.
+ */
 function PublishBar({
   appId,
-  canPublish,
+  canRequest,
   published,
-  onPublished,
+  review,
+  onRequested,
 }: {
   appId: string;
-  canPublish: boolean;
+  canRequest: boolean;
   published: boolean;
-  onPublished: (url: string) => void;
+  review: BuilderReviewStatus | null;
+  onRequested: (review: BuilderReviewStatus) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  async function publish() {
+  async function request() {
     setBusy(true);
-    setMessage(null);
+    setError(null);
     try {
-      const { publishedUrl } = await api.publish(appId);
-      onPublished(publishedUrl);
-      setMessage({ ok: true, text: 'Appen är publicerad. Nu kan du dela den med dina kollegor.' });
-    } catch (error) {
-      setMessage({
-        ok: false,
-        text: error instanceof ApiError && error.status === 409 ? NOTHING_TO_PUBLISH : errorMessage(error),
-      });
+      const requested = await api.requestReview(appId);
+      // Läget kommer från servern, inte från att knappen trycktes: står det inget ärende där
+      // ska vyn inte påstå att det gör det.
+      onRequested({ state: requested.state, requestedAt: requested.requestedAt, decidedAt: null, reason: null });
+    } catch (caught) {
+      // 409 betyder numera två saker: inget färdigt utkast, eller ett ärende som redan väntar.
+      // Servern skriver vilket i klarspråk, så dess egen text går före vår.
+      setError(caught instanceof ApiError ? caught.message : errorMessage(caught));
     } finally {
       setBusy(false);
     }
   }
 
+  return <PublishPanel canRequest={canRequest} published={published} review={review} busy={busy} error={error} onRequest={() => void request()} />;
+}
+
+/**
+ * Ytan i sig, utan något eget minne: allt den visar kommer utifrån. Då går ägarens fyra lägen att
+ * pröva var för sig — och `tillbakadragen` är det som måste prövas, eftersom det är det enda läget
+ * som ser ut som ett avslag utan att vara det.
+ */
+export function PublishPanel({
+  canRequest,
+  published,
+  review,
+  busy,
+  error,
+  onRequest,
+}: {
+  canRequest: boolean;
+  published: boolean;
+  review: BuilderReviewStatus | null;
+  busy: boolean;
+  error: string | null;
+  onRequest: () => void;
+}) {
+  const state = reviewOwnerText(review?.state ?? 'vantar');
   return (
     <div className="publish">
-      <button type="button" className="button button-primary" onClick={publish} disabled={busy || !canPublish}>
-        {busy ? 'Publicerar…' : published ? 'Publicera senaste versionen' : 'Publicera'}
+      <button type="button" className="button button-primary" onClick={onRequest} disabled={busy || !canRequest}>
+        {busy ? PUBLISH_REQUEST_SENDING : published ? PUBLISH_REQUEST_AGAIN_BUTTON : PUBLISH_REQUEST_BUTTON}
       </button>
-      <p className="hint">
-        {published
-          ? 'Ändringar syns för andra först när du publicerar igen.'
-          : 'När du publicerar kan du dela appen med kollegor.'}
-      </p>
-      <p className={message?.ok === false ? 'status-line status-error' : 'status-line'} aria-live="polite">
-        {message?.text ?? ''}
+      <p className="hint">{published ? PUBLISH_REQUEST_AGAIN_HINT : PUBLISH_REQUEST_HINT}</p>
+
+      {/* Läget läses upp när det ändras: hon kan stå kvar på sidan i timmar utan att titta. */}
+      <div aria-live="polite">
+        {review !== null && (
+          <div className={review.state === 'godkand' ? 'notice notice-ok' : 'notice'}>
+            <strong>{state.heading}</strong>
+            <p>{state.body}</p>
+            {/* Granskarens ord står ordagrant och för sig, så att det syns vad som är hennes text
+                och vad som är plattformens. Vyn sammanfattar den aldrig. */}
+            {review.state === 'avvisad' && review.reason !== null && review.reason !== '' && (
+              <>
+                <p className="hint">{REVIEW_REASON_LEAD}</p>
+                <blockquote className="message-text">{review.reason}</blockquote>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      <p className={error === null ? 'status-line' : 'status-line status-error'} aria-live="polite">
+        {error ?? ''}
       </p>
     </div>
   );

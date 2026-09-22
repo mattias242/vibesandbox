@@ -6,9 +6,11 @@ import {
   type AdminApp,
   type AdminOverview,
   type AdminRegisterEntry,
+  type AdminReview,
   type AdminStop,
   type AdminUser,
   type Role,
+  type SourceFiles,
 } from '@vibesandbox/contracts';
 import {
   ADMIN_APPS_HEADING,
@@ -35,6 +37,22 @@ import {
   ADMIN_REGISTER_PUBLISHED,
   ADMIN_REGISTER_SOURCES_HEADING,
   ADMIN_REGISTER_UNPUBLISHED,
+  ADMIN_REVIEWS_COLUMNS,
+  ADMIN_REVIEWS_EMPTY,
+  ADMIN_REVIEWS_HEADING,
+  ADMIN_REVIEWS_LEAD,
+  ADMIN_REVIEW_APPROVE_BUTTON,
+  ADMIN_REVIEW_APPROVE_NOTE,
+  ADMIN_REVIEW_CLOSE_BUTTON,
+  ADMIN_REVIEW_CODE_HEADING,
+  ADMIN_REVIEW_CODE_NOTE,
+  ADMIN_REVIEW_DECIDING,
+  ADMIN_REVIEW_NO_FILES,
+  ADMIN_REVIEW_OPENING,
+  ADMIN_REVIEW_OPEN_BUTTON,
+  ADMIN_REVIEW_REASON_LABEL,
+  ADMIN_REVIEW_REASON_NOTE,
+  ADMIN_REVIEW_REJECT_BUTTON,
   ADMIN_ROLE_BUTTON,
   ADMIN_ROLE_SAVING,
   ADMIN_ROLE_SELECT_LABEL,
@@ -60,11 +78,15 @@ import {
   countStops,
   inviteErrorMessage,
   invitedMessage,
+  reviewApprovedMessage,
+  reviewErrorMessage,
+  reviewRejectedMessage,
   roleChangedMessage,
   roleErrorMessage,
   roleLabel,
   statusOf,
   validateInviteEmail,
+  validateReviewReason,
   withUser,
 } from './admin.ts';
 import { api } from './client.ts';
@@ -91,26 +113,30 @@ export function AdminPage() {
   const [users, setUsers] = useState<readonly AdminUser[] | null>(null);
   const [stops, setStops] = useState<readonly AdminStop[] | null>(null);
   const [register, setRegister] = useState<readonly AdminRegisterEntry[] | null>(null);
+  const [reviews, setReviews] = useState<readonly AdminReview[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    // Alla fem anropen tillsammans: vyn visar ingenting förrän den har hela bilden, och ett nekat
-    // anrop ska ge ett besked — inte en halv sida.
+    // Alla sex anropen tillsammans: vyn visar ingenting förrän den har hela bilden, och ett nekat
+    // anrop ska ge ett besked — inte en halv sida. Kön följer med här, men KODEN gör det inte:
+    // den hämtas för ett ärende i taget, när någon ber om att få läsa det.
     Promise.all([
       api.adminOverview(),
       api.adminApps(),
       api.adminUsers(),
       api.adminStops(),
       api.adminRegister(),
+      api.adminReviews(),
     ]).then(
-      ([nextOverview, nextApps, nextUsers, nextStops, nextRegister]) => {
+      ([nextOverview, nextApps, nextUsers, nextStops, nextRegister, nextReviews]) => {
         if (cancelled) return;
         setOverview(nextOverview);
         setApps(nextApps);
         setUsers(nextUsers);
         setStops(nextStops);
         setRegister(nextRegister);
+        setReviews(nextReviews);
       },
       (caught: unknown) => {
         if (!cancelled) setError(adminErrorMessage(caught));
@@ -146,6 +172,17 @@ export function AdminPage() {
     return roleChangedMessage(user);
   }
 
+  /**
+   * Ett avgjort ärende lämnar kön direkt. Det är inte en gissning om vad servern gjorde: raden tas
+   * bort först när servern svarat, och svaret ÄR ärendet i sitt nya läge. Kön ska visa det som
+   * väntar, och det som är avgjort väntar inte.
+   */
+  async function decide(reviewId: string, decision: 'godkand' | 'avvisad', reason?: string): Promise<string> {
+    const decided = await api.adminDecide(reviewId, decision, reason);
+    setReviews((current) => (current ?? []).filter((row) => row.reviewId !== reviewId));
+    return decision === 'godkand' ? reviewApprovedMessage(decided) : reviewRejectedMessage(decided);
+  }
+
   return (
     <AdminView
       overview={overview}
@@ -153,9 +190,12 @@ export function AdminPage() {
       users={users}
       stops={stops}
       register={register}
+      reviews={reviews}
       error={error}
       onInvite={(email, role) => invite(email, role)}
       onSetRole={(userId, role) => setRole(userId, role)}
+      onOpenReview={(reviewId) => api.adminReview(reviewId)}
+      onDecide={(reviewId, decision, reason) => decide(reviewId, decision, reason)}
     />
   );
 }
@@ -166,13 +206,30 @@ export interface AdminViewProps {
   readonly users: readonly AdminUser[] | null;
   readonly stops: readonly AdminStop[] | null;
   readonly register: readonly AdminRegisterEntry[] | null;
+  readonly reviews: readonly AdminReview[] | null;
   readonly error: string | null;
   /** Löser ut med beskedet att visa; kastar serverns fel, som vyn översätter till klarspråk. */
   readonly onInvite: (email: string, role: Role) => Promise<string>;
   readonly onSetRole: (userId: string, role: Role) => Promise<string>;
+  /** Hämtar ETT ärende med dess kod. Anropas först när någon har bett om att få läsa det. */
+  readonly onOpenReview: (reviewId: string) => Promise<{ review: AdminReview; files: SourceFiles }>;
+  /** Löser ut med beskedet att visa. `reason` krävs för ett nej — servern avvisar annars. */
+  readonly onDecide: (reviewId: string, decision: 'godkand' | 'avvisad', reason?: string) => Promise<string>;
 }
 
-export function AdminView({ overview, apps, users, stops, register, error, onInvite, onSetRole }: AdminViewProps) {
+export function AdminView({
+  overview,
+  apps,
+  users,
+  stops,
+  register,
+  reviews,
+  error,
+  onInvite,
+  onSetRole,
+  onOpenReview,
+  onDecide,
+}: AdminViewProps) {
   return (
     <div className="page page-admin">
       <h1>{ADMIN_TITLE}</h1>
@@ -182,7 +239,12 @@ export function AdminView({ overview, apps, users, stops, register, error, onInv
         <p className="notice notice-error" role="alert">
           {error}
         </p>
-      ) : overview === null || apps === null || users === null || stops === null || register === null ? (
+      ) : overview === null ||
+        apps === null ||
+        users === null ||
+        stops === null ||
+        register === null ||
+        reviews === null ? (
         <p className="muted" aria-live="polite">
           {ADMIN_LOADING}
         </p>
@@ -218,6 +280,8 @@ export function AdminView({ overview, apps, users, stops, register, error, onInv
           <StopsSection stops={stops} />
 
           <RegisterSection register={register} />
+
+          <ReviewsSection reviews={reviews} onOpenReview={onOpenReview} onDecide={onDecide} />
         </>
       )}
     </div>
@@ -362,6 +426,330 @@ function RegisterTable({ register }: { register: readonly AdminRegisterEntry[] }
         </tbody>
       </table>
     </div>
+  );
+}
+
+/**
+ * Kontrollrummets sjätte del: granskningskön.
+ *
+ * Skillnaden mot de andra delarna är att den här ytan väntar på ett BESLUT. Tills det är fattat
+ * ligger appen stilla och ägaren väntar, så kön står med äldsta ärendet först och nivån ur
+ * AI-registret syns innan koden öppnas — en app vars känslighet ingen kunnat avgöra är inte samma
+ * sak att släppa ut som en prövad app.
+ *
+ * Koden hämtas ett ärende i taget, aldrig med kön: att öppna kontrollrummet ska inte innebära att
+ * varje apps innehåll läses ur databasen.
+ */
+function ReviewsSection({
+  reviews,
+  onOpenReview,
+  onDecide,
+}: {
+  reviews: readonly AdminReview[];
+  onOpenReview: AdminViewProps['onOpenReview'];
+  onDecide: AdminViewProps['onDecide'];
+}) {
+  const [open, setOpen] = useState<{ review: AdminReview; files: SourceFiles } | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
+  const [deciding, setDeciding] = useState(false);
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function openCase(reviewId: string) {
+    setOpening(reviewId);
+    setError(null);
+    setResult(null);
+    try {
+      const opened = await onOpenReview(reviewId);
+      // Rutan töms när ett NYTT ärende öppnas: ett skäl hör till den app det skrevs om.
+      setReason('');
+      setOpen(opened);
+    } catch (caught) {
+      setOpen(null);
+      setError(reviewErrorMessage(caught));
+    } finally {
+      setOpening(null);
+    }
+  }
+
+  async function decide(reviewId: string, decision: 'godkand' | 'avvisad') {
+    if (deciding) return;
+    if (decision === 'avvisad') {
+      const checked = validateReviewReason(reason);
+      if (!checked.ok) {
+        // Skälet prövas innan anropet går iväg: ett nej utan skäl lämnar ägaren utan något att
+        // göra åt saken, och det ska granskaren få veta här och inte av ett felmeddelande.
+        setError(checked.message);
+        return;
+      }
+      await send(reviewId, 'avvisad', checked.reason);
+      return;
+    }
+    await send(reviewId, 'godkand');
+  }
+
+  async function send(reviewId: string, decision: 'godkand' | 'avvisad', text?: string) {
+    setDeciding(true);
+    setError(null);
+    try {
+      const message = await onDecide(reviewId, decision, text);
+      // Ärendet är avgjort: ytan med koden stängs, så att ingen läser vidare i något som redan
+      // gått ut eller redan fått nej.
+      setOpen(null);
+      setReason('');
+      setResult(message);
+    } catch (caught) {
+      setError(reviewErrorMessage(caught));
+    } finally {
+      setDeciding(false);
+    }
+  }
+
+  return (
+    <section className="admin-block" aria-labelledby="admin-reviews-heading">
+      <h2 id="admin-reviews-heading">{ADMIN_REVIEWS_HEADING}</h2>
+      <p className="hint">{ADMIN_REVIEWS_LEAD}</p>
+
+      {error !== null && (
+        <p className="notice notice-error" role="alert">
+          {error}
+        </p>
+      )}
+      <p className="status-line" aria-live="polite">
+        {result ?? ''}
+      </p>
+
+      {reviews.length === 0 ? (
+        <p className="muted">{ADMIN_REVIEWS_EMPTY}</p>
+      ) : (
+        <ReviewQueue
+          reviews={reviews}
+          openId={open?.review.reviewId ?? null}
+          opening={opening}
+          busy={deciding}
+          onOpen={(reviewId) => void openCase(reviewId)}
+        />
+      )}
+
+      {open !== null && (
+        <ReviewCase
+          review={open.review}
+          files={open.files}
+          reason={reason}
+          deciding={deciding}
+          onReasonChange={setReason}
+          onDecide={(decision) => void decide(open.review.reviewId, decision)}
+          onClose={() => {
+            setOpen(null);
+            setError(null);
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+/**
+ * Kön. Ren läsning så när som på knappen som öppnar ett ärende — och knappen leder inte in i
+ * appen, den hämtar koden hit. Appens namn är radens rubrik, och bara början av app-id:t står
+ * där, precis som i applistan och registret.
+ */
+function ReviewQueue({
+  reviews,
+  openId,
+  opening,
+  busy,
+  onOpen,
+}: {
+  reviews: readonly AdminReview[];
+  openId: string | null;
+  opening: string | null;
+  busy: boolean;
+  onOpen: (reviewId: string) => void;
+}) {
+  return (
+    <div className="admin-table-scroll" role="region" aria-label={ADMIN_REVIEWS_HEADING} tabIndex={0}>
+      <table className="admin-table admin-reviews">
+        <caption className="visually-hidden">Appar som väntar på granskning, den som begärdes först överst</caption>
+        <thead>
+          <tr>
+            <th scope="col">{ADMIN_REVIEWS_COLUMNS.app}</th>
+            <th scope="col">{ADMIN_REVIEWS_COLUMNS.owner}</th>
+            <th scope="col">{ADMIN_REVIEWS_COLUMNS.requested}</th>
+            <th scope="col">{ADMIN_REVIEWS_COLUMNS.level}</th>
+            <th scope="col">{ADMIN_REVIEWS_COLUMNS.source}</th>
+            <th scope="col">{ADMIN_REVIEWS_COLUMNS.open}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {reviews.map((review) => {
+            const level = classificationText(review.classification);
+            const source = classificationSourceText(review.classificationSource);
+            return (
+              <tr key={review.reviewId}>
+                <th scope="row" className="admin-app">
+                  <span className="admin-app-name">{review.name}</span>
+                  {/* Bara början av adressen — och som text, aldrig som länk. */}
+                  <span className="admin-prefix">Börjar med {review.appIdPrefix}</span>
+                </th>
+                <td>{review.ownerEmail ?? <span className="muted">{ADMIN_OWNER_MISSING}</span>}</td>
+                <td>{formatUpdated(review.requestedAt) || ADMIN_DATE_UNKNOWN}</td>
+                <td>
+                  <span className="badge">{level.label}</span>
+                </td>
+                {/* Källan står i klartext i varje rad: skillnaden mellan en gjord bedömning och
+                    en som inte gick att göra är hela skälet till att nivån visas här. */}
+                <td>{source.label}</td>
+                <td>
+                  <button
+                    type="button"
+                    className="button button-small"
+                    disabled={busy || opening !== null || review.reviewId === openId}
+                    onClick={() => onOpen(review.reviewId)}
+                  >
+                    {opening === review.reviewId ? ADMIN_REVIEW_OPENING : ADMIN_REVIEW_OPEN_BUTTON}
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * Ett öppnat ärende, med appens källkod.
+ *
+ * Det här är den ENDA platsen i hela kontrollrummet där innehållet i någons app visas. Applistan,
+ * stopplistan och registret svarar alla på att appar finns — aldrig på vad som står i dem, just
+ * därför att ett önskemål eller en rad kod kan bära personuppgifter. Undantaget är inte en glipa
+ * i den regeln, det är vad granskningen ÄR: en människa läser koden och avgör om den får gå ut.
+ * Därför står den också här, i kön där beslutet fattas, och ingen annanstans.
+ *
+ * Koden visas som text. Den körs aldrig, och inget av den tolkas som märkspråk — React skriver ut
+ * den som innehåll, inte som HTML.
+ */
+export function ReviewCase({
+  review,
+  files,
+  reason,
+  deciding,
+  onReasonChange,
+  onDecide,
+  onClose,
+}: {
+  review: AdminReview;
+  files: SourceFiles;
+  reason: string;
+  deciding: boolean;
+  onReasonChange: (value: string) => void;
+  onDecide: (decision: 'godkand' | 'avvisad') => void;
+  onClose: () => void;
+}) {
+  const paths = Object.keys(files).sort();
+  const level = classificationText(review.classification);
+  const source = classificationSourceText(review.classificationSource);
+  return (
+    <div className="admin-review-case admin-block">
+      <h3>{ADMIN_REVIEW_CODE_HEADING}</h3>
+      <p>
+        <span className="admin-app-name">{review.name}</span> <span className="badge">{level.label}</span>{' '}
+        <span className="admin-note">{source.label}</span>
+      </p>
+      <p className="hint">{ADMIN_REVIEW_CODE_NOTE}</p>
+
+      {paths.length === 0 ? (
+        <p className="notice notice-error" role="alert">
+          {ADMIN_REVIEW_NO_FILES}
+        </p>
+      ) : (
+        <>
+          {paths.map((path) => (
+            <details className="job-details" key={path} open>
+              <summary>{path}</summary>
+              <pre>
+                <code>{files[path]}</code>
+              </pre>
+            </details>
+          ))}
+
+          <ReviewDecision
+            reason={reason}
+            deciding={deciding}
+            onReasonChange={onReasonChange}
+            onDecide={onDecide}
+          />
+        </>
+      )}
+
+      <div className="form-actions">
+        <button type="button" className="button button-small" onClick={onClose} disabled={deciding}>
+          {ADMIN_REVIEW_CLOSE_BUTTON}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Besluten. Skälet står ovanför knapparna och upplysningen om att ägaren får det ordagrant står
+ * ovanför rutan: den som skriver ska veta vart texten tar vägen INNAN hon skriver den, inte efter
+ * att hon skickat. Av samma skäl står det vid godkännandet att appen publiceras direkt.
+ */
+function ReviewDecision({
+  reason,
+  deciding,
+  onReasonChange,
+  onDecide,
+}: {
+  reason: string;
+  deciding: boolean;
+  onReasonChange: (value: string) => void;
+  onDecide: (decision: 'godkand' | 'avvisad') => void;
+}) {
+  const reasonId = useId();
+  const noteId = useId();
+  return (
+    <form
+      className="admin-review-decision"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onDecide('avvisad');
+      }}
+    >
+      <label className="field-label" htmlFor={reasonId}>
+        {ADMIN_REVIEW_REASON_LABEL}
+      </label>
+      <p id={noteId} className="hint">
+        {ADMIN_REVIEW_REASON_NOTE}
+      </p>
+      <textarea
+        id={reasonId}
+        className="wish-text"
+        rows={3}
+        value={reason}
+        aria-describedby={noteId}
+        disabled={deciding}
+        onChange={(event) => onReasonChange(event.target.value)}
+      />
+      <p className="hint">{ADMIN_REVIEW_APPROVE_NOTE}</p>
+      <div className="form-actions">
+        <button
+          type="button"
+          className="button button-primary"
+          disabled={deciding}
+          onClick={() => onDecide('godkand')}
+        >
+          {deciding ? ADMIN_REVIEW_DECIDING : ADMIN_REVIEW_APPROVE_BUTTON}
+        </button>
+        <button type="submit" className="button" disabled={deciding}>
+          {deciding ? ADMIN_REVIEW_DECIDING : ADMIN_REVIEW_REJECT_BUTTON}
+        </button>
+      </div>
+    </form>
   );
 }
 

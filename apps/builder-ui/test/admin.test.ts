@@ -10,6 +10,9 @@ import {
   CLASSIFICATIONS,
   CLASSIFICATION_SOURCES,
   REDLINE_CATEGORIES,
+  REVIEW_LIMITS,
+  REVIEW_STATES,
+  type AdminReview,
   type AdminStop,
   type AdminUser,
   type RedlineCategory,
@@ -51,6 +54,21 @@ import {
   statusOf,
   validateInviteEmail,
   withUser,
+  ADMIN_REVIEWS_EMPTY,
+  ADMIN_REVIEWS_LEAD,
+  ADMIN_REVIEW_ALREADY_DECIDED,
+  ADMIN_REVIEW_APPROVE_NOTE,
+  ADMIN_REVIEW_CODE_NOTE,
+  ADMIN_REVIEW_FORBIDDEN,
+  ADMIN_REVIEW_GONE,
+  ADMIN_REVIEW_NO_FILES,
+  ADMIN_REVIEW_REASON_MISSING,
+  ADMIN_REVIEW_REASON_NOTE,
+  ADMIN_REVIEW_REASON_TOO_LONG,
+  reviewApprovedMessage,
+  reviewErrorMessage,
+  reviewRejectedMessage,
+  validateReviewReason,
   type ClassificationText,
   type RedlineText,
 } from '../src/admin.ts';
@@ -471,5 +489,142 @@ describe('AI-registrets egna texter', () => {
     expect(ADMIN_REGISTER_COLUMNS.level).toMatch(/[Nn]ivå/);
     expect(ADMIN_REGISTER_COLUMNS.source).toMatch(/[Hh]ur/);
     expect(new Set(Object.values(ADMIN_REGISTER_COLUMNS)).size).toBe(Object.keys(ADMIN_REGISTER_COLUMNS).length);
+  });
+});
+
+/**
+ * Granskningens rena logik och dess texter.
+ *
+ * Det som låses här är skälet. Ett nej utan skäl lämnar ägaren med ett avslag hon inte kan göra
+ * något åt, så rutan prövas i vyn också — inte bara av servern — och blanktecken räknas inte som
+ * ett skäl. Och texterna ska säga tre saker rakt ut: att ägaren får skälet ordagrant, att ett
+ * godkännande publicerar direkt, och varför just den här ytan visar appens kod när ingen annan
+ * del av kontrollrummet gör det.
+ */
+describe('skälet när en app avvisas', () => {
+  it('en tom ruta är inget skäl, och beskedet säger varför det behövs', () => {
+    const checked = validateReviewReason('');
+    expect(checked.ok).toBe(false);
+    expect(checked.message).toBe(ADMIN_REVIEW_REASON_MISSING);
+    expect(ADMIN_REVIEW_REASON_MISSING, 'säg vart texten tar vägen').toMatch(/ordagrant/);
+  });
+
+  it('bara blanktecken räknas inte heller — det vore ett tomt besked till ägaren', () => {
+    expect(validateReviewReason('   \n\t ').ok).toBe(false);
+  });
+
+  it('ett skäl med text går igenom, och blanktecken i kanterna följer inte med', () => {
+    const checked = validateReviewReason('  Ta bort personnumret ur formuläret.  ');
+    expect(checked.ok).toBe(true);
+    expect(checked.reason).toBe('Ta bort personnumret ur formuläret.');
+    expect(checked.message).toBe('');
+  });
+
+  it('ett skäl som är längre än kontraktets tak stoppas här, inte av servern', () => {
+    const checked = validateReviewReason('a'.repeat(REVIEW_LIMITS.maxReasonChars + 1));
+    expect(checked.ok).toBe(false);
+    expect(checked.message).toBe(ADMIN_REVIEW_REASON_TOO_LONG);
+    expect(validateReviewReason('a'.repeat(REVIEW_LIMITS.maxReasonChars)).ok).toBe(true);
+  });
+});
+
+describe('reviewErrorMessage', () => {
+  it('403 betyder att behörigheten tagits bort mitt i sessionen — inget är trasigt', () => {
+    expect(reviewErrorMessage(new ApiError(403, 'Du har inte behörighet att göra det här.'))).toBe(
+      ADMIN_REVIEW_FORBIDDEN,
+    );
+    expect(ADMIN_REVIEW_FORBIDDEN).toMatch(/[Ll]adda om/);
+    expect(ADMIN_REVIEW_FORBIDDEN).not.toMatch(/403|forbidden|http/i);
+  });
+
+  it('404 och 409 säger att ärendet inte är öppet längre, inte att något gått sönder', () => {
+    expect(reviewErrorMessage(new ApiError(404, 'finns inte'))).toBe(ADMIN_REVIEW_GONE);
+    expect(reviewErrorMessage(new ApiError(409, 'Ärendet är redan avgjort.'))).toBe(ADMIN_REVIEW_ALREADY_DECIDED);
+    for (const text of [ADMIN_REVIEW_GONE, ADMIN_REVIEW_ALREADY_DECIDED]) {
+      expect(text).not.toMatch(/fel|trasig|misslyckades/i);
+    }
+    expect(ADMIN_REVIEW_ALREADY_DECIDED, 'säg vad som kan ha hänt').toMatch(/byggde om|någon annan/i);
+  });
+
+  it('400 är serverns eget klarspråk — den vet vilket av två fall det är', () => {
+    const own = new ApiError(400, 'Du kan inte granska din egen app. Be en annan administratör göra det.');
+    expect(reviewErrorMessage(own)).toBe(own.message);
+  });
+
+  it('något som inte är ett API-fel blir den allmänna meningen', () => {
+    expect(reviewErrorMessage(new Error('trasig'))).toMatch(/Något gick fel/);
+  });
+});
+
+describe('granskningens texter', () => {
+  const REVIEW: AdminReview = {
+    reviewId: 'a'.repeat(32),
+    appIdPrefix: '01jabcde',
+    name: 'Bokning av mötesrum',
+    ownerEmail: 'anna@example.se',
+    classification: 'personuppgift',
+    classificationSource: 'signalord',
+    state: 'vantar',
+    requestedAt: '2026-09-21T09:00:00Z',
+    decidedAt: null,
+    reason: null,
+  };
+
+  it('inledningen säger att en människa läser koden, och att ägaren väntar under tiden', () => {
+    expect(ADMIN_REVIEWS_LEAD).toMatch(/läser koden/);
+    expect(ADMIN_REVIEWS_LEAD, 'ägaren publicerar inte själv').toMatch(/begär/);
+    expect(ADMIN_REVIEWS_LEAD, 'kön har en ordning och den ska sägas').toMatch(/[Ää]ldsta/);
+    expect(ADMIN_REVIEWS_LEAD, 'det kostar någon annan tid att låta ett ärende ligga').toMatch(/väntar/);
+  });
+
+  it('tom kö är en god nyhet, inte ett fel eller en tom yta', () => {
+    expect(ADMIN_REVIEWS_EMPTY).toMatch(/[Ii]ngenting väntar/);
+    expect(ADMIN_REVIEWS_EMPTY).not.toMatch(/fel|trasig|kunde inte|tyvärr/i);
+  });
+
+  it('vid koden står varför just den ytan visar det kontrollrummet annars aldrig visar', () => {
+    expect(ADMIN_REVIEW_CODE_NOTE).toMatch(/enda stället/);
+    expect(ADMIN_REVIEW_CODE_NOTE, 'det är vad granskningen ÄR').toMatch(/läser koden/);
+    expect(ADMIN_REVIEW_CODE_NOTE, 'versionen är ägarens, inte den senast byggda').toMatch(/version/);
+  });
+
+  it('vid rutan står att ägaren får skälet ordagrant — innan någon skriver i den', () => {
+    expect(ADMIN_REVIEW_REASON_NOTE).toMatch(/ordagrant/);
+    expect(ADMIN_REVIEW_REASON_NOTE).toMatch(/[Ää]garen/);
+  });
+
+  it('vid godkännandet står att appen publiceras direkt, i den lästa versionen', () => {
+    expect(ADMIN_REVIEW_APPROVE_NOTE).toMatch(/publiceras/);
+    expect(ADMIN_REVIEW_APPROVE_NOTE).toMatch(/läst/);
+  });
+
+  it('ett ärende utan kod ska inte avgöras, och texten säger det rakt ut', () => {
+    expect(ADMIN_REVIEW_NO_FILES).toMatch(/[Aa]vgör det inte/);
+    expect(ADMIN_REVIEW_NO_FILES).toMatch(/bygga om/);
+  });
+
+  it('beskeden efter ett beslut säger vad som hände med appen, och namnger den', () => {
+    expect(reviewApprovedMessage(REVIEW)).toContain(REVIEW.name);
+    expect(reviewApprovedMessage(REVIEW)).toMatch(/publicerad/);
+    expect(reviewRejectedMessage(REVIEW)).toContain(REVIEW.name);
+    expect(reviewRejectedMessage(REVIEW), 'ägaren får veta, och får skälet som det skrevs').toMatch(/ordagrant/);
+  });
+
+  it('ingen av texterna smiter undan med kontraktets maskintext', () => {
+    const texts = [
+      ADMIN_REVIEWS_LEAD,
+      ADMIN_REVIEWS_EMPTY,
+      ADMIN_REVIEW_CODE_NOTE,
+      ADMIN_REVIEW_REASON_NOTE,
+      ADMIN_REVIEW_APPROVE_NOTE,
+      ADMIN_REVIEW_NO_FILES,
+      ADMIN_REVIEW_REASON_MISSING,
+      ADMIN_REVIEW_ALREADY_DECIDED,
+      ADMIN_REVIEW_GONE,
+    ].join(' ');
+    for (const state of REVIEW_STATES) {
+      expect(texts, `maskintexten ${state} hör inte hemma i vyn`).not.toContain(state);
+    }
+    expect(texts).not.toMatch(/\b(?:API|endpoint|JSON|HTTP|reviewId)\b/i);
   });
 });

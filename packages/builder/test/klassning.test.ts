@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { ADMIN_APP_ID_PREFIX_LENGTH, STRICTEST_CLASSIFICATION } from '@vibesandbox/contracts';
 import type { Classification, ClassificationSource, Identity, RedlineCategory } from '@vibesandbox/contracts';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ADAM, ANNA, VERA, anropa, api, nyApp, skapaMiljo, skicka, vantaPaJobb } from './hjalp.ts';
+import { ADAM, ANNA, VERA, anropa, api, nyApp, publiceraViaGranskning, skapaMiljo, skicka, vantaPaJobb } from './hjalp.ts';
 import type { Miljo } from './hjalp.ts';
 
 const REGISTER = api('/admin/register');
@@ -305,8 +305,7 @@ describe('appens klass höjs men sänks aldrig', () => {
 
 describe('AI-registret i kontrollrummet', () => {
   async function publicera(appId: string): Promise<void> {
-    const svar = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/publish`));
-    expect(svar.status).toBe(200);
+    await publiceraViaGranskning(m.builder, appId);
   }
 
   it('administratören får varje app med klass, källa, ägarens adress och om den är publicerad', async () => {

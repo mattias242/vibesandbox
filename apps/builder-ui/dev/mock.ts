@@ -32,13 +32,18 @@ import {
   type AdminOverview,
   type AgentEvent,
   type AppServiceName,
-  type ApiErrorBody,
   type ApiErrorCode,
   type BuilderAppDetail,
   type BuilderJob,
+  type AdminRegisterEntry,
+  type AdminReview,
   type BuilderMessage,
+  type Classification,
+  type ClassificationSource,
   type RedlineCategory,
+  type ReviewState,
   type Role,
+  type SourceFiles,
 } from '@vibesandbox/contracts';
 
 export const MOCK_MARKER = 'vibesandbox-builder-ui-mock';
@@ -53,6 +58,10 @@ interface MockApp {
   publishedVersion: number;
   messages: BuilderMessage[];
   job?: { jobId: string };
+  /** Senaste granskningsärendet. Ägaren publicerar inte själv — hon begär, och någon läser. */
+  review?: { reviewId: string; state: ReviewState; requestedAt: string; decidedAt: string | null; reason: string | null };
+  classification: Classification;
+  classificationSource: ClassificationSource;
   /** Adress → medlems-id för dem appen delats med. Ägaren läggs till i svaret. */
   members: Map<string, string>;
 }
@@ -201,6 +210,65 @@ function adminRows(): AdminApp[] {
   return [...own, ...ADMIN_DEMO_APPS].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+/**
+ * AI-registret och granskningskön för utvecklingsläget. Demoraderna ovanför har ingen nivå — de är
+ * `AdminApp`, inte hela appar — så registret blandar dem (som oklassade, alltså strängast) med de
+ * appar man själv bygger under körningen.
+ */
+function adminRegister(): AdminRegisterEntry[] {
+  const egna: AdminRegisterEntry[] = [...apps.values()].map((app) => ({
+    appIdPrefix: app.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: app.name,
+    ownerEmail: 'anna@example.se',
+    classification: app.classification,
+    source: app.classificationSource,
+    classifiedAt: app.classificationSource === 'fail-closed' ? null : app.updatedAt,
+    published: app.published,
+  }));
+  const demo: AdminRegisterEntry[] = ADMIN_DEMO_APPS.map((rad, i) => ({
+    appIdPrefix: rad.appIdPrefix,
+    name: rad.name,
+    ownerEmail: rad.ownerEmail,
+    classification: (['intern', 'personuppgift', 'oppen', 'kanslig'] as const)[i % 4] ?? 'kanslig',
+    source: (['modell', 'signalord', 'modell', 'fail-closed'] as const)[i % 4] ?? 'fail-closed',
+    classifiedAt: i % 4 === 3 ? null : rad.updatedAt,
+    published: rad.published,
+  }));
+  return [...egna, ...demo];
+}
+
+/** Ett ärende som kön visar det — aldrig med koden. Den hämtas ett ärende i taget. */
+function reviewRow(app: MockApp): AdminReview {
+  const review = app.review;
+  return {
+    reviewId: review?.reviewId ?? '',
+    appIdPrefix: app.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: app.name,
+    ownerEmail: 'anna@example.se',
+    classification: app.classification,
+    classificationSource: app.classificationSource,
+    state: review?.state ?? 'vantar',
+    requestedAt: review?.requestedAt ?? now(),
+    decidedAt: review?.decidedAt ?? null,
+    reason: review?.reason ?? null,
+  };
+}
+
+function adminReviews(): AdminReview[] {
+  return [...apps.values()]
+    .filter((app) => app.review?.state === 'vantar')
+    .sort((a, b) => (a.review?.requestedAt ?? '').localeCompare(b.review?.requestedAt ?? ''))
+    .map(reviewRow);
+}
+
+/** Koden granskaren läser. Attrappen bygger ingenting, så den hittar på något som ser ut som en app. */
+function mockFiles(app: MockApp): SourceFiles {
+  return {
+    'src/App.tsx': `export function App() {\n  return <h1>${app.name}</h1>;\n}\n`,
+    'src/main.tsx': "import { createRoot } from 'react-dom/client';\nimport { App } from './App.tsx';\n\ncreateRoot(document.getElementById('root')!).render(<App />);\n",
+  };
+}
+
 function adminOverview(): AdminOverview {
   const rows = adminRows();
   const tokens = rows.reduce(
@@ -279,8 +347,13 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-function fail(res: ServerResponse, status: number, code: ApiErrorCode, message: string): void {
-  const body: ApiErrorBody = { error: { code, message } };
+/**
+ * `conflict` finns bara i byggverktyget, inte i kontraktet (se `BuilderErrorCode` i
+ * packages/builder/src/svar.ts). Attrappen ska svara som den riktiga rutten gör, alltså också
+ * med den koden — därför den vidgade typen här.
+ */
+function fail(res: ServerResponse, status: number, code: ApiErrorCode | 'conflict', message: string): void {
+  const body = { error: { code, message } } satisfies { error: { code: string; message: string } };
   send(res, status, body);
 }
 
@@ -346,7 +419,44 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       if (path === '/admin/stopp') {
         return send(res, 200, { stops: process.env['ADMIN_INGA_STOPP'] === '1' ? [] : adminStops });
       }
+      if (path === '/admin/register') return send(res, 200, { entries: adminRegister() });
+      if (path === '/admin/granskning') return send(res, 200, { reviews: adminReviews() });
+      // Ett enskilt ärende MED koden. Enda stället i kontrollrummet där en apps innehåll visas —
+      // granskningen ÄR att någon läser koden.
+      const arende = path.startsWith('/admin/granskning/') ? path.slice('/admin/granskning/'.length) : null;
+      if (arende !== null && arende.length > 0) {
+        const trad = [...apps.values()].find((a) => a.review?.reviewId === arende && a.review.state === 'vantar');
+        if (trad === undefined) return fail(res, 404, 'not_found', 'Det finns inte.');
+        return send(res, 200, { review: reviewRow(trad), files: mockFiles(trad) });
+      }
       return fail(res, 404, 'not_found', 'Det finns inte.');
+    }
+    // Beslutet. Godkänt publicerar appen; ett nej kräver ett skäl, som går ordagrant till ägaren.
+    if (method === 'POST' && path.startsWith('/admin/granskning/')) {
+      const reviewId = path.slice('/admin/granskning/'.length);
+      const trad = [...apps.values()].find((a) => a.review?.reviewId === reviewId && a.review.state === 'vantar');
+      if (trad === undefined || trad.review === undefined) return fail(res, 404, 'not_found', 'Det finns inte.');
+      const body = await readJson(req);
+      const decision = body['decision'];
+      if (decision !== 'godkand' && decision !== 'avvisad') {
+        return fail(res, 400, 'invalid_request', 'Ange om appen godkänns eller avvisas.');
+      }
+      const reason = typeof body['reason'] === 'string' ? body['reason'].trim() : '';
+      if (decision === 'avvisad' && reason === '') {
+        return fail(res, 400, 'invalid_request', 'Skriv varför appen inte kan publiceras. Ägaren får skälet ordagrant.');
+      }
+      trad.review = { ...trad.review, state: decision, decidedAt: now(), reason: decision === 'avvisad' ? reason : null };
+      if (decision === 'godkand') {
+        trad.published = true;
+        trad.publishedVersion = trad.draftVersion;
+      }
+      trad.messages.push({
+        role: 'assistant',
+        text: decision === 'godkand' ? 'Granskad och godkänd — appen är publicerad och går att dela.' : `Granskningen säger nej, och så här står det: ${reason}`,
+        createdAt: now(),
+      });
+      trad.updatedAt = now();
+      return send(res, 200, { review: reviewRow(trad) });
     }
     if (method === 'POST' && path === '/admin/anvandare') {
       const body = await readJson(req);
@@ -402,6 +512,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         draftVersion: 0,
         publishedVersion: 0,
         messages: [],
+        // Oklassad tills ett önskemål beskrivits: läses som den strängaste nivån, precis som i
+        // den riktiga plattformen.
+        classification: 'kanslig',
+        classificationSource: 'fail-closed',
         members: new Map(),
       });
       return send(res, 201, { appId });
@@ -466,11 +580,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (action === 'publish' && method === 'POST') {
-    if (!app.hasDraft) return fail(res, 409, 'scope_mismatch', 'Det finns inget färdigt utkast att publicera.');
-    app.published = true;
-    app.publishedVersion = app.draftVersion;
+    if (!app.hasDraft) return fail(res, 409, 'conflict', 'Det finns inget färdigt utkast att publicera.');
+    if (app.review?.state === 'vantar') {
+      return fail(res, 409, 'conflict', 'Appen väntar redan på granskning. Du får besked så snart någon har tittat på den.');
+    }
+    // Ägaren publicerar inte — hon begär. Det är en granskare som släpper ut appen.
+    app.review = { reviewId: newId('g'), state: 'vantar', requestedAt: now(), decidedAt: null, reason: null };
     app.updatedAt = now();
-    return send(res, 200, { publishedUrl: `${origin(req)}/_mock/published/${app.appId}` });
+    return send(res, 202, { review: { state: 'vantar', requestedAt: app.review.requestedAt } });
   }
 
   if (action === 'open' && method === 'GET') {

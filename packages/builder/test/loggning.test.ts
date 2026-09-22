@@ -2,7 +2,7 @@
  * Driftloggen får aldrig innehålla meddelandetext, källkod, e-postadresser eller hela app-id:n.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ANNA, anropa, api, lyckadTur, misslyckadTur, nyApp, skapaMiljo, skicka, vantaPaJobb } from './hjalp.ts';
+import { ANNA, anropa, api, lyckadTur, misslyckadTur, nyApp, publiceraViaGranskning, skapaMiljo, skicka, vantaPaJobb } from './hjalp.ts';
 import type { Miljo } from './hjalp.ts';
 
 let m: Miljo;
@@ -29,7 +29,9 @@ describe('loggning', () => {
     await vantaPaJobb(m.builder, await skicka(m.builder, appId, HEMLIG_TEXT));
     await vantaPaJobb(m.builder, await skicka(m.builder, appId, HEMLIG_TEXT));
     await vantaPaJobb(m.builder, await skicka(m.builder, appId, HEMLIG_TEXT));
-    await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/publish`));
+    // Publiceringen går via granskningen: ägaren begär, en administratör godkänner. Båda stegen
+    // loggas, och ingetdera får bära en adress eller granskarens skäl.
+    await publiceraViaGranskning(m.builder, appId);
     await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/share`), { body: { email: VANNENS_ADRESS } });
     await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/share`), { body: { email: 'inte giltig HEMLIS' } });
     m.inbjudningar.invite = async () => {

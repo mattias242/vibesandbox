@@ -13,7 +13,9 @@ import {
   ADMIN_TOKEN_WINDOW_DAYS,
   CLASSIFICATION_SOURCES,
   REDLINE_CATEGORIES,
+  REVIEW_LIMITS,
   asClassification,
+  type AdminReview,
   type AdminStop,
   type AdminUser,
   type Classification,
@@ -433,4 +435,134 @@ export function classificationText(value: unknown): ClassificationText {
 export function classificationSourceText(value: unknown): ClassificationText {
   const known = CLASSIFICATION_SOURCES.includes(value as ClassificationSource);
   return CLASSIFICATION_SOURCE_TEXTS[known ? (value as ClassificationSource) : 'fail-closed'];
+}
+
+// ── Granskning: en människa läser koden innan appen går ut ─────────────────────
+//
+// Kön är kontrollrummets enda del som ber om arbete av den som läser den. De andra delarna
+// svarar på frågor — den här väntar på ett beslut, och tills det är fattat ligger appen stilla.
+//
+// Två saker skiljer den från resten. Nivån ur AI-registret står i kön, inte bara i registret:
+// granskaren ska se om nivån är ett omdöme eller ett misslyckande INNAN hon läser koden, för en
+// app vars känslighet ingen kunnat avgöra är inte samma sak att släppa ut som en prövad app. Och
+// ett öppnat ärende visar appens KOD, vilket ingen annan del av kontrollrummet gör — se
+// `ADMIN_REVIEW_CODE_NOTE`.
+
+export const ADMIN_REVIEWS_HEADING = 'Väntar på granskning';
+
+/** Vad kön är: den sista spärren, och den enda som är en människa. */
+export const ADMIN_REVIEWS_LEAD =
+  'Den som bygger en app publicerar den inte själv — hon begär att den ska publiceras, och någon ' +
+  'läser koden innan den går ut. Tills du har avgjort ett ärende ligger appen stilla, och ägaren ' +
+  'väntar. Äldsta ärendet står först.';
+
+/** Tomt läge. Ingen kö betyder att ingen väntar — det är ett gott läge, inte ett fel. */
+export const ADMIN_REVIEWS_EMPTY = 'Ingenting väntar på granskning just nu. Ingen står och väntar på besked.';
+
+/** Kolumnrubrikerna. Appens namn är radens rubrik, så att en cell hör ihop med rätt app. */
+export const ADMIN_REVIEWS_COLUMNS = {
+  app: 'App',
+  owner: 'Ägare',
+  requested: 'Begärdes',
+  level: 'Nivå',
+  source: 'Hur nivån sattes',
+  open: 'Läs koden',
+} as const;
+
+export const ADMIN_REVIEW_OPEN_BUTTON = 'Läs koden';
+export const ADMIN_REVIEW_OPENING = 'Hämtar koden…';
+export const ADMIN_REVIEW_CLOSE_BUTTON = 'Stäng utan att avgöra';
+
+export const ADMIN_REVIEW_CODE_HEADING = 'Koden som ska granskas';
+
+/**
+ * Sagt vid koden: varför just den här ytan visar det kontrollrummet annars aldrig visar. Utan den
+ * meningen ser undantaget ut som en glipa — det är tvärtom hela poängen med granskningen.
+ */
+export const ADMIN_REVIEW_CODE_NOTE =
+  'Det här är enda stället i kontrollrummet där innehållet i någons app visas, och det är ' +
+  'avsiktligt: granskningen ÄR att någon läser koden. Allt annat här svarar på att appar finns, ' +
+  'aldrig på vad som står i dem. Koden är den version ägaren begärde — bygger hon om medan ' +
+  'ärendet väntar dras det tillbaka, så du läser aldrig kod som redan är ersatt.';
+
+/** Ett ärende utan filer finns inte: då har vyn inget att visa och ingenting att avgöra på. */
+export const ADMIN_REVIEW_NO_FILES =
+  'Det finns ingen kod att läsa i det här ärendet. Avgör det inte — be ägaren bygga om appen.';
+
+export const ADMIN_REVIEW_APPROVE_BUTTON = 'Godkänn och publicera';
+export const ADMIN_REVIEW_REJECT_BUTTON = 'Avvisa';
+export const ADMIN_REVIEW_DECIDING = 'Skickar…';
+
+export const ADMIN_REVIEW_REASON_LABEL = 'Varför kan appen inte publiceras?';
+
+/**
+ * Står FÖRE rutan, inte efter: den som skriver ska veta att texten går vidare ordagrant innan hon
+ * skriver den, inte få veta det när den redan är skickad.
+ */
+export const ADMIN_REVIEW_REASON_NOTE =
+  'Ägaren får det du skriver ordagrant, som ett meddelande i sin app. Skriv vad som behöver ' +
+  'ändras, i vanliga ord — det är det hon har att gå på.';
+
+/** Ett godkännande publicerar. Sagt innan, eftersom knappen inte går att ångra. */
+export const ADMIN_REVIEW_APPROVE_NOTE =
+  'Godkänner du publiceras appen direkt, i exakt den version du har läst.';
+
+export const ADMIN_REVIEW_REASON_MISSING = 'Skriv varför appen inte kan publiceras. Ägaren får skälet ordagrant.';
+
+export const ADMIN_REVIEW_REASON_TOO_LONG = `Skälet är för långt. Håll det till det som behöver åtgärdas — högst ${REVIEW_LIMITS.maxReasonChars} tecken.`;
+
+/** Serverns nej när granskaren äger appen själv. Ett godkännande av sig själv är ingen granskning. */
+export const ADMIN_REVIEW_OWN_APP =
+  'Du kan inte granska din egen app. Be en annan förvaltare läsa den.';
+
+/** Ärendet hann avgöras av någon annan, eller dras tillbaka av ägaren. Inget är trasigt. */
+export const ADMIN_REVIEW_ALREADY_DECIDED =
+  'Ärendet är inte längre öppet. Någon annan hann avgöra det, eller så byggde ägaren om appen. Ladda om sidan så ser du kön som den är nu.';
+
+export const ADMIN_REVIEW_GONE = 'Ärendet finns inte längre. Ladda om sidan så ser du kön som den är nu.';
+
+/** Behörigheten kan ha tagits bort mitt i sessionen. Då är inget trasigt — sidan är bara gammal. */
+export const ADMIN_REVIEW_FORBIDDEN =
+  'Ditt konto får inte längre granska appar. Ladda om sidan så ser du vad du kommer åt.';
+
+/** Beskeden efter ett beslut. De säger vad som HÄNDE, inte att en knapp trycktes. */
+export function reviewApprovedMessage(review: AdminReview): string {
+  return `${review.name} är granskad och publicerad. Ägaren har fått besked.`;
+}
+
+export function reviewRejectedMessage(review: AdminReview): string {
+  return `${review.name} publicerades inte. Ägaren har fått ditt skäl ordagrant.`;
+}
+
+export interface ReviewReasonCheck {
+  readonly ok: boolean;
+  readonly reason: string;
+  readonly message: string;
+}
+
+/**
+ * Skälet prövas här också, inte bara av servern: ett nej utan skäl lämnar ägaren med ett avslag
+ * hon inte kan göra något åt, och det ska hon få veta innan anropet går iväg. Samma regel som i
+ * byggverktyget (`readDecision` i `packages/builder/src/admin.ts`) — blanktecken räknas inte.
+ */
+export function validateReviewReason(input: string): ReviewReasonCheck {
+  const reason = input.trim();
+  if (reason.length === 0) return { ok: false, reason, message: ADMIN_REVIEW_REASON_MISSING };
+  if (reason.length > REVIEW_LIMITS.maxReasonChars) {
+    return { ok: false, reason, message: ADMIN_REVIEW_REASON_TOO_LONG };
+  }
+  return { ok: true, reason, message: '' };
+}
+
+/**
+ * Serverns fel när ett beslut inte gick igenom. 400 betyder här en av två saker — ett skäl som
+ * saknas, eller den egna appen — och servern säger vilket i klarspråk, så dess egen text vinner.
+ */
+export function reviewErrorMessage(error: unknown): string {
+  if (!(error instanceof ApiError)) return errorMessage(error);
+  if (error.status === 403) return ADMIN_REVIEW_FORBIDDEN;
+  if (error.status === 404) return ADMIN_REVIEW_GONE;
+  if (error.status === 409) return ADMIN_REVIEW_ALREADY_DECIDED;
+  if (error.status === 429) return ADMIN_RATE_LIMITED;
+  return error.message;
 }

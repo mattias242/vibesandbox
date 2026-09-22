@@ -18,6 +18,10 @@ export type BuilderLogEvent =
   /** Ett önskemål klassades. Står i loggen för att en fail-closed ska gå att se utan databasen. */
   | 'request_classified'
   | 'jobs_failed_on_startup'
+  /** Ägaren begärde publicering. Ingen app gick ut — en granskare måste säga ja först. */
+  | 'review_requested'
+  /** En granskare avgjorde ett ärende. Beslutet står i `status`; skälet loggas ALDRIG. */
+  | 'review_decided'
   | 'app_published'
   | 'publish_failed'
   | 'app_shared'

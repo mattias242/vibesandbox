@@ -2,7 +2,7 @@
  * Publicera, öppna och dela.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ANNA, anropa, api, misslyckadTur, nyApp, skapaMiljo, skicka, vantaPaJobb } from './hjalp.ts';
+import { ADAM, ANNA, anropa, api, misslyckadTur, nyApp, publiceraViaGranskning, skapaMiljo, skicka, vantaPaJobb } from './hjalp.ts';
 import type { Miljo } from './hjalp.ts';
 
 let m: Miljo;
@@ -21,8 +21,7 @@ async function byggdApp(): Promise<string> {
 
 async function publiceradApp(): Promise<string> {
   const appId = await byggdApp();
-  const svar = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/publish`));
-  expect(svar.status).toBe(200);
+  await publiceraViaGranskning(m.builder, appId);
   return appId;
 }
 
@@ -40,16 +39,14 @@ describe('publicera', () => {
     expect(m.control.anrop).not.toContain('publish');
   });
 
-  it('publicerar senaste gröna revisionen och svarar med den publicerade adressen', async () => {
+  it('granskningen publicerar senaste gröna revisionen, inte det misslyckade försöket', async () => {
     const appId = await byggdApp();
     await vantaPaJobb(m.builder, await skicka(m.builder, appId, 'Byt rubrik'));
     m.agent.turer.push(misslyckadTur());
     await vantaPaJobb(m.builder, await skicka(m.builder, appId, 'Mejla svaren till mig'));
 
     m.tid.ms += 60_000;
-    const svar = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/publish`));
-    expect(svar.status).toBe(200);
-    expect(svar.json).toEqual({ publishedUrl: `https://${appId}.example.org/` });
+    await publiceraViaGranskning(m.builder, appId);
     expect(m.control.publicerade.get(appId)).toBe('version-2');
 
     const detalj = await anropa(m.builder, ANNA, 'GET', api(`/apps/${appId}`));
@@ -71,17 +68,28 @@ describe('publicera', () => {
     expect(detalj.json.publishedUrl).toBe(`https://${appId}.example.org/`);
   });
 
-  it('misslyckas control ⇒ 500 med klarspråk, och appen räknas inte som publicerad', async () => {
+  /**
+   * Publiceringen sker när granskaren säger ja, inte när ägaren begär. Går den fel ska ärendet
+   * stå kvar som VÄNTANDE — ett godkänt ärende för en app som aldrig publicerades vore en lögn i
+   * historiken, och ingen skulle märka att appen inte gick ut.
+   */
+  it('går publiceringen fel vid godkännandet ⇒ klarspråk, appen är opublicerad och ärendet väntar kvar', async () => {
     const appId = await byggdApp();
+    const begaran = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/publish`));
+    expect(begaran.status).toBe(202);
+    const kon = await anropa(m.builder, ADAM, 'GET', api('/admin/granskning'));
+    const reviewId = kon.json.reviews[0].reviewId;
+
     m.control.publish = async () => {
       throw new Error('/srv/data: disk full');
     };
-    const svar = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/publish`));
-    expect(svar.status).toBe(500);
-    expect(svar.json.error.code).toBe('internal');
+    const svar = await anropa(m.builder, ADAM, 'POST', api(`/admin/granskning/${reviewId}`), { body: { decision: 'godkand' } });
+    expect(svar.status).toBe(503);
     expect(svar.text).not.toContain('/srv');
+
     const detalj = await anropa(m.builder, ANNA, 'GET', api(`/apps/${appId}`));
     expect(detalj.json.published).toBe(false);
+    expect(detalj.json.review.state).toBe('vantar');
   });
 });
 
@@ -100,7 +108,7 @@ describe('öppna', () => {
     const appId = await byggdApp();
     const fore = await anropa(m.builder, ANNA, 'GET', api(`/apps/${appId}/open`), { query: { target: 'published' } });
     expect(fore.status).toBe(409);
-    await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/publish`));
+    await publiceraViaGranskning(m.builder, appId);
     const efter = await anropa(m.builder, ANNA, 'GET', api(`/apps/${appId}/open`), { query: { target: 'published' } });
     expect(efter.status).toBe(200);
     expect(efter.json.url).toContain(encodeURIComponent(`https://${appId}.example.org/`));

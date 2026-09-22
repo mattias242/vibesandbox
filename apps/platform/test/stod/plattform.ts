@@ -189,3 +189,39 @@ export async function loggaInMedKod(
   const kod = kodUr(await vantaPaMejl(plattform.utkorg, epost, fore));
   return webblasare.skickaFormular(host, '/_auth/verify', { code: kod }, origin);
 }
+
+/**
+ * Publicerar appen HELA vägen genom plattformen: ägaren begär granskning, och en administratör
+ * läser kön och godkänner.
+ *
+ * Sedan granskningsskivan är det den enda vägen ut. Granskaren skapas här och är aldrig ägaren —
+ * en granskare får inte avgöra sin egen app. Adressen är egen just för att den inte ska krocka
+ * med någon av testets egna personer.
+ */
+export async function publiceraViaGranskning(
+  plattform: Testplattform,
+  appId: string,
+  agare: import('./webblasare.ts').Webblasare,
+): Promise<void> {
+  const { Webblasare } = await import('./webblasare.ts');
+  const begaran = await agare.api(BYGG, 'POST', `/_api/builder/apps/${appId}/publish`, { origin: BYGG_ORIGIN });
+  if (begaran.status !== 202) throw new Error(`kunde inte begära granskning: ${begaran.status} ${begaran.body}`);
+
+  const epost = 'granskaren@example.org';
+  await plattform.platform.addUser(epost, 'admin');
+  const granskare = new Webblasare(plattform.port);
+  const inloggad = await loggaInMedKod(granskare, plattform, BYGG, epost);
+  if (inloggad.status !== 303) throw new Error(`granskaren kunde inte logga in: ${inloggad.status}`);
+
+  const kon = await granskare.api(BYGG, 'GET', '/_api/builder/admin/granskning', { origin: BYGG_ORIGIN });
+  if (kon.status !== 200) throw new Error(`granskningskön gick inte att läsa: ${kon.status} ${kon.body}`);
+  const { reviews } = JSON.parse(kon.body) as { reviews: { reviewId: string; appIdPrefix: string }[] };
+  const arende = reviews.find((r) => appId.startsWith(r.appIdPrefix));
+  if (arende === undefined) throw new Error('appen syns inte i granskningskön.');
+
+  const beslut = await granskare.api(BYGG, 'POST', `/_api/builder/admin/granskning/${arende.reviewId}`, {
+    json: { decision: 'godkand' },
+    origin: BYGG_ORIGIN,
+  });
+  if (beslut.status !== 200) throw new Error(`granskningen gick inte att godkänna: ${beslut.status} ${beslut.body}`);
+}

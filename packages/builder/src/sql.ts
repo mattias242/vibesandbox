@@ -8,7 +8,7 @@
  */
 
 /** Höjs vid varje schemaändring, tillsammans med ett nytt steg i `MIGRATIONS`. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * Steg N tar databasen från schemaversion N till N+1. Nya steg läggs SIST; ett steg som har körts
@@ -143,6 +143,32 @@ export const MIGRATIONS: readonly string[] = [
   UPDATE apps SET name_is_default = 1
   WHERE name_is_default = 0 AND EXISTS (SELECT 1 FROM messages m WHERE m.app_id = apps.app_id);
   `,
+  // 5: granskning före publicering. Ärendet pekar på en VERSION, inte på appen: godkännandet
+  // publicerar exakt den kod som lästes, aldrig det som råkar vara senast byggt när beslutet
+  // fattas. `version_id` är därför inte en främmande nyckel mot revisions — en revision kan
+  // städas bort, och ärendet ska ändå gå att läsa som historik över vad som beslutades.
+  //
+  // Det partiella indexet håller regeln "högst ett väntande ärende per app" i DATABASEN i stället
+  // för i en kontroll som två samtidiga anrop kan hinna förbi.
+  `
+  CREATE TABLE reviews (
+    review_id    TEXT PRIMARY KEY,
+    app_id       TEXT NOT NULL REFERENCES apps (app_id) ON DELETE CASCADE,
+    version_id   TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('vantar', 'godkand', 'avvisad', 'tillbakadragen')),
+    requested_by TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    decided_by   TEXT,
+    decided_at   TEXT,
+    reason       TEXT
+  ) STRICT;
+
+  CREATE UNIQUE INDEX reviews_one_pending_per_app ON reviews (app_id) WHERE state = 'vantar';
+
+  CREATE INDEX reviews_queue ON reviews (state, requested_at);
+
+  CREATE INDEX reviews_by_app ON reviews (app_id, requested_at);
+  `,
 ];
 
 // ── Hemligheter ──────────────────────────────────────────────────────────────────
@@ -217,6 +243,60 @@ export const SET_CLASSIFICATION = `
   UPDATE apps
   SET classification = :classification, classification_source = :source, classified_at = :now
   WHERE app_id = :appId
+`;
+
+// ── Granskning ───────────────────────────────────────────────────────────────────
+
+export const INSERT_REVIEW = `
+  INSERT INTO reviews (review_id, app_id, version_id, state, requested_by, requested_at)
+  VALUES (:reviewId, :appId, :versionId, 'vantar', :requestedBy, :now)
+`;
+
+/** Appens väntande ärende, om det finns ett. Högst ett — se det partiella indexet. */
+export const SELECT_PENDING_REVIEW = `
+  SELECT review_id, version_id, requested_at FROM reviews WHERE app_id = :appId AND state = 'vantar'
+`;
+
+/** Det senaste ärendet för appen, oavsett läge — det ägaren ser i sitt byggverktyg. */
+export const SELECT_LATEST_REVIEW_FOR_APP = `
+  SELECT state, requested_at, decided_at, reason FROM reviews
+  WHERE app_id = :appId
+  ORDER BY requested_at DESC, rowid DESC
+  LIMIT 1
+`;
+
+/**
+ * Drar tillbaka appens väntande ärende. Körs när ett nytt bygge landar: granskaren ska inte läsa
+ * kod som redan är ersatt, och ägaren ska inte tro att någon läser.
+ */
+export const WITHDRAW_PENDING_REVIEW = `
+  UPDATE reviews SET state = 'tillbakadragen', decided_at = :now WHERE app_id = :appId AND state = 'vantar'
+`;
+
+/**
+ * Avgör ett ärende. Villkoret `state = 'vantar'` är låset: två granskare som trycker samtidigt
+ * kan inte båda avgöra, och den andra får veta att ärendet redan är avgjort.
+ */
+export const DECIDE_REVIEW = `
+  UPDATE reviews
+  SET state = :state, decided_by = :decidedBy, decided_at = :now, reason = :reason
+  WHERE review_id = :reviewId AND state = 'vantar'
+`;
+
+/** Ett ärende med allt granskaren behöver, inklusive vilken app och vilken version det gäller. */
+export const SELECT_REVIEW = `
+  SELECT r.review_id AS review_id, r.app_id AS app_id, r.version_id AS version_id, r.state AS state,
+         r.requested_by AS requested_by, r.requested_at AS requested_at,
+         r.decided_by AS decided_by, r.decided_at AS decided_at, r.reason AS reason,
+         a.name AS name, a.name_is_default AS name_is_default, a.owner_user_id AS owner_user_id,
+         a.classification AS classification, a.classification_source AS classification_source
+  FROM reviews r JOIN apps a ON a.app_id = r.app_id
+  WHERE r.review_id = :reviewId
+`;
+
+/** Källkoden som ETT ärende gäller — den granskaren ska läsa. */
+export const SELECT_REVISION_FILES = `
+  SELECT files FROM revisions WHERE app_id = :appId AND version_id = :versionId
 `;
 
 // ── Meddelanden ──────────────────────────────────────────────────────────────────

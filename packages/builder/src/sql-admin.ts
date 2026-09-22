@@ -121,3 +121,20 @@ export const LIST_REGISTER = `
   FROM apps a
   ORDER BY a.updated_at DESC, a.rowid DESC
 `;
+
+/**
+ * Granskningskön: väntande ärenden, ÄLDST först. Ordningen är en kö, inte ett flöde — den som
+ * väntat längst ska bli avgjord först, annars blir ett ärende liggande för att det aldrig syns.
+ *
+ * Inget ägarfilter, samma undantag som resten av filen. Källkoden finns INTE i satsen: kön ska gå
+ * att öppna utan att varje apps källkod läses ur databasen, och koden hämtas för ett ärende i taget.
+ */
+export const LIST_PENDING_REVIEWS = `
+  SELECT r.review_id AS review_id, r.app_id AS app_id, r.state AS state, r.requested_at AS requested_at,
+         a.name AS name, a.name_is_default AS name_is_default, a.owner_user_id AS owner_user_id,
+         a.classification AS classification, a.classification_source AS classification_source
+  FROM reviews r JOIN apps a ON a.app_id = r.app_id
+  WHERE r.state = 'vantar'
+  ORDER BY r.requested_at, r.rowid
+  LIMIT :limit
+`;

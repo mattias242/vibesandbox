@@ -8,7 +8,7 @@ import type { BuilderJob } from '@vibesandbox/contracts';
 import { modellsvar } from './stod/byggkedja.ts';
 import { Webblasare } from './stod/webblasare.ts';
 import type { Svar } from './stod/webblasare.ts';
-import { BYGG, BYGG_ORIGIN, loggaInMedKod, startaPlattform } from './stod/plattform.ts';
+import { BYGG, BYGG_ORIGIN, loggaInMedKod, publiceraViaGranskning, startaPlattform } from './stod/plattform.ts';
 import type { Testplattform } from './stod/plattform.ts';
 
 const TODO_APP = modellsvar('En todo-lista där alla som får öppna appen ser samma uppgifter och kan bocka av dem.', {
@@ -173,8 +173,7 @@ describe('Den riktiga byggkedjan (local) i plattformen', () => {
       expect(css.headers['content-type']).toMatch(/text\/css/);
 
       // Och den går att publicera och öppna på sin riktiga adress.
-      const publicerad = await anna.api(BYGG, 'POST', `/_api/builder/apps/${appId}/publish`, { origin: BYGG_ORIGIN });
-      expect(publicerad.status).toBe(200);
+      await publiceraViaGranskning(plattform, appId, anna);
       const appHost = `${appId}.example.org`;
       await loggaInMedKod(anna, plattform, appHost, 'anna@example.org');
       expect((await anna.skicka(appHost, { path: skript ?? '', headers: { 'Sec-Fetch-Mode': 'no-cors' } })).status).toBe(200);

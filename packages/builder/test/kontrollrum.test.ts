@@ -8,7 +8,7 @@
 import { ADMIN_APP_ID_PREFIX_LENGTH, ADMIN_TOKEN_WINDOW_DAYS } from '@vibesandbox/contracts';
 import type { Identity } from '@vibesandbox/contracts';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ADAM, ANNA, BERTIL, VERA, anropa, api, misslyckadTur, nyApp, skapaMiljo, skicka, vantaPaJobb } from './hjalp.ts';
+import { ADAM, ANNA, BERTIL, VERA, anropa, api, misslyckadTur, nyApp, publiceraViaGranskning, skapaMiljo, skicka, vantaPaJobb } from './hjalp.ts';
 import type { Miljo } from './hjalp.ts';
 
 let m: Miljo;
@@ -33,8 +33,7 @@ async function byggdApp(agare: Identity = ANNA): Promise<string> {
 }
 
 async function publicera(appId: string, agare: Identity = ANNA): Promise<void> {
-  const svar = await anropa(m.builder, agare, 'POST', api(`/apps/${appId}/publish`));
-  expect(svar.status).toBe(200);
+  await publiceraViaGranskning(m.builder, appId, agare);
 }
 
 describe('grinden: bara plattformsrollen admin', () => {

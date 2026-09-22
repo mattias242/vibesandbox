@@ -10,7 +10,7 @@
  * nås aldrig av en skrivande förfrågan utan skyddshuvud och `Origin`, och kontrollerar det inte själv.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ADAM, ANNA, BERTIL, VERA, anropa, api, nyApp, skapaMiljo, skicka, vantaPaJobb } from './hjalp.ts';
+import { ADAM, ANNA, BERTIL, VERA, anropa, api, nyApp, publiceraViaGranskning, skapaMiljo, skicka, vantaPaJobb } from './hjalp.ts';
 import type { Miljo } from './hjalp.ts';
 
 let m: Miljo;
@@ -24,8 +24,8 @@ afterEach(async () => {
 async function publiceradApp(): Promise<string> {
   const appId = await nyApp(m.builder);
   await vantaPaJobb(m.builder, await skicka(m.builder, appId, 'En todo-lista'));
-  const svar = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/publish`));
-  expect(svar.status).toBe(200);
+  // Hela vägen ut: ägaren begär, en administratör godkänner. Ingen genväg förbi granskaren.
+  await publiceraViaGranskning(m.builder, appId);
   return appId;
 }
 

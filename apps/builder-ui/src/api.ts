@@ -11,14 +11,19 @@ import {
   CLASSIFICATION_SOURCES,
   CSRF_HEADER,
   REDLINE_CATEGORIES,
+  REVIEW_STATES,
   asClassification,
   type AdminApp,
   type AdminOverview,
   type AdminRegisterEntry,
+  type AdminReview,
   type AdminStop,
   type AdminUser,
   type ClassificationSource,
   type RedlineCategory,
+  type ReviewDecision,
+  type ReviewState,
+  type SourceFiles,
   type ApiErrorCode,
   type BuilderAppDetail,
   type BuilderAppMember,
@@ -57,7 +62,12 @@ export interface ApiClient {
   getApp(appId: string): Promise<BuilderAppDetail>;
   sendMessage(appId: string, text: string): Promise<{ jobId: string }>;
   getJob(jobId: string, after: number): Promise<BuilderJob>;
-  publish(appId: string): Promise<{ publishedUrl: string }>;
+  /**
+   * Ägaren BEGÄR publicering — hon publicerar inte. Rutten heter fortfarande `publish`, för det är
+   * vad hon vill göra; svaret är ett väntande ärende, inte en adress. Adressen till den
+   * publicerade appen kommer först när en granskare sagt ja, och då genom `getApp`.
+   */
+  requestReview(appId: string): Promise<{ state: 'vantar'; requestedAt: string }>;
   openUrl(appId: string, target: OpenTarget): Promise<string>;
   share(appId: string, email: string): Promise<void>;
   /**
@@ -77,6 +87,15 @@ export interface ApiClient {
   adminStops(): Promise<readonly AdminStop[]>;
   /** Kontrollrummet: AI-registret — varje app med sin känslighetsnivå och hur nivån sattes. */
   adminRegister(): Promise<readonly AdminRegisterEntry[]>;
+  /** Kontrollrummet: granskningskön, äldst först. Aldrig med koden — den hämtas ett ärende i taget. */
+  adminReviews(): Promise<readonly AdminReview[]>;
+  /**
+   * Kontrollrummet: ETT ärende, med källkoden. Det här är det enda anropet i hela kontrollrummet
+   * som ber om innehållet i någons app, och det är avsiktligt: granskningen ÄR att någon läser koden.
+   */
+  adminReview(reviewId: string): Promise<{ review: AdminReview; files: SourceFiles }>;
+  /** Kontrollrummet: granskarens beslut. Ett nej kräver ett skäl — servern avvisar annars med 400. */
+  adminDecide(reviewId: string, decision: ReviewDecision, reason?: string): Promise<AdminReview>;
   /** Kontrollrummet: alla adresser som får logga in, och med vilken roll. */
   adminUsers(): Promise<readonly AdminUser[]>;
   /**
@@ -285,6 +304,91 @@ function checkAdminApps(value: unknown): readonly AdminApp[] {
 }
 
 /**
+ * Ett granskningsärende. Formen kontrolleras som registrets, och av samma skäl faller nivån och
+ * källan åt det stränga hållet i stället för att fälla raden: en app vars nivå inte går att läsa
+ * ska inte försvinna ur kön — då hade den aldrig blivit granskad alls.
+ *
+ * Läget behandlas likadant. Ett ord vi inte känner igen läses som `vantar`, alltså som att ärendet
+ * fortfarande behöver en läsare. Det är det försiktiga svaret: värst som kan hända är att en
+ * granskare öppnar något som redan är avgjort, och då säger servern ifrån.
+ *
+ * `reviewId` hamnar i en sökväg när ärendet öppnas eller avgörs, så det prövas mot samma snäva
+ * teckenförråd som övriga id:n — innan det kan nå ett anrop.
+ */
+function checkAdminReview(value: unknown): AdminReview {
+  const row = fields(value);
+  const { reviewId, appIdPrefix, name, ownerEmail, requestedAt, decidedAt, reason } = row;
+  if (
+    typeof reviewId !== 'string' ||
+    !ID_PATTERN.test(reviewId) ||
+    typeof appIdPrefix !== 'string' ||
+    appIdPrefix.length === 0 ||
+    appIdPrefix.length > ADMIN_APP_ID_PREFIX_LENGTH ||
+    !ID_PATTERN.test(appIdPrefix) ||
+    typeof name !== 'string' ||
+    name === '' ||
+    name.length > 200 ||
+    (ownerEmail !== null && (typeof ownerEmail !== 'string' || ownerEmail === '' || ownerEmail.length > 254)) ||
+    typeof requestedAt !== 'string' ||
+    requestedAt === '' ||
+    (decidedAt !== null && (typeof decidedAt !== 'string' || decidedAt === '')) ||
+    (reason !== null && typeof reason !== 'string')
+  ) {
+    throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  }
+  const source = row['classificationSource'];
+  const state = row['state'];
+  return {
+    reviewId,
+    appIdPrefix,
+    name,
+    ownerEmail,
+    classification: asClassification(row['classification']),
+    classificationSource: CLASSIFICATION_SOURCES.includes(source as ClassificationSource)
+      ? (source as ClassificationSource)
+      : 'fail-closed',
+    state: REVIEW_STATES.includes(state as ReviewState) ? (state as ReviewState) : 'vantar',
+    requestedAt,
+    decidedAt,
+    reason,
+  };
+}
+
+function checkAdminReviews(value: unknown): readonly AdminReview[] {
+  if (!Array.isArray(value)) throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  return value.map((item: unknown) => checkAdminReview(item));
+}
+
+/**
+ * Källkoden som ska granskas. Innehållet är AI-skriven kod och får vara vad som helst — den visas
+ * som text och körs aldrig här. Filnamnen är det som behöver hållas i styr: de blir rubriker i
+ * vyn, och ett "namn" med styrtecken eller sökvägsknep hör inte hemma i en lista över filer.
+ *
+ * En fil som inte går att lita på fäller hela svaret. Det är inte samma avvägning som i registret:
+ * där vore en tom sida värre än en sträng rad, här är en HALV kodbas det värsta av allt — en
+ * granskare som tror att hon läst appen har då släppt ut det hon inte såg.
+ */
+const SOURCE_PATH_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]|\/(?=[A-Za-z0-9]))*$/;
+
+function checkSourceFiles(value: unknown): SourceFiles {
+  const row = fields(value);
+  const files: Record<string, string> = {};
+  for (const [path, content] of Object.entries(row)) {
+    if (
+      path.length === 0 ||
+      path.length > 200 ||
+      !SOURCE_PATH_PATTERN.test(path) ||
+      path.includes('..') ||
+      typeof content !== 'string'
+    ) {
+      throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+    }
+    files[path] = content;
+  }
+  return files;
+}
+
+/**
  * En rad ur kontrollrummets adresslista. Hårdare än den ser ut: `userId` hamnar i sökvägen när en
  * roll sätts, och `role` styr vilken knapp vyn visar — en roll utanför kontraktet skulle lämna
  * vyn i ett läge den inte kan rita. `self` avgör om raden får en knapp alls, så en rad utan det
@@ -388,9 +492,16 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       return request<BuilderJob>('GET', `/jobs/${checkId(jobId)}?after=${after}`);
     },
 
-    publish: async (appId) => {
-      const result = await request<{ publishedUrl?: unknown }>('POST', `/apps/${checkId(appId)}/publish`);
-      return { publishedUrl: checkHttpUrl(result.publishedUrl) };
+    requestReview: async (appId) => {
+      const result = await request<{ review?: unknown }>('POST', `/apps/${checkId(appId)}/publish`);
+      const review = fields(result.review);
+      const requestedAt = review['requestedAt'];
+      // Det enda ärliga svaret på en begäran är att den väntar. Säger servern något annat — ett
+      // godkännande i samma andetag — är det inte ett svar vyn ska visa som om hon publicerat.
+      if (review['state'] !== 'vantar' || typeof requestedAt !== 'string' || requestedAt === '') {
+        throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+      }
+      return { state: 'vantar', requestedAt };
     },
 
     openUrl: async (appId, target) => {
@@ -427,6 +538,24 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
     adminRegister: async () =>
       checkAdminRegister((await request<{ entries?: unknown }>('GET', '/admin/register')).entries),
+
+    adminReviews: async () =>
+      checkAdminReviews((await request<{ reviews?: unknown }>('GET', '/admin/granskning')).reviews),
+
+    adminReview: async (reviewId) => {
+      const path = `/admin/granskning/${checkId(reviewId, 'Det här ärendet finns inte.')}`;
+      const result = await request<{ review?: unknown; files?: unknown }>('GET', path);
+      return { review: checkAdminReview(result.review), files: checkSourceFiles(result.files) };
+    },
+
+    adminDecide: async (reviewId, decision, reason) => {
+      const path = `/admin/granskning/${checkId(reviewId, 'Det här ärendet finns inte.')}`;
+      // Kroppen byggs fält för fält: beslutet alltid, skälet bara när det finns. Ett godkännande
+      // bär aldrig med sig text som råkat stå kvar i rutan.
+      const body: { decision: ReviewDecision; reason?: string } = { decision };
+      if (reason !== undefined) body.reason = reason;
+      return checkAdminReview((await request<{ review?: unknown }>('POST', path, body)).review);
+    },
 
     adminUsers: async () => checkAdminUsers((await request<{ users?: unknown }>('GET', '/admin/anvandare')).users),
 

@@ -8,7 +8,7 @@ import type { BuilderAppDetail, BuilderJob } from '@vibesandbox/contracts';
 import { todoApp } from './stod/byggkedja.ts';
 import { Webblasare } from './stod/webblasare.ts';
 import type { Svar } from './stod/webblasare.ts';
-import { BYGG, BYGG_ORIGIN, lasUtkorg, loggaInMedKod, startaPlattform } from './stod/plattform.ts';
+import { BYGG, BYGG_ORIGIN, lasUtkorg, loggaInMedKod, publiceraViaGranskning, startaPlattform } from './stod/plattform.ts';
 import type { Testplattform } from './stod/plattform.ts';
 
 function json<T>(svar: Svar): T {
@@ -88,11 +88,9 @@ describe('Målet: bygga en todo-lista och dela den med en vän', () => {
     // Förhandsvisningen får ramas in av byggverktyget, och bara av det.
     expect(String(utkast.headers['content-security-policy'])).toContain(`frame-ancestors ${BYGG_ORIGIN}`);
 
-    // 4. Publicera.
-    const publicerad = await anna.api(BYGG, 'POST', `/_api/builder/apps/${appId}/publish`, { origin: BYGG_ORIGIN });
-    expect(publicerad.status).toBe(200);
-    const lank = json<{ publishedUrl: string }>(publicerad).publishedUrl;
-    expect(lank).toBe(`http://${appId}.example.org/`);
+    // 4. Publicera — via granskningen. Anna begär, en administratör läser koden och godkänner.
+    await publiceraViaGranskning(plattform, appId, anna);
+    const lank = `http://${appId}.example.org/`;
 
     // 5. Dela med en vän ⇒ ett inbjudningsmejl med länken.
     const delad = await anna.api(BYGG, 'POST', `/_api/builder/apps/${appId}/share`, {
@@ -135,7 +133,11 @@ describe('Målet: bygga en todo-lista och dela den med en vän', () => {
     const detalj = json<BuilderAppDetail>(await anna.api(BYGG, 'GET', `/_api/builder/apps/${appId}`, { origin: null }));
     expect(detalj.published).toBe(true);
     expect(detalj.publishedUrl).toBe(lank);
-    expect(detalj.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    // Tre inlägg: Annas önskemål, agentens sammanfattning, och granskarens besked. Det sista står
+    // i samtalet just för att hon ska se utfallet där hon redan tittar, även efter en omladdning.
+    expect(detalj.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant']);
+    expect(detalj.messages.at(-1)?.text).toContain('godkänd');
+    expect(detalj.review?.state).toBe('godkand');
   });
 
   it('inget i driftloggen innehåller en e-postadress, en kod eller önskemålets text', async () => {

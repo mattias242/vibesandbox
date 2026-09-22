@@ -2,7 +2,7 @@
  * Projektets mål i ett test: bygg en todo-lista och dela länken med en vän.
  */
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { ANNA, anropa, api, skapaMiljo, vantaPaJobb } from './hjalp.ts';
+import { ANNA, anropa, api, publiceraViaGranskning, skapaMiljo, vantaPaJobb } from './hjalp.ts';
 import type { Miljo } from './hjalp.ts';
 
 let m: Miljo;
@@ -27,10 +27,13 @@ it('ny app "En todo-lista" → jobb klart → publicera → dela med en väns ad
   const forhand = await anropa(m.builder, ANNA, 'GET', api(`/apps/${appId}/open`), { query: { target: 'preview' } });
   expect(forhand.status).toBe(200);
 
-  const publicera = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/publish`));
-  expect(publicera.status).toBe(200);
+  // Publiceringen går via granskningen: ägaren begär, en administratör läser koden och godkänner.
+  // Det är den enda vägen ut — ägaren publicerar inte själv.
+  await publiceraViaGranskning(m.builder, appId);
   const publishedUrl = `https://${appId}.example.org/`;
-  expect(publicera.json).toEqual({ publishedUrl });
+  const efterGranskning = await anropa(m.builder, ANNA, 'GET', api(`/apps/${appId}`));
+  expect(efterGranskning.json.review.state).toBe('godkand');
+  expect(efterGranskning.json.publishedUrl).toBe(publishedUrl);
 
   const dela = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/share`), { body: { email: 'van@example.org' } });
   expect(dela.status).toBe(200);

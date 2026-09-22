@@ -13,7 +13,7 @@
  * appen delad med sig har åtkomst i control men äger inget här: för hen "finns" appen inte (404).
  */
 import { randomBytes } from 'node:crypto';
-import { BUILDER_API_PREFIX, DataApiError, isAppId } from '@vibesandbox/contracts';
+import { BUILDER_API_PREFIX, DataApiError, isAppId, REVIEW_STATES } from '@vibesandbox/contracts';
 import type {
   AppServiceName,
   BuilderAppDetail,
@@ -25,6 +25,7 @@ import type {
   InvitationService,
   PlatformRequest,
   PlatformResponse,
+  ReviewState,
 } from '@vibesandbox/contracts';
 import { createAdmin } from './admin.ts';
 import type { BuilderUserDirectory } from './anvandare.ts';
@@ -69,6 +70,23 @@ export const JOB_ID_PATTERN = /^[0-9a-f]{32}$/;
 export function newJobId(): string {
   return randomBytes(16).toString('hex');
 }
+
+/**
+ * Ett granskningsärendes id. Samma form som ett jobb-id och lika ogenomskinligt: det ger ingen
+ * åtkomst i sig — rutten kräver plattformsrollen `admin`, precis som resten av kontrollrummet.
+ */
+export const REVIEW_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+export function newReviewId(): string {
+  return randomBytes(16).toString('hex');
+}
+
+/**
+ * Beskedet när ägaren begär publicering av en app som redan väntar på granskning. Det ska läsas
+ * som "det är redan igång", inte som ett fel hon gjort.
+ */
+const REVIEW_ALREADY_PENDING =
+  'Appen väntar redan på granskning. Du får besked så snart någon har tittat på den.';
 
 const MAX_NAME_CHARS = 80;
 const MAX_TEXT_CHARS = 4000;
@@ -158,6 +176,8 @@ type Route =
   | { readonly kind: 'adminApps' }
   | { readonly kind: 'adminStops' }
   | { readonly kind: 'adminRegister' }
+  | { readonly kind: 'adminReviews' }
+  | { readonly kind: 'adminReview'; readonly reviewId: string }
   | { readonly kind: 'adminUsers' }
   | { readonly kind: 'adminUser'; readonly userId: string };
 
@@ -179,6 +199,8 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   adminApps: ['GET'],
   adminStops: ['GET'],
   adminRegister: ['GET'],
+  adminReviews: ['GET'],
+  adminReview: ['GET', 'POST'],
   adminUsers: ['GET', 'POST'],
   adminUser: ['POST'],
 };
@@ -217,6 +239,13 @@ function matchRoute(path: string): Route | null {
     if (second === 'appar' && third === undefined) return { kind: 'adminApps' };
     if (second === 'stopp' && third === undefined) return { kind: 'adminStops' };
     if (second === 'register' && third === undefined) return { kind: 'adminRegister' };
+    if (second === 'granskning') {
+      if (third === undefined) return { kind: 'adminReviews' };
+      // Id:t prövas mot sitt mönster HÄR, inte i lagret: ett värde som inte kan vara ett ärende
+      // ska aldrig nå en SQL-parameter, och "finns inte" och "ser inte ut som ett id" ska ge
+      // samma svar utåt.
+      if (REVIEW_ID_PATTERN.test(third)) return { kind: 'adminReview', reviewId: third };
+    }
     if (second === 'anvandare') {
       if (third === undefined) return { kind: 'adminUsers' };
       if (third.length > 0) return { kind: 'adminUser', userId: third };
@@ -260,7 +289,7 @@ function summary(app: StoredApp): BuilderAppSummary {
 export function createApi(deps: ApiDependencies): { handle(request: PlatformRequest): Promise<PlatformResponse> } {
   const { storage, runner, control, invitations, feedback, urls, log } = deps;
   const iso = (): string => deps.now().toISOString();
-  const admin = createAdmin({ storage, control, ...(deps.users === undefined ? {} : { users: deps.users }), now: deps.now });
+  const admin = createAdmin({ storage, control, ...(deps.users === undefined ? {} : { users: deps.users }), log, now: deps.now });
 
   /** Delningar som har börjat men inte sparats än, per ägare — så att samtidiga anrop inte slinker förbi taket. */
   const pendingShares = new Map<string, number>();
@@ -301,11 +330,24 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
 
   function appDetail(app: StoredApp): BuilderAppDetail {
     const job = storage.latestJob(app.appId);
+    const review = storage.latestReview(app.appId);
     return {
       ...summary(app),
       ...(app.publishedVersion === null ? {} : { publishedUrl: urls.published(app.appId) }),
       messages: storage.listMessages(app.appId),
       ...(job === null ? {} : { job }),
+      // Läget läses ur kontraktet, inte rakt ur kolumnen: ett ord ur en äldre version av vår egen
+      // kod ska inte nå gränssnittet som om det vore ett läge.
+      ...(review === null || !REVIEW_STATES.includes(review.state as ReviewState)
+        ? {}
+        : {
+            review: {
+              state: review.state as ReviewState,
+              requestedAt: review.requestedAt,
+              decidedAt: review.decidedAt,
+              reason: review.reason,
+            },
+          }),
     };
   }
 
@@ -345,20 +387,26 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
     return json(200, response);
   }
 
-  async function publish(request: PlatformRequest, appId: string): Promise<PlatformResponse> {
+  /**
+   * Ägaren BEGÄR publicering. Hon publicerar inte.
+   *
+   * Det är den sista spärren i kedjan och den enda som är en människa: de röda linjerna prövar
+   * önskemålet, policyreglerna prövar koden, klassningen prövar känsligheten — men bara en läsare
+   * ser vad appen faktiskt gör. Rutten heter fortfarande `publish`, för det är vad ägaren vill
+   * göra; det som ändrats är vad som händer.
+   *
+   * Versionen låses fast här. Bygger hon om medan ärendet väntar dras det tillbaka
+   * (`completeGreenJob`), så en granskare läser aldrig kod som redan är ersatt.
+   */
+  function publish(request: PlatformRequest, appId: string): PlatformResponse {
     const app = ownedApp(appId, request.identity);
     const revision = storage.latestRevision(app.appId);
     if (revision === null) throw conflict('Det finns inget färdigt utkast att publicera ännu.');
     const base = { appIdPrefix: appIdPrefix(app.appId), userId: request.identity.userId };
-    try {
-      await control.publish(storedAppId(app.appId), revision.versionId);
-    } catch (error) {
-      log({ level: 'error', event: 'publish_failed', ...base, ...describeError(error) });
-      throw internal();
-    }
-    storage.markPublished(app.appId, revision.versionId, iso());
-    log({ level: 'info', event: 'app_published', ...base });
-    return json(200, { publishedUrl: urls.published(app.appId) });
+    const reviewId = storage.requestReview(app.appId, newReviewId(), revision.versionId, request.identity.userId, iso());
+    if (reviewId === null) throw conflict(REVIEW_ALREADY_PENDING);
+    log({ level: 'info', event: 'review_requested', ...base });
+    return json(202, { review: { state: 'vantar' satisfies ReviewState, requestedAt: iso() } });
   }
 
   function open(request: PlatformRequest, appId: string): PlatformResponse {
@@ -544,6 +592,8 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
       route.kind === 'adminApps' ||
       route.kind === 'adminStops' ||
       route.kind === 'adminRegister' ||
+      route.kind === 'adminReviews' ||
+      route.kind === 'adminReview' ||
       route.kind === 'adminUsers' ||
       route.kind === 'adminUser'
     ) {
@@ -557,6 +607,12 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
           return admin.stops();
         case 'adminRegister':
           return admin.register();
+        case 'adminReviews':
+          return admin.reviews();
+        case 'adminReview':
+          return request.method === 'GET'
+            ? admin.review(route.reviewId)
+            : admin.decide(identity, route.reviewId, parseBody(request));
         case 'adminUsers':
           return request.method === 'GET' ? admin.users(identity) : admin.invite(identity, parseBody(request));
         case 'adminUser':

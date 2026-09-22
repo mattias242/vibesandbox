@@ -563,3 +563,25 @@ export async function snurra(varv = 20): Promise<void> {
 }
 
 export type { AgentEvent };
+
+/**
+ * Publicerar appen HELA vägen: ägaren begär granskning, och en administratör godkänner.
+ *
+ * Sedan granskningsskivan är det den enda vägen ut. Testerna som bara behöver en publicerad app
+ * — delning, åtkomstlistan, kontrollrummets siffror — ska inte behöva upprepa dansen, och de ska
+ * inte kunna bli gröna av en genväg förbi granskaren.
+ *
+ * Granskaren är ADAM och ägaren är någon annan: en granskare får inte avgöra sin egen app.
+ */
+export async function publiceraViaGranskning(builder: Builder, appId: string, agare: Identity = ANNA): Promise<void> {
+  const begaran = await anropa(builder, agare, 'POST', api(`/apps/${appId}/publish`));
+  if (begaran.status !== 202) throw new Error(`kunde inte begära granskning: ${begaran.status} ${begaran.text}`);
+  const kon = await anropa(builder, ADAM, 'GET', api('/admin/granskning'));
+  if (kon.status !== 200) throw new Error(`granskningskön gick inte att läsa: ${kon.status} ${kon.text}`);
+  const arende = (kon.json.reviews as { reviewId: string; appIdPrefix: string }[]).find((r) => appId.startsWith(r.appIdPrefix));
+  if (arende === undefined) throw new Error('appen syns inte i granskningskön.');
+  const beslut = await anropa(builder, ADAM, 'POST', api(`/admin/granskning/${arende.reviewId}`), {
+    body: { decision: 'godkand' },
+  });
+  if (beslut.status !== 200) throw new Error(`granskningen gick inte att godkänna: ${beslut.status} ${beslut.text}`);
+}

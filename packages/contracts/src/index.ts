@@ -1004,6 +1004,94 @@ export interface AdminRegisterEntry {
   readonly published: boolean;
 }
 
+// ── Granskning: en människa prövar koden innan appen går ut ────────────────────
+//
+// Den som bygger publicerar inte längre själv. Hon BEGÄR publicering, och en granskare läser
+// koden och avgör. Det är den sista spärren i kedjan, och den enda som är en människa:
+// mönsterregler och en språkmodell fångar det förutsägbara, en läsare fångar resten.
+//
+//   POST /_api/builder/apps/<id>/publish        → begär granskning
+//   GET  /_api/builder/admin/granskning         → { reviews: AdminReview[] }   (äldst först — en kö)
+//   GET  /_api/builder/admin/granskning/<id>    → { review: AdminReview, files: SourceFiles }
+//   POST /_api/builder/admin/granskning/<id>    → { decision: 'godkand' | 'avvisad', reason? }
+//
+// Granskningen gäller en VERSION, inte en app. Två regler håller det, och de överlappar med flit:
+//
+//   1. Bygger ägaren om medan ärendet väntar dras det tillbaka. Granskaren ska inte läsa kod som
+//      redan är ersatt, och ägaren ska inte tro att någon läser.
+//   2. Godkännandet publicerar den version ärendet PEKAR PÅ, aldrig `latestRevision()`.
+//
+// Regel 1 gör att regel 2 i praktiken aldrig behöver rädda något: ett väntande ärende kan inte
+// samexistera med ett nyare bygge. Regel 2 står ändå kvar, för den är det som håller om regel 1
+// någon gång inte gör det — en transaktion som inte gick igenom, en väg in i lagret som inte
+// finns än. Den dyra egenskapen är att kod som ingen läst aldrig går ut, och den får inte vila
+// på ett enda villkor.
+
+export const REVIEW_STATES = [
+  /** Begärd, ingen har avgjort den än. Högst en per app åt gången. */
+  'vantar',
+  /** En granskare läste koden och släppte ut den. Appen publicerades i samma ögonblick. */
+  'godkand',
+  /** En granskare läste koden och sa nej. Skälet går till ägaren i klarspråk. */
+  'avvisad',
+  /** Ägaren byggde om innan någon hann avgöra. Ingen läste den, och ingen ska tro att någon gjorde det. */
+  'tillbakadragen',
+] as const;
+
+export type ReviewState = (typeof REVIEW_STATES)[number];
+
+/** De två beslut en granskare kan fatta. `tillbakadragen` är inget beslut — den händer av sig själv. */
+export const REVIEW_DECISIONS = ['godkand', 'avvisad'] as const;
+
+export type ReviewDecision = (typeof REVIEW_DECISIONS)[number];
+
+/**
+ * Ett granskningsärende, så som kontrollrummet visar det i kön.
+ *
+ * Till skillnad från stopplistan och registret står här `classification` och
+ * `classificationSource` med flit: granskaren ska se om nivån är ett omdöme eller ett
+ * misslyckande INNAN hon läser koden. En app vars känslighet ingen kunnat avgöra är inte samma
+ * sak att släppa ut som en app som prövats och blivit `oppen`.
+ *
+ * Önskemålets text står inte här, av samma skäl som i `AdminStop`. Koden gör det — men bara i
+ * svaret för ETT ärende, aldrig i kön, och det är hela poängen med granskningen.
+ */
+export interface AdminReview {
+  readonly reviewId: string;
+  readonly appIdPrefix: string;
+  readonly name: string;
+  readonly ownerEmail: string | null;
+  readonly classification: Classification;
+  readonly classificationSource: ClassificationSource;
+  readonly state: ReviewState;
+  readonly requestedAt: string;
+  /**
+   * När ärendet avgjordes. `null` så länge det väntar.
+   *
+   * VEM som avgjorde står inte här. Det finns i databasen och i driftloggen, men ingen vy visar
+   * avgjorda ärenden än — och ett fält som aldrig kan vara annat än `null` är värre än inget fält,
+   * för någon bygger gränssnitt mot det. Det läggs till när vyn finns.
+   */
+  readonly decidedAt: string | null;
+  /** Skälet en granskare gav när hon sa nej. Går ordagrant till ägaren. */
+  readonly reason: string | null;
+}
+
+/** Hur ägaren ser sin egen begäran. Samma ärende, men utan något om vem granskaren är. */
+export interface BuilderReviewStatus {
+  readonly state: ReviewState;
+  readonly requestedAt: string;
+  readonly decidedAt: string | null;
+  readonly reason: string | null;
+}
+
+export const REVIEW_LIMITS = {
+  /** Så långt skäl en granskare får skriva. Det går ordagrant till ägaren och ska vara läsbart. */
+  maxReasonChars: 2000,
+  /** Så många ärenden kön hämtar. Kön ska gå att beta av, inte vara ett arkiv. */
+  maxQueue: 200,
+} as const;
+
 // ── Röda linjer: förbjuden användning stoppas innan något byggs ─────────────────
 //
 // Ett önskemål prövas mot de röda linjerna INNAN språkmodellen får skriva en rad kod. Träff
@@ -1094,6 +1182,11 @@ export interface BuilderAppDetail extends BuilderAppSummary {
   readonly messages: readonly BuilderMessage[];
   /** Pågående eller senaste jobb, så att en omladdad sida kan fortsätta följa det. */
   readonly job?: { readonly jobId: string; readonly status: BuilderJobStatus };
+  /**
+   * Ägarens senaste begäran om publicering. Saknas den har hon aldrig begärt någon. Det är den
+   * enda vägen ut: appen publiceras inte av att hon trycker, utan av att en granskare säger ja.
+   */
+  readonly review?: BuilderReviewStatus;
 }
 
 export interface BuilderJob {

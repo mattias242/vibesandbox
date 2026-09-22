@@ -11,9 +11,12 @@
  *  - Hela app-id:t ÄR appens hemliga adress. Kontrollrummet lämnar bara ut de första
  *    `ADMIN_APP_ID_PREFIX_LENGTH` tecknen, och aldrig en länk. Rollen `admin` ger enligt kontraktet
  *    ingen åtkomst till någon apps data; insyn i ATT appar finns är inte en väg IN i dem.
- *  - Ägarens adress går i svaret men aldrig i en loggrad — därför loggar den här modulen inget alls.
- *    Det gäller också adresserna i användarlistan och i en inbjudan: ingen händelse härifrån
- *    hamnar i driftloggen, inte ens en misslyckad.
+ *  - Ägarens adress går i svaret men aldrig i en loggrad. Därför loggar den här modulen nästan
+ *    inget: inte användarlistan, inte en inbjudan, inte ens en misslyckad. UNDANTAGET är
+ *    granskningsbeslutet. Ett beslut om att släppa ut en app måste gå att följa i efterhand —
+ *    det är hela poängen med en granskning — och raden bär bara det förkortade app-id:t och
+ *    beslutet, aldrig granskarens adress, ägarens adress eller granskarens skäl. Skälet är fritext
+ *    skriven av en människa om någon annans app, och hör hemma i samtalet, inte i driftloggen.
  *  - Den egna raden går inte att ändra. En administratör som sänker sig själv låser ut sig, och
  *    vägen tillbaka går bara över SSH in i en container.
  *
@@ -28,6 +31,9 @@ import {
   CLASSIFICATION_SOURCES,
   DataApiError,
   REDLINE_CATEGORIES,
+  REVIEW_DECISIONS,
+  REVIEW_LIMITS,
+  REVIEW_STATES,
 } from '@vibesandbox/contracts';
 import type {
   AdminApp,
@@ -38,7 +44,10 @@ import type {
   ClassificationSource,
   Identity,
   PlatformResponse,
+  AdminReview,
   RedlineCategory,
+  ReviewDecision,
+  ReviewState,
   Role,
 } from '@vibesandbox/contracts';
 
@@ -50,7 +59,9 @@ const MAX_STOPS = 200;
 import type { BuilderUser, BuilderUserDirectory } from './anvandare.ts';
 import { controlErrorCode, storedAppId } from './control.ts';
 import type { BuilderAccessEntry, BuilderControl } from './control.ts';
-import type { Storage } from './lagring.ts';
+import type { Storage, StoredReview } from './lagring.ts';
+import { appIdPrefix } from './logg.ts';
+import type { BuilderLogger } from './logg.ts';
 import { ApiProblem, invalid, json, notFound } from './svar.ts';
 
 export interface AdminDependencies {
@@ -58,6 +69,8 @@ export interface AdminDependencies {
   readonly control: BuilderControl;
   /** Vägen till identiteten. Saknas den är användarhanteringen inte inkopplad. */
   readonly users?: BuilderUserDirectory;
+  /** Bara granskningsbesluten loggas härifrån — se filhuvudet om varför just de. */
+  readonly log: BuilderLogger;
   readonly now: () => Date;
 }
 
@@ -82,11 +95,24 @@ const NO_USERS: Readonly<Record<Role, number>> = { admin: 0, builder: 0, viewer:
 /** Det kontrollrummet skriver i stället för ett namn ägaren aldrig har valt. Se `visatNamn`. */
 const NAMNLOS = 'Namnlös app';
 
+/**
+ * Beskeden till ägaren när ett ärende avgjorts. De läggs i samtalet om appen, så att hon ser dem
+ * där hon redan tittar — och så att de står kvar efter en omladdning.
+ *
+ * Ett nej bär granskarens SKÄL ordagrant. Det är hela poängen: ett avslag utan skäl lämnar någon
+ * med en app hon inte vet vad som är fel på, och nästa försök blir en gissning.
+ */
+const APPROVED_MESSAGE = 'Granskad och godkänd — appen är publicerad och går att dela.';
+const REJECTED_MESSAGE = 'Granskningen säger nej, och så här står det: ';
+
 export function createAdmin(deps: AdminDependencies): {
   overview(): PlatformResponse;
   apps(): Promise<PlatformResponse>;
   stops(): PlatformResponse;
   register(): Promise<PlatformResponse>;
+  reviews(): Promise<PlatformResponse>;
+  review(reviewId: string): Promise<PlatformResponse>;
+  decide(identity: Identity, reviewId: string, body: Record<string, unknown>): Promise<PlatformResponse>;
   users(identity: Identity): PlatformResponse;
   invite(identity: Identity, body: Record<string, unknown>): Promise<PlatformResponse>;
   setRole(identity: Identity, userId: string, body: Record<string, unknown>): PlatformResponse;
@@ -190,6 +216,50 @@ export function createAdmin(deps: AdminDependencies): {
     return row.nameIsDefault ? NAMNLOS : row.name;
   }
 
+  /**
+   * Ett granskningsärende som kontrollrummet visar det. Klass och källa prövas mot kontraktet och
+   * faller åt det stränga hållet, precis som i registret: en app vars nivå inte går att läsa ska
+   * inte se ofarligare ut för granskaren än den är.
+   */
+  function adminReview(
+    row: StoredReview,
+    ownerEmail: string | null,
+    decided: { decidedAt: string; reason: string | null } | null,
+  ): AdminReview {
+    return {
+      reviewId: row.reviewId,
+      appIdPrefix: row.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+      name: visatNamn(row),
+      ownerEmail,
+      classification: asClassification(row.classification),
+      classificationSource: CLASSIFICATION_SOURCES.includes(row.classificationSource as ClassificationSource)
+        ? (row.classificationSource as ClassificationSource)
+        : 'fail-closed',
+      state: REVIEW_STATES.includes(row.state as ReviewState) ? (row.state as ReviewState) : 'vantar',
+      requestedAt: row.requestedAt,
+      decidedAt: decided?.decidedAt ?? row.decidedAt,
+      reason: decided === null ? row.reason : decided.reason,
+    };
+  }
+
+  /** Beslutet och skälet ur kroppen. Ett nej utan skäl går inte igenom — se `REJECTED_MESSAGE`. */
+  function readDecision(body: Record<string, unknown>): { decision: ReviewDecision; reason: string | null } {
+    const decision = body['decision'];
+    if (!REVIEW_DECISIONS.includes(decision as ReviewDecision)) {
+      throw invalid('Ange om appen godkänns eller avvisas.');
+    }
+    if (decision === 'godkand') return { decision, reason: null };
+    const raw = body['reason'];
+    const reason = typeof raw === 'string' ? raw.trim() : '';
+    if (reason.length === 0) {
+      throw invalid('Skriv varför appen inte kan publiceras. Ägaren får skälet ordagrant.');
+    }
+    if (reason.length > REVIEW_LIMITS.maxReasonChars) {
+      throw invalid('Skälet är för långt. Håll det till det som behöver åtgärdas.');
+    }
+    return { decision: 'avvisad', reason };
+  }
+
   function readRole(body: Record<string, unknown>): Role {
     const role = body['role'];
     if (!isRole(role)) throw invalid('Välj en roll: administratör, byggare eller den som bara tittar.');
@@ -276,6 +346,86 @@ export function createAdmin(deps: AdminDependencies): {
         published: row.published,
       }));
       return json(200, { entries });
+    },
+
+    /**
+     * Granskningskön: väntande ärenden, äldst först. Källkoden finns INTE här — kön ska gå att
+     * öppna utan att varje apps kod läses ur databasen, och den hämtas för ett ärende i taget.
+     *
+     * Klassen står med, till skillnad från i applistan: granskaren ska se om nivån är ett omdöme
+     * eller ett misslyckande innan hon läser koden. En app vars känslighet ingen kunnat avgöra är
+     * inte samma sak att släppa ut som en app som prövats.
+     */
+    async reviews(): Promise<PlatformResponse> {
+      const rows = storage.listPendingReviews(REVIEW_LIMITS.maxQueue);
+      const owners = await withOwners(rows);
+      const reviews: AdminReview[] = owners.map(({ row, ownerEmail }) => adminReview(row, ownerEmail, null));
+      return json(200, { reviews });
+    },
+
+    /**
+     * Ett ärende MED källkoden. Det här är den enda platsen i kontrollrummet där appens innehåll
+     * lämnas ut, och det är avsiktligt: granskningen ÄR att någon läser koden. Allt annat i
+     * kontrollrummet svarar på att appar finns, aldrig på vad som står i dem.
+     */
+    async review(reviewId: string): Promise<PlatformResponse> {
+      const row = storage.review(reviewId);
+      if (row === null) throw notFound();
+      const [listed] = await withOwners([row]);
+      const files = storage.reviewFiles(row.appId, row.versionId);
+      // Revisionen är borta — då finns ingen kod att granska, och ärendet går inte att avgöra på
+      // ett ärligt sätt. Hellre ett tydligt besked än en tom lista som ser ut som en app utan kod.
+      if (files === null) throw new ApiProblem('unavailable', 'Koden som skulle granskas finns inte kvar. Be ägaren bygga om appen.');
+      return json(200, { review: adminReview(row, listed?.ownerEmail ?? null, null), files });
+    },
+
+    /**
+     * Beslutet. Godkänt publicerar EXAKT den version som granskades — inte det som råkar vara
+     * senast byggt. Ett nej kräver ett skäl, och skälet går ordagrant till ägaren.
+     *
+     * En granskare får inte avgöra sin egen app. En administratör som bygger något är i det läget
+     * ägare, inte granskare, och ett godkännande av sig själv är ingen granskning alls.
+     */
+    async decide(identity: Identity, reviewId: string, body: Record<string, unknown>): Promise<PlatformResponse> {
+      const row = storage.review(reviewId);
+      if (row === null) throw notFound();
+      // Två skilda skäl till att ett ärende inte går att avgöra, och de ska inte få samma besked.
+      // Ett tillbakadraget ärende är enligt kontraktet INGET beslut: ägaren byggde om, och ingen
+      // hann läsa. Att svara "redan avgjort" vore att påstå att någon tagit ställning.
+      if (row.state === 'tillbakadragen') {
+        throw new ApiProblem('conflict', 'Ägaren har byggt om appen, så det här ärendet gäller inte längre. Ett nytt kommer när hen begär igen.');
+      }
+      if (row.state !== 'vantar') throw new ApiProblem('conflict', 'Ärendet är redan avgjort.');
+      if (row.ownerUserId === identity.userId) {
+        throw invalid('Du kan inte granska din egen app. Be en annan administratör göra det.');
+      }
+      const { decision, reason } = readDecision(body);
+
+      // Publiceringen sker FÖRE beslutet skrivs. Går den fel har ingen app gått ut, och ärendet
+      // står kvar som väntande så att någon kan försöka igen — hellre det än ett godkänt ärende
+      // för en app som aldrig publicerades.
+      if (decision === 'godkand') {
+        try {
+          await control.publish(storedAppId(row.appId), row.versionId);
+        } catch {
+          throw new ApiProblem('unavailable', 'Appen gick inte att publicera just nu. Försök igen om en stund.');
+        }
+        storage.markPublished(row.appId, row.versionId, deps.now().toISOString());
+      }
+
+      const now = deps.now().toISOString();
+      // `false` betyder att ärendet slutade vänta medan vi arbetade — ägaren byggde om, eller en
+      // annan granskare hann före. Villkoret sitter i SQL:en, inte i kontrollen ovanför.
+      if (!storage.decideReview(reviewId, decision, identity.userId, reason, now)) {
+        throw new ApiProblem('conflict', 'Ärendet är redan avgjort.');
+      }
+      storage.addAssistantMessage(row.appId, decision === 'godkand' ? APPROVED_MESSAGE : `${REJECTED_MESSAGE}${reason ?? ''}`, now);
+      // Revisionsspåret. `status` är beslutet — ett fast ord ur kontraktet. Granskarens id går med
+      // som `userId` (pseudonymt, aldrig adressen), skälet aldrig.
+      const base = { appIdPrefix: appIdPrefix(row.appId), userId: identity.userId };
+      deps.log({ level: 'info', event: 'review_decided', ...base, status: decision });
+      if (decision === 'godkand') deps.log({ level: 'info', event: 'app_published', ...base });
+      return json(200, { review: adminReview({ ...row, state: decision }, null, { decidedAt: now, reason }) });
     },
 
     users(identity: Identity): PlatformResponse {
