@@ -932,6 +932,78 @@ export interface AdminOverview {
   readonly failedJobs: number;
 }
 
+// ── Klassning: hur känsligt det appen ska göra är ───────────────────────────────
+//
+// Klassen sätts ÅT den som bygger — hen väljer den aldrig själv. Språkmodellen läser önskemålet,
+// signalord sätter ett golv som modellsvaret bara får HÖJA, och ett svar som inte går att tolka
+// ger den strängaste klassen. Det är den bärande regeln: den som bygger ska inte kunna välja bort
+// sitt eget skydd, och ett fel i klassningen ska falla åt det försiktiga hållet.
+//
+//   GET /_api/builder/admin/register → { entries: AdminRegisterEntry[] }
+//
+// Klasserna står i STIGANDE stränghet. Ordningen är betydelsebärande: `CLASSIFICATIONS.indexOf`
+// används för att jämföra två klasser, och ett okänt värde ur databasen läses som den strängaste.
+//
+// Appens klass HÖJS men sänks aldrig. Varje nytt önskemål klassas, och beskriver det känsligare
+// uppgifter än det förra följer klassen med uppåt. Den som märker att "namn och adress" väckte en
+// strängare klass ska inte kunna backa tillbaka genom att skriva om sig. Följden att stå för:
+// en klassning som gick fel åt det stränga hållet (`fail-closed`) sitter kvar tills någon prövar
+// den på nytt, och den prövningen finns ännu inte — därför står källan i registret.
+
+export const CLASSIFICATIONS = ['oppen', 'intern', 'personuppgift', 'kanslig'] as const;
+
+export type Classification = (typeof CLASSIFICATIONS)[number];
+
+/** Den strängaste klassen. Svaret när klassningen inte gick att göra, och när värdet är okänt. */
+export const STRICTEST_CLASSIFICATION: Classification = 'kanslig';
+
+/**
+ * Hur strängt ett värde är, som ett tal att jämföra med. Högre tal = strängare.
+ *
+ * Finns här, och bara här, för att ordningen inte ska stå avskriven på fyra ställen. Allt som inte
+ * ÄR en känd klass — `null` ur en kolumn som aldrig klassats, ett ord ur en äldre version av vår
+ * egen kod, något som råkat bli ett tal — ger den strängaste klassens tal. Det är fail-closed
+ * uttryckt i en jämförelse: den som inte vet vinner aldrig över den som vet.
+ */
+export function classificationRank(value: unknown): number {
+  const index = CLASSIFICATIONS.indexOf(value as Classification);
+  return index === -1 ? CLASSIFICATIONS.indexOf(STRICTEST_CLASSIFICATION) : index;
+}
+
+/** Den kända klassen, eller den strängaste. Samma regel som `classificationRank`, som ett värde. */
+export function asClassification(value: unknown): Classification {
+  return CLASSIFICATIONS[classificationRank(value)] ?? STRICTEST_CLASSIFICATION;
+}
+
+/** Hur appens klass blev vad den blev. Står i registret, så att en fail-closed går att se. */
+export const CLASSIFICATION_SOURCES = [
+  /** Språkmodellen läste önskemålet och svarade med en klass. */
+  'modell',
+  /** Ett signalord i önskemålet satte ett golv som modellens svar inte fick underskrida. */
+  'signalord',
+  /** Modellen svarade otolkbart, anropet misslyckades eller tog för lång tid. */
+  'fail-closed',
+] as const;
+
+export type ClassificationSource = (typeof CLASSIFICATION_SOURCES)[number];
+
+/**
+ * En rad i AI-registret: en app med sin känslighetsnivå och hur den nivån sattes.
+ *
+ * Registret svarar på frågan en tillsyn ställer — vilka appar finns, vem äger dem, hur känsliga
+ * är de. Önskemålets text finns inte här, av samma skäl som i `AdminStop`.
+ */
+export interface AdminRegisterEntry {
+  readonly appIdPrefix: string;
+  readonly name: string;
+  readonly ownerEmail: string | null;
+  readonly classification: Classification;
+  readonly source: ClassificationSource;
+  /** När klassen sattes. `null` för en app som ännu aldrig beskrivits — då gissar registret inte. */
+  readonly classifiedAt: string | null;
+  readonly published: boolean;
+}
+
 // ── Röda linjer: förbjuden användning stoppas innan något byggs ─────────────────
 //
 // Ett önskemål prövas mot de röda linjerna INNAN språkmodellen får skriva en rad kod. Träff

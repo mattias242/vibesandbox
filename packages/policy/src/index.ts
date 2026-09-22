@@ -8,3 +8,4 @@ export { ALLOWED_IMPORTS, checkSourceFiles, SOURCE_LIMITS } from './source.ts';
 export { checkBuiltBundle } from './bundle.ts';
 export { ALLOWED_BUNDLE_URLS, ALLOWED_SOURCE_URLS } from './urls.ts';
 export { checkRedlines, REDLINE_LIMITS } from './redlines.ts';
+export { classify, CLASSIFICATION_LIMITS, signalFloor } from './klassning.ts';
