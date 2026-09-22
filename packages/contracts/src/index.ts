@@ -834,6 +834,11 @@ export function builderContentSecurityPolicy(previewFrameSource: string): string
 //   POST /_api/builder/apps        { name? }       → 201 { appId }
 //   GET  /_api/builder/apps/:appId                 → BuilderAppDetail
 //   POST /_api/builder/apps/:appId/messages { text } → 202 { jobId }   (409 om ett jobb redan pågår)
+//   POST /_api/builder/apps/:appId/namn { name }   → { name }
+//        Ägaren döper sin app. Namnet är hennes eget val och ersätter plattformens avskrift av det
+//        första önskemålet — och till skillnad från avskriften följer det med till kontrollrummet
+//        och granskningskön. Går att ändra hur många gånger som helst. Ett tomt namn är inget namn
+//        (400): vägen tillbaka till plattformens avskrift finns inte, och ska inte finnas.
 //   GET  /_api/builder/jobs/:jobId?after=<n>       → BuilderJob  (händelser från index n)
 //   POST /_api/builder/apps/:appId/publish         → { publishedUrl }  (409 om inget grönt utkast)
 //   GET  /_api/builder/apps/:appId/open?target=preview|published → { url }

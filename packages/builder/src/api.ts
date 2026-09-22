@@ -185,6 +185,24 @@ function firstCharacters(value: string, max: number): string {
   return characters.length > max ? `${characters.slice(0, max).join('').trimEnd()}…` : value;
 }
 
+/**
+ * Ett namn ägaren själv har skrivit, prövat. `null` betyder "inget namn angavs" — det är inte ett
+ * fel vid skapandet (appen får plattformens avskrift i stället), men det är det vid en omdöpning:
+ * där finns ingen avskrift att falla tillbaka på, och ett tomt fält är då bara ett misstag.
+ *
+ * Samma prövning i båda fallen, med flit: ett namn som går att sätta vid skapandet ska gå att
+ * sätta efteråt, och tvärtom.
+ */
+function readName(body: Record<string, unknown>): string | null {
+  const raw = body['name'];
+  if (raw === undefined) return null;
+  if (typeof raw !== 'string') throw invalid('Namnet måste vara text.');
+  const trimmed = raw.trim();
+  if (characterCount(trimmed) > MAX_NAME_CHARS) throw invalid(`Namnet får vara högst ${MAX_NAME_CHARS} tecken.`);
+  if (NAME_FORBIDDEN.test(trimmed)) throw invalid('Namnet innehåller tecken som inte är tillåtna.');
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function displayName(identity: Identity): string {
   const local = identity.email.split('@')[0] ?? '';
   const name = firstCharacters(local, 64);
@@ -196,6 +214,7 @@ type Route =
   | { readonly kind: 'apps' }
   | { readonly kind: 'app'; readonly appId: string }
   | { readonly kind: 'messages'; readonly appId: string }
+  | { readonly kind: 'namn'; readonly appId: string }
   | { readonly kind: 'publish'; readonly appId: string }
   | { readonly kind: 'export'; readonly appId: string }
   | { readonly kind: 'avveckla'; readonly appId: string }
@@ -219,6 +238,7 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   apps: ['GET', 'POST'],
   app: ['GET'],
   messages: ['POST'],
+  namn: ['POST'],
   publish: ['POST'],
   export: ['GET'],
   avveckla: ['POST'],
@@ -240,7 +260,7 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   adminUser: ['POST'],
 };
 
-const APP_ACTIONS = new Set(['messages', 'publish', 'open', 'share', 'feedback', 'members', 'export', 'avveckla'] as const);
+const APP_ACTIONS = new Set(['messages', 'namn', 'publish', 'open', 'share', 'feedback', 'members', 'export', 'avveckla'] as const);
 
 /** Sökvägen efter prefixet, segment för segment, med exakta jämförelser. Ingen normalisering. */
 function matchRoute(path: string): Route | null {
@@ -341,19 +361,9 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
 
   async function createApp(request: PlatformRequest): Promise<PlatformResponse> {
     const body = parseBody(request);
-    let name = DEFAULT_NAME;
-    let nameIsDefault = true;
-    if (body['name'] !== undefined) {
-      const raw = body['name'];
-      if (typeof raw !== 'string') throw invalid('Namnet måste vara text.');
-      const trimmed = raw.trim();
-      if (characterCount(trimmed) > MAX_NAME_CHARS) throw invalid(`Namnet får vara högst ${MAX_NAME_CHARS} tecken.`);
-      if (NAME_FORBIDDEN.test(trimmed)) throw invalid('Namnet innehåller tecken som inte är tillåtna.');
-      if (trimmed.length > 0) {
-        name = trimmed;
-        nameIsDefault = false;
-      }
-    }
+    const chosen = readName(body);
+    const name = chosen ?? DEFAULT_NAME;
+    const nameIsDefault = chosen === null;
     const appId = await control.createApp();
     // Ägaren ges åtkomst i control FÖRE appen sparas här: misslyckas det finns ingen app i
     // byggverktyget som ägaren skulle vara utelåst från.
@@ -405,6 +415,31 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
     log({ level: 'info', event: 'job_queued', appIdPrefix: appIdPrefix(app.appId), userId: request.identity.userId });
     runner.enqueue(jobId);
     return json(202, { jobId });
+  }
+
+  /**
+   * Ägaren döper sin app.
+   *
+   * Namnet hon skriver är hennes val om vad appen ÄR, och skiljer sig därför i art från det
+   * plattformen annars sätter: en avskrift av de första tecknen i hennes första önskemål. Den
+   * avskriften kan bära personuppgifter och stannar hos henne (se `visatNamn` i admin.ts); ett
+   * valt namn följer med till kontrollrummet, granskningskön och delningsmejlet.
+   *
+   * Går att göra om hur många gånger som helst — ett namn är en etikett, inte ett beslut. Men
+   * vägen tillbaka till avskriften finns inte: ett tomt namn är ingen begäran om att återgå, det
+   * är ett misstag, och svaret är 400.
+   */
+  function renameApp(request: PlatformRequest, appId: string): PlatformResponse {
+    const name = readName(parseBody(request));
+    // Indata före ägarskap, som överallt annars här: ett felaktigt anrop ska ge samma svar oavsett
+    // om appen finns.
+    if (name === null) throw invalid('Skriv vad appen ska heta.');
+    const app = ownedApp(appId, request.identity);
+    storage.renameApp(app.appId, name, iso());
+    // Namnet loggas ALDRIG. Det är ägarens text om sin egen app, precis som önskemålet, och
+    // driftloggen ska gå att läsa utan att någon läser med.
+    log({ level: 'info', event: 'app_renamed', appIdPrefix: appIdPrefix(app.appId), userId: request.identity.userId });
+    return json(200, { name });
   }
 
   function getJob(request: PlatformRequest, jobId: string): PlatformResponse {
@@ -780,6 +815,8 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
         return json(200, appDetail(ownedApp(route.appId, identity)));
       case 'messages':
         return postMessage(request, route.appId);
+      case 'namn':
+        return renameApp(request, route.appId);
       case 'publish':
         return publish(request, route.appId);
       case 'export':

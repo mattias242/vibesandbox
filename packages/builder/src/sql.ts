@@ -234,6 +234,15 @@ export const RENAME_DEFAULT_APP = `
   UPDATE apps SET name = :name WHERE app_id = :appId AND name_is_default = 1 AND :seq = 1
 `;
 
+/**
+ * Ägaren döper sin app. `name_is_default = 0` är hela poängen: namnet är härefter hennes val, inte
+ * plattformens avskrift av ett önskemål, och får därför visas i kontrollrummet. Flaggan går aldrig
+ * tillbaka till 1 — en app som en gång fått ett valt namn kan inte återfå ett avskrivet.
+ */
+export const RENAME_APP = `
+  UPDATE apps SET name = :name, name_is_default = 0, updated_at = :now WHERE app_id = :appId
+`;
+
 export const SET_PUBLISHED = `
   UPDATE apps SET published_version = :versionId, updated_at = :now WHERE app_id = :appId
 `;

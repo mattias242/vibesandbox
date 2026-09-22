@@ -151,6 +151,88 @@ describe('appar', () => {
     expect(detalj.json.name).toBe('Hemmet');
   });
 
+  it('ägaren döper sin app, och namnet står i listan', async () => {
+    const appId = await nyApp(m.builder, ANNA);
+    const svar = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/namn`), { body: { name: '  Bokning av mötesrum  ' } });
+    expect(svar.status).toBe(200);
+    expect(svar.json).toEqual({ name: 'Bokning av mötesrum' });
+    const detalj = await anropa(m.builder, ANNA, 'GET', api(`/apps/${appId}`));
+    expect(detalj.json.name).toBe('Bokning av mötesrum');
+  });
+
+  it('ett namn ägaren valt skrivs inte över av det första önskemålet', async () => {
+    const appId = await nyApp(m.builder, ANNA);
+    await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/namn`), { body: { name: 'Bokning av mötesrum' } });
+    await vantaPaJobb(m.builder, await skicka(m.builder, appId, 'En lista där vi bokar mötesrum'));
+    const detalj = await anropa(m.builder, ANNA, 'GET', api(`/apps/${appId}`));
+    expect(detalj.json.name).toBe('Bokning av mötesrum');
+  });
+
+  it('namnet går att ändra hur många gånger som helst', async () => {
+    const appId = await nyApp(m.builder, ANNA, 'Bokning av mötesrum');
+    await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/namn`), { body: { name: 'Rumsbokning' } });
+    await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/namn`), { body: { name: 'Rummen' } });
+    const detalj = await anropa(m.builder, ANNA, 'GET', api(`/apps/${appId}`));
+    expect(detalj.json.name).toBe('Rummen');
+  });
+
+  it('ett tomt namn är inget namn — och appen behåller sitt', async () => {
+    const appId = await nyApp(m.builder, ANNA, 'Rumsbokning');
+    for (const name of ['', '   ', '\t\n']) {
+      const svar = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/namn`), { body: { name } });
+      expect(svar.status, `namn=${JSON.stringify(name)}`).toBe(400);
+      ogiltigtFel(svar);
+    }
+    const utan = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/namn`), { body: {} });
+    expect(utan.status).toBe(400);
+    const detalj = await anropa(m.builder, ANNA, 'GET', api(`/apps/${appId}`));
+    expect(detalj.json.name).toBe('Rumsbokning');
+  });
+
+  it('namnet prövas likadant som vid skapandet: text, längd och styrtecken', async () => {
+    const appId = await nyApp(m.builder, ANNA, 'Rumsbokning');
+    const ogiltiga: readonly unknown[] = [42, null, ['a'], { a: 1 }, 'x'.repeat(81), 'Rum\u0000bokning', 'Rum\u202ebokning'];
+    for (const name of ogiltiga) {
+      const svar = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/namn`), { body: { name } });
+      expect(svar.status, `namn=${JSON.stringify(name)}`).toBe(400);
+      ogiltigtFel(svar);
+    }
+    // Exakt på gränsen går igenom, och räknas i tecken — inte i UTF-16-enheter.
+    const pa_gransen = await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/namn`), { body: { name: 'å'.repeat(80) } });
+    expect(pa_gransen.status).toBe(200);
+  });
+
+  it('den som inte äger appen kan inte döpa om den — och appen "finns inte"', async () => {
+    const appId = await nyApp(m.builder, ANNA, 'Rumsbokning');
+    const svar = await anropa(m.builder, BERTIL, 'POST', api(`/apps/${appId}/namn`), { body: { name: 'Bertils' } });
+    expect(svar.status).toBe(404);
+    const detalj = await anropa(m.builder, ANNA, 'GET', api(`/apps/${appId}`));
+    expect(detalj.json.name).toBe('Rumsbokning');
+  });
+
+  it('ett felaktigt namn ger samma svar oavsett om appen finns', async () => {
+    const finns = await anropa(m.builder, ANNA, 'POST', api(`/apps/${await nyApp(m.builder, BERTIL)}/namn`), { body: { name: '' } });
+    const finns_inte = await anropa(m.builder, ANNA, 'POST', api('/apps/zzzzzzzzzzzzzzzzzzzzzzzzzz/namn'), { body: { name: '' } });
+    expect(finns.status).toBe(400);
+    expect(finns_inte.status).toBe(400);
+  });
+
+  it('namnet hamnar aldrig i driftloggen', async () => {
+    const appId = await nyApp(m.builder, ANNA);
+    await anropa(m.builder, ANNA, 'POST', api(`/apps/${appId}/namn`), { body: { name: 'Sjukfrånvaro Enhet 4' } });
+    const loggen = JSON.stringify(m.logg);
+    expect(loggen).toContain('app_renamed');
+    expect(loggen).not.toContain('Sjukfrånvaro');
+  });
+
+  it('bara POST når namnrutten', async () => {
+    const appId = await nyApp(m.builder, ANNA);
+    for (const metod of ['GET', 'PUT', 'DELETE', 'PATCH']) {
+      const svar = await anropa(m.builder, ANNA, metod, api(`/apps/${appId}/namn`));
+      expect(svar.status, metod).toBe(405);
+    }
+  });
+
   it('listan visar bara den egna personens appar, senast ändrad först', async () => {
     const forsta = await nyApp(m.builder, ANNA, 'Första');
     m.tid.ms += 1000;

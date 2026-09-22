@@ -9,6 +9,8 @@
 
 export type BuilderLogEvent =
   | 'app_created'
+  /** Ägaren döpte sin app. Namnet loggas ALDRIG — det är hennes text om sin egen app. */
+  | 'app_renamed'
   | 'job_queued'
   | 'job_started'
   | 'job_finished'

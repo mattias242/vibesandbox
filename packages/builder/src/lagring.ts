@@ -194,6 +194,15 @@ export function createStorage(db: BuilderDatabase) {
       db.run(sql.INSERT_APP, { appId, owner, name, nameIsDefault: nameIsDefault ? 1 : 0, now });
     },
 
+    /**
+     * Ägaren döper sin app. Ägarskapet är redan prövat av den som anropar — den här skriver rakt
+     * av. `updated_at` följer med: att välja ett namn är att röra appen, och listan sorteras på
+     * det.
+     */
+    renameApp(appId: string, name: string, now: string): void {
+      db.run(sql.RENAME_APP, { appId, name, now });
+    },
+
     findOwnedApp(appId: string, owner: string): StoredApp | null {
       const row = db.get(sql.SELECT_OWNED_APP, { appId, owner });
       return row === undefined ? null : toApp(row);
