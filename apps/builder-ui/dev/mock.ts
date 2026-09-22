@@ -37,6 +37,7 @@ import {
   type BuilderAppDetail,
   type BuilderJob,
   type BuilderMessage,
+  type RedlineCategory,
   type Role,
 } from '@vibesandbox/contracts';
 
@@ -158,6 +159,18 @@ const adminUsers: MockUser[] = [
   { userId: 'u-johan', email: 'johan@example.se', role: 'builder', createdAt: '2026-07-02T08:05:00Z', self: false },
   { userId: 'u-sara', email: 'sara@example.se', role: 'viewer', createdAt: '2026-08-29T15:20:00Z', self: false },
   { userId: 'u-per', email: 'per@example.se', role: 'viewer', createdAt: '2026-09-11T11:00:00Z', self: false },
+];
+
+/**
+ * Stoppade önskemål. Biometri två gånger med flit: det är ÅTERKOMSTEN panelen finns för att visa,
+ * och den som klickar runt ska se skillnaden mot en gräns som träffats en enda gång.
+ *
+ * Ingen rad bär önskemålets text — den finns inte i kontraktet och ska inte finnas här heller.
+ */
+const adminStops: { appIdPrefix: string; category: RedlineCategory; at: string }[] = [
+  { appIdPrefix: 'a01f3c7d', category: 'biometri', at: '2026-09-20T14:05:00Z' },
+  { appIdPrefix: 'c93be220', category: 'biometri', at: '2026-09-19T09:40:00Z' },
+  { appIdPrefix: 'c93be220', category: 'automatiskt-beslut-om-enskild', at: '2026-09-12T16:20:00Z' },
 ];
 
 /** Rollerna i styrka, så att en inbjudan kan höja men aldrig sänka — precis som kontraktet säger. */
@@ -329,6 +342,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       if (path === '/admin/oversikt') return send(res, 200, adminOverview());
       if (path === '/admin/appar') return send(res, 200, { apps: adminRows() });
       if (path === '/admin/anvandare') return send(res, 200, { users: adminUsers });
+      // Tomt läge är den goda nyheten och värt att se: starta om med ADMIN_INGA_STOPP=1.
+      if (path === '/admin/stopp') {
+        return send(res, 200, { stops: process.env['ADMIN_INGA_STOPP'] === '1' ? [] : adminStops });
+      }
       return fail(res, 404, 'not_found', 'Det finns inte.');
     }
     if (method === 'POST' && path === '/admin/anvandare') {

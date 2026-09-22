@@ -10,8 +10,26 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { ADMIN_APP_ID_PREFIX_LENGTH, type AdminApp, type AdminOverview, type AdminUser } from '@vibesandbox/contracts';
-import { ADMIN_FORBIDDEN, ADMIN_OWNER_MISSING, ADMIN_SELF_NOTE, ADMIN_TITLE, ROLES, ROLE_TEXTS } from '../src/admin.ts';
+import {
+  ADMIN_APP_ID_PREFIX_LENGTH,
+  REDLINE_CATEGORIES,
+  type AdminApp,
+  type AdminOverview,
+  type AdminStop,
+  type AdminUser,
+} from '@vibesandbox/contracts';
+import {
+  ADMIN_FORBIDDEN,
+  ADMIN_OWNER_MISSING,
+  ADMIN_SELF_NOTE,
+  ADMIN_STOPS_EMPTY,
+  ADMIN_STOPS_PATTERN_NOTE,
+  ADMIN_STOPS_PRIVACY_NOTE,
+  ADMIN_TITLE,
+  REDLINE_TEXTS,
+  ROLES,
+  ROLE_TEXTS,
+} from '../src/admin.ts';
 import { AdminView } from '../src/AdminPage.tsx';
 
 /** Ett riktigt app-id. Bara de första tecknen får nå märkspråket. */
@@ -57,18 +75,62 @@ const USERS: readonly AdminUser[] = [
   { userId: 'u-johan', email: 'johan@example.se', role: 'viewer', createdAt: '2026-09-02T11:15:00Z', self: false },
 ];
 
+/**
+ * Stoppade önskemål: flera kategorier, och en kategori som återkommer — det är just den
+ * upprepningen panelen finns för. Ingen rad bär önskemålets text; den finns inte i kontraktet.
+ */
+const STOPS: readonly AdminStop[] = [
+  {
+    appIdPrefix: FULL_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    category: 'biometri',
+    at: '2026-09-20T14:05:00Z',
+  },
+  {
+    appIdPrefix: OTHER_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    category: 'biometri',
+    at: '2026-09-19T09:40:00Z',
+  },
+  {
+    appIdPrefix: OTHER_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    category: 'automatiskt-beslut-om-enskild',
+    at: '2026-09-12T16:20:00Z',
+  },
+];
+
 const CALLBACKS = { onInvite: async () => '', onSetRole: async () => '' };
 
 function render(props: Parameters<typeof AdminView>[0]): string {
   return renderToStaticMarkup(createElement(AdminView, props));
 }
 
-const loaded = { overview: OVERVIEW, apps: APPS, users: USERS, error: null, ...CALLBACKS };
+const loaded = {
+  overview: OVERVIEW,
+  apps: APPS,
+  users: USERS,
+  stops: STOPS,
+  error: null,
+  ...CALLBACKS,
+};
 
-/** Märkspråket för en av vyns tre delar, så att en del går att pröva utan de andra. */
-function part(html: string, name: 'figures' | 'apps' | 'users'): string {
-  const starts = { figures: 'admin-figures-heading', apps: 'admin-apps-heading', users: 'admin-users-heading' };
-  const order: Array<keyof typeof starts> = ['figures', 'apps', 'users'];
+/** Vyn innan den vet något: alla fyra hämtningarna är obesvarade. */
+const pending = {
+  ...CALLBACKS,
+  overview: null,
+  apps: null,
+  users: null,
+  stops: null,
+  error: null,
+};
+
+/** Märkspråket för en av vyns fyra delar, så att en del går att pröva utan de andra. */
+function part(html: string, name: 'figures' | 'apps' | 'users' | 'stops'): string {
+  const starts = {
+    figures: 'admin-figures-heading',
+    apps: 'admin-apps-heading',
+    users: 'admin-users-heading',
+    stops: 'admin-stops-heading',
+  };
+  const order: Array<keyof typeof starts> = ['figures', 'apps', 'users', 'stops'];
   const from = html.indexOf(starts[name]);
   expect(from, `delen ${name} ska finnas`).toBeGreaterThan(0);
   const next = order[order.indexOf(name) + 1];
@@ -140,12 +202,12 @@ describe('kontrollrummet', () => {
   });
 
   it('väntar man på svaret syns det', () => {
-    const html = render({ ...CALLBACKS, overview: null, apps: null, users: null, error: null });
+    const html = render(pending);
     expect(html).toMatch(/Hämtar|Laddar/);
   });
 
   it('403 möts med klarspråk i stället för en trasig sida', () => {
-    const html = render({ ...CALLBACKS, overview: null, apps: null, users: null, error: ADMIN_FORBIDDEN });
+    const html = render({ ...pending, error: ADMIN_FORBIDDEN });
     expect(html).toContain(ADMIN_FORBIDDEN);
     expect(html).toContain('notice-error');
     expect(html).toContain('role="alert"');
@@ -255,3 +317,72 @@ describe('kontrollrummets adresser och roller', () => {
     expect(html).toContain('anna@example.se');
   });
 });
+
+/**
+ * Kontrollrummets fjärde del: önskemål som stoppats av en röd linje.
+ *
+ * Panelen finns för mönstret, inte för de enskilda raderna: en kategori som dyker upp gång på
+ * gång är oftast en regel som är för bred, inte många skumma användare. Och önskemålets text
+ * står aldrig här — den kan innehålla personuppgifter, så vyn får varken visa eller be om den.
+ */
+describe('kontrollrummets stoppade önskemål', () => {
+  it('är en egen del med rubrik, efter de tre som redan fanns', () => {
+    const html = render(loaded);
+    expect(html).toContain('admin-stops-heading');
+    expect(html.indexOf('admin-stops-heading')).toBeGreaterThan(html.indexOf('admin-users-heading'));
+  });
+
+  it('varje stoppad kategori står med svensk rubrik, aldrig kontraktets maskintext', () => {
+    const html = part(render(loaded), 'stops');
+    for (const stop of STOPS) {
+      expect(html).toContain(REDLINE_TEXTS[stop.category].label);
+      expect(html, 'maskintexten hör inte hemma i vyn').not.toContain(stop.category);
+    }
+  });
+
+  it('förklarar vad kategorin betyder, så att en förvaltare förstår vad som stoppades', () => {
+    const html = part(render(loaded), 'stops');
+    expect(html).toContain(REDLINE_TEXTS['biometri'].explanation);
+    expect(html).toContain(REDLINE_TEXTS['automatiskt-beslut-om-enskild'].explanation);
+  });
+
+  it('säger varför önskemålets text inte står här', () => {
+    expect(part(render(loaded), 'stops')).toContain(ADMIN_STOPS_PRIVACY_NOTE);
+  });
+
+  it('bär upplysningen om att en återkommande kategori kan vara en för bred regel', () => {
+    expect(part(render(loaded), 'stops')).toContain(ADMIN_STOPS_PATTERN_NOTE);
+  });
+
+  it('visar hur ofta varje gräns träffats, den vanligaste först', () => {
+    const html = part(render(loaded), 'stops');
+    const often = html.indexOf(REDLINE_TEXTS['biometri'].label);
+    const seldom = html.indexOf(REDLINE_TEXTS['automatiskt-beslut-om-enskild'].label);
+    expect(often).toBeGreaterThan(0);
+    expect(seldom).toBeGreaterThan(often);
+    expect(html).toContain('2 gånger');
+  });
+
+  it('nämner inte en kategori som aldrig träffats', () => {
+    const html = part(render(loaded), 'stops');
+    const untouched = REDLINE_CATEGORIES.filter((category) => !STOPS.some((stop) => stop.category === category));
+    for (const category of untouched) expect(html).not.toContain(REDLINE_TEXTS[category].label);
+  });
+
+  it('är en riktig tabell och ren läsning — ingen knapp, inget formulär, ingen länk', () => {
+    const html = part(render(loaded), 'stops');
+    expect(html).toContain('<table');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('<form');
+    expect(html).not.toContain('href');
+  });
+
+  it('tomt läge är en god nyhet, och ingen tabell', () => {
+    const html = part(render({ ...loaded, stops: [] }), 'stops');
+    expect(html).toContain(ADMIN_STOPS_EMPTY);
+    expect(html).not.toContain('<table');
+    // Upplysningen om vad panelen är till för står kvar: den förklarar varför ytan är tom.
+    expect(html).toContain(ADMIN_STOPS_PRIVACY_NOTE);
+  });
+});
+

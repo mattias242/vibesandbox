@@ -9,7 +9,14 @@
  * funktion här tar emot SERVERNS rad och bygger besked eller ny lista av den, aldrig av det
  * någon hann klicka på.
  */
-import { ADMIN_TOKEN_WINDOW_DAYS, type AdminUser, type Role } from '@vibesandbox/contracts';
+import {
+  ADMIN_TOKEN_WINDOW_DAYS,
+  REDLINE_CATEGORIES,
+  type AdminStop,
+  type AdminUser,
+  type RedlineCategory,
+  type Role,
+} from '@vibesandbox/contracts';
 import { ApiError } from './api.ts';
 import { errorMessage } from './client.ts';
 import { validateEmail, type EmailValidation } from './share.ts';
@@ -230,3 +237,78 @@ export function countRoles(users: readonly AdminUser[]): { admin: number; builde
   for (const user of users) counts[user.role] += 1;
   return counts;
 }
+
+// ── Röda linjer: önskemål som stoppats innan något byggdes ──────────────────────
+
+export const ADMIN_STOPS_HEADING = 'Stoppade önskemål';
+
+/**
+ * Kontraktets kategorikoder är maskintext. En förvaltare ska förstå vad som stoppades utan att
+ * kunna regelverket, så varje kod har en rubrik i vanliga ord och en mening som förklarar
+ * användningen. En paragrafhänvisning förklarar ingenting och är därför förbjuden i testet.
+ */
+export interface RedlineText {
+  readonly label: string;
+  readonly explanation: string;
+}
+
+export const REDLINE_TEXTS: Readonly<Record<RedlineCategory, RedlineText>> = {
+  'social-poangsattning': {
+    label: 'Poängsättning av människor',
+    explanation: 'Att ge människor poäng eller rangordna dem efter hur de beter sig eller vilka de är.',
+  },
+  kansloigenkanning: {
+    label: 'Känsloigenkänning',
+    explanation: 'Att läsa av hur människor känner sig, på en arbetsplats eller i en skola.',
+  },
+  biometri: {
+    label: 'Biometrisk identifiering',
+    explanation: 'Att känna igen vem någon är på kroppen — ansikte, fingeravtryck eller något liknande.',
+  },
+  'prediktiv-brottsbekampning': {
+    label: 'Förutsägelser om brott',
+    explanation: 'Att räkna ut att en viss person kommer att begå ett brott.',
+  },
+  'automatiskt-beslut-om-enskild': {
+    label: 'Beslut utan människa',
+    explanation: 'Att avgöra någons ärende eller bidrag utan att en människa prövar saken.',
+  },
+  manipulation: {
+    label: 'Manipulation',
+    explanation: 'Att påverka någon utan att hen märker det, eller utnyttja att någon är i underläge.',
+  },
+};
+
+/** Sagt vid listan: varför det bara står en kategori och aldrig vad som skrevs. */
+export const ADMIN_STOPS_PRIVACY_NOTE =
+  'Här står bara vilken sorts användning som stoppades, aldrig vad någon skrev. Ett önskemål kan ' +
+  'innehålla personuppgifter, och ett stopp ska inte bli stället där just sådant sparas.';
+
+/** Listans egentliga syfte: den säger mer om reglerna än om dem som skrev. */
+export const ADMIN_STOPS_PATTERN_NOTE =
+  'Återkommer samma gräns ofta är det troligare att regeln är för bred än att många försöker ' +
+  'samma sak. Läs listan som ett omdöme om regeln, inte om personerna.';
+
+/** Tomt läge. Ingenting är trasigt och ingenting saknas — det här är den goda nyheten. */
+export const ADMIN_STOPS_EMPTY = 'Ingen har bett om något som de röda linjerna stoppar.';
+
+/**
+ * Hur ofta varje gräns träffats, den vanligaste först. Kategorier utan träffar tas inte med: en
+ * rad med noll säger ingenting, och sex nollor döljer den enda siffra som betyder något.
+ *
+ * Lika många träffar ger kontraktets ordning, så att listan inte hoppar runt mellan två laddningar.
+ */
+export function countStops(stops: readonly AdminStop[]): readonly { category: RedlineCategory; count: number }[] {
+  const counts = new Map<RedlineCategory, number>();
+  for (const stop of stops) counts.set(stop.category, (counts.get(stop.category) ?? 0) + 1);
+  return REDLINE_CATEGORIES.filter((category) => counts.has(category))
+    .map((category) => ({ category, count: counts.get(category) ?? 0 }))
+    .sort((a, b) => b.count - a.count || REDLINE_CATEGORIES.indexOf(a.category) - REDLINE_CATEGORIES.indexOf(b.category));
+}
+
+/**
+ * När adressen lades in är okänt. Det inträffar bara om värdet inte gick att läsa ur databasen —
+ * användaren visas ändå, eftersom den som inte syns i kontrollrummet inte heller går att ändra
+ * rollen på. Ett tankstreck är ärligare än ett påhittat datum.
+ */
+export const ADMIN_DATE_UNKNOWN = '—';

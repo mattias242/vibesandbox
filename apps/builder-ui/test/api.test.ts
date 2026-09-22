@@ -492,3 +492,58 @@ describe('kontrollrummets adresser', () => {
     expect(error.status).toBe(status);
   });
 });
+
+/**
+ * Kontrollrummets stoppade önskemål. Svaret bär bara kategori, app-förkortning och tidpunkt —
+ * aldrig önskemålets text. Kategorin styr vilken rubrik vyn ritar, så en kategori utanför
+ * kontraktet avvisas här: den skulle annars visas som maskintext för en förvaltare, eller
+ * alls inte, och listan hade sett kortare ut än den är.
+ */
+describe('kontrollrummets stoppade önskemål', () => {
+  const STOP = { appIdPrefix: '01jabcde', category: 'biometri', at: '2026-09-20T12:00:00Z' };
+
+  it('GET till rätt relativa adress, med kakor och utan skyddshuvud', async () => {
+    const { api, calls } = client(() => json(200, { stops: [STOP] }));
+    await expect(api.adminStops()).resolves.toEqual([STOP]);
+    expect(`${calls[0]?.method} ${calls[0]?.url}`).toBe(`GET ${BUILDER_API_PREFIX}/admin/stopp`);
+    expect(calls[0]?.credentials).toBe('same-origin');
+    expect(calls[0]?.headers[CSRF_HEADER]).toBeUndefined();
+    expect(calls[0]?.body).toBeUndefined();
+  });
+
+  it('en tom lista är ett giltigt svar — ingen har försökt bygga något förbjudet', async () => {
+    const { api } = client(() => json(200, { stops: [] }));
+    await expect(api.adminStops()).resolves.toEqual([]);
+  });
+
+  it('en okänd kategori avvisas i stället för att ritas', async () => {
+    const { api } = client(() => json(200, { stops: [{ ...STOP, category: 'nagot-nytt' }] }));
+    await expect(api.adminStops()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it.each([
+    ['saknar listan', {}],
+    ['listan är inget fält', { stops: 'biometri' }],
+    ['en rad saknar kategori', { stops: [{ ...STOP, category: undefined }] }],
+    ['en rad saknar tidpunkt', { stops: [{ ...STOP, at: undefined }] }],
+    ['en rad har tom tidpunkt', { stops: [{ ...STOP, at: '' }] }],
+    ['en rad saknar app', { stops: [{ ...STOP, appIdPrefix: undefined }] }],
+  ])('ett svar som %s blir ett fel i klarspråk', async (_name, body) => {
+    const { api } = client(() => json(200, body));
+    const error = (await api.adminStops().catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.message).toMatch(/Något gick fel/);
+  });
+
+  it('en rad med mer än förkortningen av app-id:t avvisas, precis som i applistan', async () => {
+    const { api } = client(() => json(200, { stops: [{ ...STOP, appIdPrefix: APP_ID }] }));
+    await expect(api.adminStops()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('svaret bär aldrig önskemålets text — ett fält för mycket plockas bort', async () => {
+    const { api } = client(() => json(200, { stops: [{ ...STOP, text: 'känn igen ansikten i entrén' }] }));
+    const stops = await api.adminStops();
+    expect(JSON.stringify(stops)).not.toContain('entrén');
+  });
+});
+

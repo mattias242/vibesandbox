@@ -9,9 +9,12 @@ import {
   ADMIN_APP_ID_PREFIX_LENGTH,
   BUILDER_API_PREFIX,
   CSRF_HEADER,
+  REDLINE_CATEGORIES,
   type AdminApp,
   type AdminOverview,
+  type AdminStop,
   type AdminUser,
+  type RedlineCategory,
   type ApiErrorCode,
   type BuilderAppDetail,
   type BuilderAppMember,
@@ -66,6 +69,8 @@ export interface ApiClient {
   adminOverview(): Promise<AdminOverview>;
   /** Kontrollrummet: alla appar, senast ändrad först. Aldrig hela app-id:t. */
   adminApps(): Promise<readonly AdminApp[]>;
+  /** Kontrollrummet: önskemål som stoppats av en röd linje. Aldrig med texten som stoppades. */
+  adminStops(): Promise<readonly AdminStop[]>;
   /** Kontrollrummet: alla adresser som får logga in, och med vilken roll. */
   adminUsers(): Promise<readonly AdminUser[]>;
   /**
@@ -161,6 +166,32 @@ function checkOverview(value: unknown): AdminOverview {
     },
     failedJobs: checkCount(body['failedJobs']),
   };
+}
+
+/**
+ * En kategori servern skickar men kontraktet inte känner kommer från en annan version av vår egen
+ * kod. Den avvisas hellre än ritas: kontrollrummet ska aldrig visa ett ord som ingen kan förklara.
+ * Fälten plockas ett och ett, så att ett fält för mycket — till exempel önskemålets text — aldrig
+ * följer med in i vyn.
+ */
+function checkAdminStops(value: unknown): readonly AdminStop[] {
+  if (!Array.isArray(value)) throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  return value.map((item: unknown) => {
+    const { appIdPrefix, category, at } = fields(item);
+    if (
+      typeof appIdPrefix !== 'string' ||
+      appIdPrefix.length === 0 ||
+      appIdPrefix.length > ADMIN_APP_ID_PREFIX_LENGTH ||
+      !ID_PATTERN.test(appIdPrefix) ||
+      typeof category !== 'string' ||
+      !REDLINE_CATEGORIES.includes(category as RedlineCategory) ||
+      typeof at !== 'string' ||
+      at === ''
+    ) {
+      throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+    }
+    return { appIdPrefix, category: category as RedlineCategory, at };
+  });
 }
 
 /**
@@ -341,6 +372,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     adminOverview: async () => checkOverview(await request<unknown>('GET', '/admin/oversikt')),
 
     adminApps: async () => checkAdminApps((await request<{ apps?: unknown }>('GET', '/admin/appar')).apps),
+    adminStops: async () => checkAdminStops((await request<{ stops?: unknown }>('GET', '/admin/stopp')).stops),
 
     adminUsers: async () => checkAdminUsers((await request<{ users?: unknown }>('GET', '/admin/anvandare')).users),
 

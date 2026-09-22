@@ -6,7 +6,13 @@
  * inte se en trasig sida.
  */
 import { describe, expect, it } from 'vitest';
-import type { AdminUser, Role } from '@vibesandbox/contracts';
+import {
+  REDLINE_CATEGORIES,
+  type AdminStop,
+  type AdminUser,
+  type RedlineCategory,
+  type Role,
+} from '@vibesandbox/contracts';
 import { ApiError } from '../src/api.ts';
 import {
   ADMIN_CONFLICT,
@@ -15,11 +21,16 @@ import {
   ADMIN_INVALID_EMAIL,
   ADMIN_RATE_LIMITED,
   ADMIN_SELF_REFUSED,
+  ADMIN_STOPS_EMPTY,
+  ADMIN_STOPS_PATTERN_NOTE,
+  ADMIN_STOPS_PRIVACY_NOTE,
   ADMIN_WRITE_FORBIDDEN,
+  REDLINE_TEXTS,
   ROLES,
   ROLE_TEXTS,
   adminErrorMessage,
   countRoles,
+  countStops,
   inviteErrorMessage,
   invitedMessage,
   roleChangedMessage,
@@ -28,6 +39,7 @@ import {
   statusOf,
   validateInviteEmail,
   withUser,
+  type RedlineText,
 } from '../src/admin.ts';
 
 /** En rad ur kontrollrummets adresslista. `self` är falskt om inget annat sägs. */
@@ -205,5 +217,98 @@ describe('validateInviteEmail', () => {
   it('en riktig adress normaliseras till gemener utan blanktecken', () => {
     const result = validateInviteEmail('  Anna@Example.SE ');
     expect(result).toEqual({ ok: true, email: 'anna@example.se' });
+  });
+});
+
+/**
+ * Kontrollrummets fjärde del: önskemål som stoppats av en röd linje.
+ *
+ * Kategorikoderna i kontraktet är maskintext. Här låses att var och en av dem har en begriplig
+ * svensk rubrik och en mening om vad den betyder — en ny kategori i kontraktet fäller testet
+ * tills den fått sin text, i stället för att tyst visas som `kansloigenkanning` för en förvaltare.
+ */
+describe('röda linjer i kontrollrummet', () => {
+  it('varje kategori i kontraktet har en rubrik och en förklaring', () => {
+    for (const category of REDLINE_CATEGORIES) {
+      const text = REDLINE_TEXTS[category] as RedlineText | undefined;
+      expect(text, `kategorin ${category} saknar text`).toBeDefined();
+      expect(text!.label.length, `${category}: rubriken är för kort`).toBeGreaterThan(5);
+      expect(text!.explanation.length, `${category}: förklaringen är för kort`).toBeGreaterThan(30);
+    }
+  });
+
+  it('rubriken är svenska ord, aldrig kontraktets maskintext', () => {
+    for (const category of REDLINE_CATEGORIES) {
+      const { label, explanation } = REDLINE_TEXTS[category];
+      expect(label, 'maskintexten hör inte hemma i vyn').not.toContain(category);
+      expect(explanation).not.toContain(category);
+      expect(label, 'en rubrik med bindestreck ser ut som en kod').not.toMatch(/-[a-z]/);
+    }
+  });
+
+  it('ingen kategori delar rubrik eller förklaring med en annan', () => {
+    const labels = REDLINE_CATEGORIES.map((category) => REDLINE_TEXTS[category].label);
+    const explanations = REDLINE_CATEGORIES.map((category) => REDLINE_TEXTS[category].explanation);
+    expect(new Set(labels).size).toBe(REDLINE_CATEGORIES.length);
+    expect(new Set(explanations).size).toBe(REDLINE_CATEGORIES.length);
+  });
+
+  it('ingen förklaring hänvisar till en paragraf i stället för att förklara', () => {
+    for (const category of REDLINE_CATEGORIES) {
+      const { explanation } = REDLINE_TEXTS[category];
+      expect(explanation, `${category}: en paragraf är ingen förklaring`).not.toMatch(
+        /artikel \d|§|förordning|AI-akten|EU 20/i,
+      );
+    }
+  });
+
+  it('panelen säger varför önskemålets text inte står där', () => {
+    expect(ADMIN_STOPS_PRIVACY_NOTE).toMatch(/personuppgift/i);
+    expect(ADMIN_STOPS_PRIVACY_NOTE, 'säg att texten inte visas, inte bara varför').toMatch(
+      /vad någon skrev|önskemålets text|texten/i,
+    );
+  });
+
+  it('panelen säger att en kategori som återkommer kan vara en för bred regel', () => {
+    expect(ADMIN_STOPS_PATTERN_NOTE).toMatch(/för bred/);
+    expect(ADMIN_STOPS_PATTERN_NOTE, 'slutsatsen gäller regeln, inte personerna').toMatch(/regeln/i);
+  });
+
+  it('tomt läge är en god nyhet, inte ett tomt resultat', () => {
+    expect(ADMIN_STOPS_EMPTY).toMatch(/[Ii]ngen har/);
+    expect(ADMIN_STOPS_EMPTY, 'ingenting är trasigt eller saknas').not.toMatch(/tom|saknas|fel|ännu inga/i);
+  });
+});
+
+describe('countStops', () => {
+  const stop = (category: RedlineCategory, at: string): AdminStop => ({ appIdPrefix: 'a01f3c7d', category, at });
+
+  it('räknar per kategori, den vanligaste först — det är mönstret som är poängen', () => {
+    const counts = countStops([
+      stop('biometri', '2026-09-20T12:00:00Z'),
+      stop('manipulation', '2026-09-19T12:00:00Z'),
+      stop('biometri', '2026-09-18T12:00:00Z'),
+      stop('biometri', '2026-09-17T12:00:00Z'),
+      stop('manipulation', '2026-09-16T12:00:00Z'),
+    ]);
+    expect(counts).toEqual([
+      { category: 'biometri', count: 3 },
+      { category: 'manipulation', count: 2 },
+    ]);
+  });
+
+  it('en kategori som aldrig träffats tas inte med — den säger ingenting', () => {
+    const counts = countStops([stop('biometri', '2026-09-20T12:00:00Z')]);
+    expect(counts).toHaveLength(1);
+    expect(counts[0]?.category).toBe('biometri');
+  });
+
+  it('lika många träffar ger kontraktets ordning, så att listan inte hoppar runt', () => {
+    const counts = countStops([stop('manipulation', '2026-09-20T12:00:00Z'), stop('biometri', '2026-09-19T12:00:00Z')]);
+    expect(counts.map((row) => row.category)).toEqual(['biometri', 'manipulation']);
+  });
+
+  it('inga stopp ger en tom lista, inte sex nollor', () => {
+    expect(countStops([])).toEqual([]);
   });
 });

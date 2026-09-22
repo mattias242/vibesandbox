@@ -3,11 +3,13 @@ import {
   ADMIN_TOKEN_WINDOW_DAYS,
   type AdminApp,
   type AdminOverview,
+  type AdminStop,
   type AdminUser,
   type Role,
 } from '@vibesandbox/contracts';
 import {
   ADMIN_APPS_HEADING,
+  ADMIN_DATE_UNKNOWN,
   ADMIN_EMPTY,
   ADMIN_FIGURES_HEADING,
   ADMIN_ID_NOTE,
@@ -24,15 +26,21 @@ import {
   ADMIN_ROLE_SAVING,
   ADMIN_ROLE_SELECT_LABEL,
   ADMIN_SELF_NOTE,
+  ADMIN_STOPS_EMPTY,
+  ADMIN_STOPS_HEADING,
+  ADMIN_STOPS_PATTERN_NOTE,
+  ADMIN_STOPS_PRIVACY_NOTE,
   ADMIN_TITLE,
   ADMIN_TOKENS_NOTE,
   ADMIN_USERS_COLUMNS,
   ADMIN_USERS_HEADING,
   ADMIN_USERS_LEAD,
+  REDLINE_TEXTS,
   ROLES,
   ROLE_TEXTS,
   adminErrorMessage,
   countRoles,
+  countStops,
   inviteErrorMessage,
   invitedMessage,
   roleChangedMessage,
@@ -64,18 +72,20 @@ export function AdminPage() {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [apps, setApps] = useState<readonly AdminApp[] | null>(null);
   const [users, setUsers] = useState<readonly AdminUser[] | null>(null);
+  const [stops, setStops] = useState<readonly AdminStop[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    // Alla tre anropen tillsammans: vyn visar ingenting förrän den har hela bilden, och ett nekat
+    // Alla fyra anropen tillsammans: vyn visar ingenting förrän den har hela bilden, och ett nekat
     // anrop ska ge ett besked — inte en halv sida.
-    Promise.all([api.adminOverview(), api.adminApps(), api.adminUsers()]).then(
-      ([nextOverview, nextApps, nextUsers]) => {
+    Promise.all([api.adminOverview(), api.adminApps(), api.adminUsers(), api.adminStops()]).then(
+      ([nextOverview, nextApps, nextUsers, nextStops]) => {
         if (cancelled) return;
         setOverview(nextOverview);
         setApps(nextApps);
         setUsers(nextUsers);
+        setStops(nextStops);
       },
       (caught: unknown) => {
         if (!cancelled) setError(adminErrorMessage(caught));
@@ -116,6 +126,7 @@ export function AdminPage() {
       overview={overview}
       apps={apps}
       users={users}
+      stops={stops}
       error={error}
       onInvite={(email, role) => invite(email, role)}
       onSetRole={(userId, role) => setRole(userId, role)}
@@ -127,13 +138,14 @@ export interface AdminViewProps {
   readonly overview: AdminOverview | null;
   readonly apps: readonly AdminApp[] | null;
   readonly users: readonly AdminUser[] | null;
+  readonly stops: readonly AdminStop[] | null;
   readonly error: string | null;
   /** Löser ut med beskedet att visa; kastar serverns fel, som vyn översätter till klarspråk. */
   readonly onInvite: (email: string, role: Role) => Promise<string>;
   readonly onSetRole: (userId: string, role: Role) => Promise<string>;
 }
 
-export function AdminView({ overview, apps, users, error, onInvite, onSetRole }: AdminViewProps) {
+export function AdminView({ overview, apps, users, stops, error, onInvite, onSetRole }: AdminViewProps) {
   return (
     <div className="page page-admin">
       <h1>{ADMIN_TITLE}</h1>
@@ -143,7 +155,7 @@ export function AdminView({ overview, apps, users, error, onInvite, onSetRole }:
         <p className="notice notice-error" role="alert">
           {error}
         </p>
-      ) : overview === null || apps === null || users === null ? (
+      ) : overview === null || apps === null || users === null || stops === null ? (
         <p className="muted" aria-live="polite">
           {ADMIN_LOADING}
         </p>
@@ -175,9 +187,50 @@ export function AdminView({ overview, apps, users, error, onInvite, onSetRole }:
           </section>
 
           <UsersSection users={users} onInvite={onInvite} onSetRole={onSetRole} />
+
+          <StopsSection stops={stops} />
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Stoppade önskemål. Ren läsning, och medvetet utan länk: ett stopp hör till appen, men
+ * kontrollrummet är ingen väg in i den. Önskemålets text finns inte i kontraktet och efterfrågas
+ * därför aldrig — den kan bära personuppgifter.
+ */
+function StopsSection({ stops }: { stops: readonly AdminStop[] }) {
+  const counts = countStops(stops);
+  return (
+    <section className="admin-block" aria-labelledby="admin-stops-heading">
+      <h2 id="admin-stops-heading">{ADMIN_STOPS_HEADING}</h2>
+      <p className="hint">{ADMIN_STOPS_PRIVACY_NOTE}</p>
+      <p className="hint">{ADMIN_STOPS_PATTERN_NOTE}</p>
+      {counts.length === 0 ? (
+        <p className="muted">{ADMIN_STOPS_EMPTY}</p>
+      ) : (
+        <table className="admin-table admin-stops">
+          <caption className="visually-hidden">Gränser som stoppat önskemål, den vanligaste först</caption>
+          <thead>
+            <tr>
+              <th scope="col">Gräns</th>
+              <th scope="col">Vad den betyder</th>
+              <th scope="col" className="admin-num">Antal</th>
+            </tr>
+          </thead>
+          <tbody>
+            {counts.map(({ category, count }) => (
+              <tr key={category}>
+                <th scope="row">{REDLINE_TEXTS[category].label}</th>
+                <td>{REDLINE_TEXTS[category].explanation}</td>
+                <td className="admin-num">{count === 1 ? '1 gång' : `${formatCount(count)} gånger`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }
 
@@ -386,7 +439,7 @@ function UserTable({ users, onSetRole }: { users: readonly AdminUser[]; onSetRol
               <td>
                 <span className="badge">{roleLabel(user.role)}</span>
               </td>
-              <td>{formatUpdated(user.createdAt)}</td>
+              <td>{user.createdAt === null ? ADMIN_DATE_UNKNOWN : formatUpdated(user.createdAt)}</td>
               <td>
                 {user.self ? (
                   // Ingen knapp, inte ens en inaktiverad: en knapp som bara kan misslyckas är ett

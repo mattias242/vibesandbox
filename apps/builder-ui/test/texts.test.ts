@@ -1,6 +1,6 @@
 /**
  * Påståendena i "Trygghet och kontroll" måste vara sanna. Testet låser vad som sägs och
- * fäller på sådant plattformen INTE gör (mänsklig granskning, klassning, att namn tas bort).
+ * fäller på sådant plattformen INTE gör (mänsklig granskning, att namn tas bort).
  */
 import { describe, expect, it } from 'vitest';
 import { SAFETY_POINTS, SUGGESTIONS } from '../src/texts.ts';
@@ -31,9 +31,41 @@ describe('Trygghet och kontroll', () => {
     expect(all).toMatch(/[Tt]ummen upp räknas bara/);
   });
 
+  /**
+   * Den här skivan gör ett av påståendena sant: ett önskemål prövas mot de röda linjerna innan
+   * språkmodellen får skriva en rad kod, och en träff betyder att jobbet aldrig startar.
+   *
+   * Prövningen är mönsterbaserad. Den får därför inte läsas som ett löfte om att allt fångas —
+   * står inte förbehållet kvar är punkten inte längre sann.
+   */
+  it('säger att förbjuden användning stoppas innan något byggs', () => {
+    expect(all).toMatch(/förbjud/i);
+    expect(all).toMatch(/stoppas/);
+    expect(all).toMatch(/innan någon kod skrivs/);
+    expect(all).toMatch(/fångar inte allt/);
+  });
+
+  /**
+   * Den här skivan gör ett påstående till: appen får en känslighetsnivå, och nivån sätts ÅT den
+   * som bygger. Det är den bärande regeln — den som bygger ska inte kunna välja bort sitt eget
+   * skydd — och den syns i AI-registret i kontrollrummet.
+   *
+   * Förbehållet är inte en artighet. Nivån sätts utifrån det önskemålet BESKRIVER, inte utifrån
+   * vad appen sedan matas med. Står inte den sista meningen kvar lovar punkten mer än plattformen
+   * kan hålla, precis som punkten om de röda linjerna utan sitt "fångar inte allt".
+   */
+  it('säger att appen klassas åt en, och att fel faller åt det försiktiga hållet', () => {
+    expect(all).toMatch(/klass/i);
+    expect(all).toMatch(/hur känsliga uppgifter den ska hantera/);
+    expect(all).toMatch(/[Kk]lassen sätts åt dig/);
+    expect(all).toMatch(/väljer den aldrig själv/);
+    expect(all).toMatch(/höjer den/);
+    expect(all).toMatch(/behandlas appen som den känsligaste/);
+    expect(all).toMatch(/inte av det appen sedan används till/);
+  });
+
   it('påstår inte mer än så', () => {
     expect(all).not.toMatch(/människa|manuell|granskas av|granskar/i);
-    expect(all).not.toMatch(/klassa|klassning|klassific/i);
     expect(all).not.toMatch(/namn tas bort|anonymiser/i);
     expect(all).not.toMatch(/helt säker|100 ?%|garanter/i);
   });
