@@ -39,6 +39,8 @@ import type {
 export const ANNA: Identity = { userId: 'u-anna', email: 'anna@example.org', roles: ['builder'] };
 export const BERTIL: Identity = { userId: 'u-bertil', email: 'bertil@example.org', roles: ['builder'] };
 export const ADAM: Identity = { userId: 'u-adam', email: 'adam.admin@example.org', roles: ['admin'] };
+/** En ANDRA administratör. Finns för att pröva regeln om att avgöra sin egen app: se granskning.test.ts. */
+export const EVA: Identity = { userId: 'u-eva', email: 'eva.admin@example.org', roles: ['admin'] };
 export const VERA: Identity = { userId: 'u-vera', email: 'vera@example.org', roles: ['viewer'] };
 
 export const STARTFILER: SourceFiles = { 'src/App.tsx': 'export function App() { return null; }' };

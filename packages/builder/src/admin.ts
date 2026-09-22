@@ -15,6 +15,8 @@
  *    gissad adress. Övriga vyer — stopplistan, registret, granskningskön — visar fortfarande bara
  *    prefixet: de svarar på hur plattformen mår, inte på vilken app någon vill öppna. Och i
  *    driftloggen står bara prefixet, alltid: en logg läses av fler och sparas längre än ett svar.
+ *  - Granskningsbeslutet bär `selfReview` när granskaren också är ägare. Det får bara hända när
+ *    hon är plattformens ende administratör (se `finnsAnnanGranskare`), och då ska det synas.
  *  - Ägarens adress går i svaret men aldrig i en loggrad. Därför loggar den här modulen nästan
  *    inget: inte användarlistan, inte en inbjudan, inte ens en misslyckad. UNDANTAGET är
  *    granskningsbeslutet. Ett beslut om att släppa ut en app måste gå att följa i efterhand —
@@ -151,6 +153,23 @@ export function createAdmin(deps: AdminDependencies): {
       throw new ApiProblem('unavailable', 'Användarhanteringen är inte inkopplad i den här installationen.');
     }
     return deps.users;
+  }
+
+  /**
+   * Finns det en ANNAN administratör som kan granska?
+   *
+   * Frågan avgör om spärren mot att avgöra sin egen app gäller. Den är ställd så med flit: det är
+   * inte antalet administratörer som betyder något utan om det finns någon att be. En ensam
+   * förvaltare som inte får släppa ut sin egen app har inte granskats strängare — hon har bara
+   * ingen väg ut alls, och en spärr utan nyckel är ingen kontroll.
+   *
+   * Utan bryggan till identiteten går frågan inte att besvara, och då svarar vi `true`: spärren
+   * står kvar. Osäkerhet ska falla åt det stränga hållet, precis som klassningen gör. Plattformen
+   * kopplar alltid in bryggan, så det fallet är en installation som avviker.
+   */
+  function finnsAnnanGranskare(identity: Identity): boolean {
+    if (deps.users === undefined) return true;
+    return deps.users.list().some((user) => user.role === 'admin' && user.userId !== identity.userId);
   }
 
   /** Identitetens fel är kontraktets fel; de blir svar med klarspråk, aldrig ett 500. */
@@ -402,8 +421,10 @@ export function createAdmin(deps: AdminDependencies): {
      * Beslutet. Godkänt publicerar EXAKT den version som granskades — inte det som råkar vara
      * senast byggt. Ett nej kräver ett skäl, och skälet går ordagrant till ägaren.
      *
-     * En granskare får inte avgöra sin egen app. En administratör som bygger något är i det läget
-     * ägare, inte granskare, och ett godkännande av sig själv är ingen granskning alls.
+     * En granskare får inte avgöra sin egen app SÅ LÄNGE det finns någon annan att be. En
+     * administratör som bygger något är i det läget ägare, inte granskare, och ett godkännande av
+     * sig själv är ingen granskning alls — men fyraögonsprincipen förutsätter fyra ögon. Se
+     * `finnsAnnanGranskare`.
      */
     async decide(identity: Identity, reviewId: string, body: Record<string, unknown>): Promise<PlatformResponse> {
       const row = storage.review(reviewId);
@@ -415,7 +436,10 @@ export function createAdmin(deps: AdminDependencies): {
         throw new ApiProblem('conflict', 'Ägaren har byggt om appen, så det här ärendet gäller inte längre. Ett nytt kommer när hen begär igen.');
       }
       if (row.state !== 'vantar') throw new ApiProblem('conflict', 'Ärendet är redan avgjort.');
-      if (row.ownerUserId === identity.userId) {
+      // Egen app: tillåtet bara för den som är ensam. Beslutet bär då `selfReview` i loggen, så
+      // att det går att se i efterhand att ingen annan läste.
+      const egenApp = row.ownerUserId === identity.userId;
+      if (egenApp && finnsAnnanGranskare(identity)) {
         throw invalid('Du kan inte granska din egen app. Be en annan administratör göra det.');
       }
       const { decision, reason } = readDecision(body);
@@ -442,7 +466,7 @@ export function createAdmin(deps: AdminDependencies): {
       // Revisionsspåret. `status` är beslutet — ett fast ord ur kontraktet. Granskarens id går med
       // som `userId` (pseudonymt, aldrig adressen), skälet aldrig.
       const base = { appIdPrefix: appIdPrefix(row.appId), userId: identity.userId };
-      deps.log({ level: 'info', event: 'review_decided', ...base, status: decision });
+      deps.log({ level: 'info', event: 'review_decided', ...base, status: decision, ...(egenApp ? { selfReview: true } : {}) });
       if (decision === 'godkand') deps.log({ level: 'info', event: 'app_published', ...base });
       return json(200, { review: adminReview({ ...row, state: decision }, null, { decidedAt: now, reason }) });
     },

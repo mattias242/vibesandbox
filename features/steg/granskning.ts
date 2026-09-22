@@ -4,8 +4,9 @@
  *
  * Tre saker är värda att veta om scenarierna:
  *
- *   - Ägaren och granskaren är ALLTID olika personer, utom i det scenario som prövar just att de
- *     inte får vara samma. En granskare som avgör sin egen app har inte granskat något.
+ *   - Ägaren och granskaren är ALLTID olika personer, utom i de scenarier som prövar just den
+ *     regeln. Spärren gäller när det finns någon annan att be — Doris läggs in i REGISTRET för
+ *     det, inte bara med en signerad roll, för det är registret som svarar på frågan.
  *   - Läget hämtas i Så-steget, aldrig ur ett tidigare svar: ett Så-steg ska se vad som FAKTISKT
  *     står i lagret. Undantaget är de steg som prövar vad som står i SVARET — att kön inte bär
  *     källkod, och att app-id:t är förkortat.
@@ -15,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { Given, Then, When } from '@cucumber/cucumber';
 import { ADMIN_APP_ID_PREFIX_LENGTH, BUILDER_API_PREFIX } from '@vibesandbox/contracts';
-import type { AdminReview, BuilderAppDetail, Classification, SourceFiles } from '@vibesandbox/contracts';
+import type { AdminReview, AdminUser, BuilderAppDetail, Classification, SourceFiles } from '@vibesandbox/contracts';
 import { FORSTA_VERSIONEN, appMedRubrik } from './stod/byggkedja.ts';
 import { jsonKropp } from './stod/http.ts';
 import type { Varld } from './stod/varld.ts';
@@ -76,6 +77,29 @@ Given(/^att (Erik) har begärt publicering av sin egen app$/, async function (th
   await this.byggApi(person, 'POST', `/apps/${await this.byggapp(person)}/publish`, 202);
 });
 
+/**
+ * En ANDRA administratör, inlagd i registret på riktigt — inte bara med en signerad roll. Det är
+ * registret som svarar på frågan "finns det någon annan att be?", och därmed det som avgör om
+ * spärren mot att avgöra sin egen app gäller.
+ */
+Given(/^att (Doris) också är administratör för plattformen$/, async function (this: Varld, namn: string) {
+  const { user } = await this.byggApi<{ user: AdminUser }>('Erik', 'POST', '/admin/anvandare', 201, {
+    email: this.epost(namn),
+    role: 'admin',
+  });
+  // Hon loggar in med just det kontot inbjudan gav, och utan roller i inloggningen: registret
+  // avgör vad hon får göra. Annars vore den inloggade Doris en annan person än den i registret.
+  this.anvandarIdn.set(namn, user.userId);
+  this.loggaIn(namn, undefined, []);
+});
+
+/** Förutsättningen för det ensamma fallet: registret känner ingen annan administratör att be. */
+Given(/^att (Erik) är plattformens ende administratör$/, async function (this: Varld, person: string) {
+  const { users } = await this.byggApi<{ users: AdminUser[] }>(person, 'GET', '/admin/anvandare', 200);
+  const andra = users.filter((user) => user.role === 'admin' && user.userId !== this.anvandarId(person));
+  assert.deepEqual(andra, [], 'Scenariot förutsätter att det inte finns någon annan administratör.');
+});
+
 Given(/^att (Anna) har bett om att få rubriken bytt$/, async function (this: Varld, person: string) {
   const jobb = await this.bestall(person, 'Byt rubrik');
   assert.equal(jobb.status, 'done', 'Förberedelsen misslyckades: ombyggnaden blev aldrig klar.');
@@ -126,6 +150,16 @@ When(/^(Erik) försöker avvisa (Anna)s app utan skäl$/, async function (this: 
   this.svarFranByggverktyget = true;
 });
 
+When(/^(Erik) godkänner sin egen app$/, async function (this: Varld, person: string) {
+  const arende = await arendet(this, person, person);
+  await this.byggApi(person, 'POST', `/admin/granskning/${arende.reviewId}`, 200, { decision: 'godkand' });
+});
+
+When(/^(Doris) godkänner (Erik)s app$/, async function (this: Varld, granskare: string, agare: string) {
+  const arende = await arendet(this, agare, granskare);
+  await this.byggApi(granskare, 'POST', `/admin/granskning/${arende.reviewId}`, 200, { decision: 'godkand' });
+});
+
 When(/^(Erik) försöker godkänna sin egen app$/, async function (this: Varld, person: string) {
   const arende = await arendet(this, person, person);
   this.svar = [
@@ -152,6 +186,24 @@ Then(/^är appen inte publicerad$/, async function (this: Varld) {
 
 Then(/^är hans app inte publicerad$/, async function (this: Varld) {
   assert.equal((await appen(this, 'Erik')).published, false, 'Granskaren släppte ut sin egen app.');
+});
+
+Then(/^är hans app publicerad$/, async function (this: Varld) {
+  assert.equal((await appen(this, 'Erik')).published, true, 'Appen gick aldrig ut.');
+});
+
+/**
+ * Ett beslut som ingen annan läste ska gå att hitta i efterhand. `selfReview` står i samma rad som
+ * beslutet — inte som en egen händelse — så att den som läser loggen ser det tillsammans med
+ * beslutet och inte behöver para ihop två rader.
+ */
+Then(/^står det i driftloggarna att ingen annan läste$/, function (this: Varld) {
+  const rader = this.loggrader.filter((rad) => rad.includes('review_decided'));
+  assert.ok(rader.length > 0, 'Beslutet loggades inte alls.');
+  assert.ok(
+    rader.some((rad) => rad.includes('"selfReview":true')),
+    `Beslutet står i loggen, men inte att granskaren avgjorde sin egen app. Raderna: ${rader.join(' ')}`,
+  );
 });
 
 Then(/^väntar appen på granskning$/, async function (this: Varld) {

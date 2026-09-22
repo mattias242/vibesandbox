@@ -6,9 +6,11 @@
  * ägarens begäran, granskarens kö, och själva beslutet.
  *
  * Tre egenskaper är hela poängen och står därför i egna tester: godkännandet publicerar den
- * version som LÄSTES, ett nej bär ett skäl som når ägaren ORDAGRANT, och en granskare avgör
- * aldrig sin egen app. Utöver det gäller kontrollrummets vanliga tystnad — kön röjer varken
- * källkod eller hela app-id:n, och driftloggen varken adresser eller granskarens skäl.
+ * version som LÄSTES, ett nej bär ett skäl som når ägaren ORDAGRANT, och en granskare avgör inte
+ * sin egen app så länge det finns någon annan att be. Den sista har tre sidor — med en annan
+ * administratör, ensam, och utan användarregister — och de står i var sitt test. Utöver det gäller
+ * kontrollrummets vanliga tystnad: kön röjer varken källkod eller hela app-id:n, och driftloggen
+ * varken adresser eller granskarens skäl.
  */
 import { ADMIN_APP_ID_PREFIX_LENGTH, REVIEW_LIMITS, STRICTEST_CLASSIFICATION } from '@vibesandbox/contracts';
 import type { Identity } from '@vibesandbox/contracts';
@@ -17,8 +19,11 @@ import {
   ADAM,
   ANNA,
   BERTIL,
+  EVA,
+  VERA,
   anropa,
   api,
+  fejkAnvandare,
   lyckadTur,
   nyApp,
   skapaMiljo,
@@ -385,9 +390,12 @@ describe('beslutet', () => {
     expect((await kon()).json.reviews).toHaveLength(1);
   });
 
-  it('en granskare avgör inte sin egen app ⇒ 400, hur gärna hon än vill', async () => {
-    // ADAM är både administratör och byggare. Bygger han något är han ÄGARE i det läget, och ett
-    // godkännande av sig själv är ingen granskning alls.
+  it('en granskare avgör inte sin egen app när det finns någon annan att be ⇒ 400', async () => {
+    // ADAM är både administratör och byggare. Bygger han något är han ÄGARE i det läget, och så
+    // länge EVA också förvaltar plattformen finns det någon att be.
+    await m.builder.close();
+    m.builder = m.starta({ users: fejkAnvandare([ANNA, ADAM, EVA]) });
+
     const appId = await byggdApp(ADAM, 'Min egen app');
     expect((await begar(appId, ADAM)).status).toBe(202);
     const reviewId = await arendeFor(appId);
@@ -400,8 +408,49 @@ describe('beslutet', () => {
     }
     expect(m.control.anrop).not.toContain('publish');
     expect((await detalj(appId, ADAM)).json.published).toBe(false);
-    // Ärendet ligger kvar i kön, så att en annan administratör kan ta det.
+    // Ärendet ligger kvar i kön, så att den andra administratören kan ta det.
     expect((await kon()).json.reviews).toHaveLength(1);
+  });
+
+  /**
+   * Fyraögonsprincipen förutsätter fyra ögon. Är ADAM ensam förvaltare finns ingen att be, och
+   * spärren blir inte en granskning utan en låst dörr utan nyckel: appen kan aldrig gå ut.
+   */
+  it('plattformens ende administratör avgör sin egen app — och det syns i loggen', async () => {
+    await m.builder.close();
+    m.builder = m.starta({ users: fejkAnvandare([ANNA, BERTIL, ADAM, VERA]) });
+
+    const appId = await byggdApp(ADAM, 'Min egen app');
+    await begar(appId, ADAM);
+    const svar = await avgor(await arendeFor(appId), { decision: 'godkand' }, ADAM);
+
+    expect(svar.status).toBe(200);
+    expect((await detalj(appId, ADAM)).json.published).toBe(true);
+    const beslutet = m.logg.filter((rad) => rad.event === 'review_decided').at(-1);
+    expect(beslutet?.status).toBe('godkand');
+    expect(beslutet?.selfReview, 'ett beslut ingen annan läste ska gå att hitta i efterhand').toBe(true);
+  });
+
+  it('ett beslut om någon ANNANS app bär inte selfReview', async () => {
+    await m.builder.close();
+    m.builder = m.starta({ users: fejkAnvandare([ANNA, BERTIL, ADAM, VERA]) });
+
+    const appId = await byggdApp();
+    await begar(appId);
+    expect((await avgor(await arendeFor(appId), { decision: 'godkand' })).status).toBe(200);
+    expect(m.logg.filter((rad) => rad.event === 'review_decided').at(-1)?.selfReview).toBeUndefined();
+  });
+
+  /**
+   * Utan bryggan till identiteten går frågan "finns det någon annan att be?" inte att besvara.
+   * Osäkerhet ska falla åt det stränga hållet: spärren står kvar.
+   */
+  it('utan användarregister står spärren kvar — osäkerhet faller åt det stränga hållet', async () => {
+    const appId = await byggdApp(ADAM, 'Min egen app');
+    await begar(appId, ADAM);
+    const svar = await avgor(await arendeFor(appId), { decision: 'godkand' }, ADAM);
+    expect(svar.status).toBe(400);
+    expect((await detalj(appId, ADAM)).json.published).toBe(false);
   });
 
   it('ett redan avgjort ärende går inte att avgöra igen ⇒ 409', async () => {

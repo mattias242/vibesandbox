@@ -15,8 +15,15 @@ Egenskap: Granskning — en människa läser koden innan appen går ut
   Ett nej kräver ett skäl, och skälet går ordagrant till ägaren. Ett avslag utan skäl lämnar
   någon med en app hon inte vet vad som är fel på, och nästa försök blir en gissning.
 
-  En granskare får inte avgöra sin egen app. En administratör som bygger något är i det läget
-  ägare, inte granskare, och ett godkännande av sig själv är ingen granskning alls.
+  En granskare får inte avgöra sin egen app så länge det finns någon annan att be. En
+  administratör som bygger något är i det läget ägare, inte granskare, och ett godkännande av sig
+  själv är ingen granskning alls.
+
+  Men fyraögonsprincipen förutsätter fyra ögon. Är man plattformens ende administratör finns ingen
+  annan att be, och spärren blir då inte en granskning utan en låst dörr utan nyckel: appen kan
+  aldrig gå ut, hur ofarlig den än är. Därför gäller spärren när det finns en annan administratör,
+  och bara då. Den som är ensam får avgöra sitt eget — och beslutet loggas som just det, så att
+  det går att se i efterhand att ingen annan läste.
 
   Kön visar inte koden. Den visar vem som väntar och hur känslig appen är — nivån och HUR den
   sattes, så att granskaren ser skillnad på ett omdöme och ett misslyckande innan hon börjar läsa.
@@ -102,12 +109,28 @@ Egenskap: Granskning — en människa läser koden innan appen går ut
     Så får hon svaret "konflikt"
     Och står det bara ett ärende i granskningskön
 
-  Scenario: En granskare får inte avgöra sin egen app
+  Scenario: En granskare får inte avgöra sin egen app när det finns någon annan att be
     Givet att Erik har en egen app som byggts klart
     Och att Erik har begärt publicering av sin egen app
+    Och att Doris också är administratör för plattformen
     När Erik försöker godkänna sin egen app
     Så får han svaret "ogiltig begäran"
     Och är hans app inte publicerad
+
+  Scenario: Plattformens ende administratör får avgöra sin egen app
+    Givet att Erik har en egen app som byggts klart
+    Och att Erik har begärt publicering av sin egen app
+    Och att Erik är plattformens ende administratör
+    När Erik godkänner sin egen app
+    Så är hans app publicerad
+    Och står det i driftloggarna att ingen annan läste
+
+  Scenario: Den andra administratören får avgöra Eriks app
+    Givet att Erik har en egen app som byggts klart
+    Och att Erik har begärt publicering av sin egen app
+    Och att Doris också är administratör för plattformen
+    När Doris godkänner Eriks app
+    Så är hans app publicerad
 
   Scenario: Den som bara får bygga ser ingen granskningskö
     Givet att Bertil är inloggad i byggverktyget och får bygga

@@ -56,6 +56,12 @@ export interface BuilderLogEntry {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly rounds?: number;
+  /**
+   * Sant när granskaren också var appens ägare. Det får bara hända när hon är plattformens ende
+   * administratör, och står i loggen just därför: ett beslut som ingen annan läste ska gå att
+   * hitta i efterhand utan att någon behöver veta vem som ägde vad.
+   */
+  readonly selfReview?: boolean;
   /** Antal, t.ex. hur många jobb som markerades som misslyckade vid start. */
   readonly count?: number;
   /** Antal filer, t.ex. hur många som raderades vid en avveckling. */
