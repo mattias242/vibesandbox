@@ -76,6 +76,10 @@ export const LIST_STOPS = `
 /**
  * Alla appar, senast ändrad först. Inget ägarfilter — det är hela poängen med den här filen.
  *
+ * `name_is_default` följer med för att anroparen ska kunna se om namnet är ÄGARENS eller
+ * plattformens: ett standardnamn är de första tecknen ur det första önskemålet, alltså samma text
+ * som varken stopplistan eller registret får visa. Se admin.ts.
+ *
  * `owner_user_id` följer med för att anroparen ska kunna hämta ägarens adress ur control;
  * adressen finns inte i byggverktygets databas. Tokens summeras över appens alla jobb sedan den
  * skapades, utan fönster: raden ska visa vad appen har kostat totalt.
@@ -85,11 +89,35 @@ export const LIST_ALL_APPS = `
     a.app_id AS app_id,
     a.owner_user_id AS owner_user_id,
     a.name AS name,
+    a.name_is_default AS name_is_default,
     a.updated_at AS updated_at,
     a.published_version AS published_version,
     EXISTS (SELECT 1 FROM revisions r WHERE r.app_id = a.app_id) AS has_draft,
     (SELECT coalesce(sum(j.input_tokens), 0) FROM jobs j WHERE j.app_id = a.app_id) AS input_tokens,
     (SELECT coalesce(sum(j.output_tokens), 0) FROM jobs j WHERE j.app_id = a.app_id) AS output_tokens
+  FROM apps a
+  ORDER BY a.updated_at DESC, a.rowid DESC
+`;
+
+/**
+ * AI-registret: alla appar med sin klass, senast ändrad först. Inget ägarfilter — samma undantag
+ * som resten av filen.
+ *
+ * Klasskolumnerna lämnas RÅA härifrån och prövas mot kontraktet av den som läser. Skälet är att en
+ * rad skriven av en äldre version av vår egen kod ska falla åt det stränga hållet i ETT ställe
+ * (admin.ts) i stället för att satsen här tyst översätter den. Önskemålets text finns inte i
+ * satsen och ska inte finnas: registret svarar på att appen finns, aldrig på vad som står i den.
+ */
+export const LIST_REGISTER = `
+  SELECT
+    a.app_id AS app_id,
+    a.owner_user_id AS owner_user_id,
+    a.name AS name,
+    a.name_is_default AS name_is_default,
+    a.classification AS classification,
+    a.classification_source AS classification_source,
+    a.classified_at AS classified_at,
+    a.published_version AS published_version
   FROM apps a
   ORDER BY a.updated_at DESC, a.rowid DESC
 `;

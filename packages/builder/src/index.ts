@@ -13,7 +13,18 @@
  */
 import { resolve } from 'node:path';
 import { API_PREFIX, APP_SERVICE_NAMES } from '@vibesandbox/contracts';
-import type { Agent, AppServiceName, BuilderHandler, Identity, InvitationService, PlatformRequest, RedlineCategory, SourceFiles } from '@vibesandbox/contracts';
+import type {
+  Agent,
+  AppServiceName,
+  BuilderHandler,
+  Classification,
+  ClassificationSource,
+  Identity,
+  InvitationService,
+  PlatformRequest,
+  RedlineCategory,
+  SourceFiles,
+} from '@vibesandbox/contracts';
 import { createApi } from './api.ts';
 import type { BuilderUserDirectory } from './anvandare.ts';
 import type { FeedbackMailer } from './aterkoppling.ts';
@@ -73,6 +84,19 @@ export interface BuilderOptions {
    */
   readonly checkRedlines?: (request: string) => RedlineCategory | null;
   /**
+   * Klassar önskemålet efter de röda linjerna och före agenten: hur känsliga uppgifter appen
+   * kommer att hantera. Plattformen kopplar ihop modellanropet (`createClassifier` i
+   * @vibesandbox/agent) med tolkningen (`classify` i @vibesandbox/policy) — byggverktyget känner
+   * varken modellen eller signalorden.
+   *
+   * Saknas den klassas ingenting, och apparna står kvar som oklassade i registret. Det läses som
+   * den strängaste klassen, så en installation utan klassning kan aldrig se ofarligare ut än en med.
+   */
+  readonly classifyRequest?: (
+    request: string,
+    signal: AbortSignal,
+  ) => Promise<{ classification: Classification; source: ClassificationSource }>;
+  /**
    * Plattformstjänsterna som är påslagna (`APP_SERVICES`). Byggverktyget skapar dem inte — det
    * berättar bara om dem i `/me`, så att guiden bara lovar det som finns. Standard: inga.
    */
@@ -116,6 +140,7 @@ export function createBuilder(options: BuilderOptions): Builder {
     now,
     jobTimeoutMs,
     ...(options.checkRedlines === undefined ? {} : { checkRedlines: options.checkRedlines }),
+    ...(options.classifyRequest === undefined ? {} : { classifyRequest: options.classifyRequest }),
   });
   const api = createApi({
     storage,

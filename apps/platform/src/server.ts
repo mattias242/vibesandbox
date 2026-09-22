@@ -26,7 +26,7 @@ import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import type { Socket } from 'node:net';
 import { join } from 'node:path';
-import { createAgent } from '@vibesandbox/agent';
+import { createAgent, createClassifier } from '@vibesandbox/agent';
 import { createBuilder } from '@vibesandbox/builder';
 import type { Builder } from '@vibesandbox/builder';
 import type { AgentKnowledge } from '@vibesandbox/agent';
@@ -37,7 +37,7 @@ import { RECOMMENDED_SERVER_OPTIONS, createGateway, handleClientError } from '@v
 import type { RequestHandler } from '@vibesandbox/gateway';
 import type { AddedUser } from '@vibesandbox/identity';
 import { createMaskingProvider, createOpenAiCompatibleProvider } from '@vibesandbox/llm';
-import { checkRedlines } from '@vibesandbox/policy';
+import { checkRedlines, classify } from '@vibesandbox/policy';
 import { ConfigError, platformAddresses } from './config.ts';
 import type { BuilderConfig, PlatformConfig } from './config.ts';
 import { createPlatformIdentity, platformFeedback, platformMailer } from './identitet.ts';
@@ -191,7 +191,13 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
     opened.push(() => openIdentity.close());
 
     if (builderConfig !== undefined && buildRunner !== undefined && knowledge !== undefined) {
-      const agent = createAgent({ provider: languageModel(builderConfig, deps.llmProvider), buildRunner, knowledge });
+      const provider = languageModel(builderConfig, deps.llmProvider);
+      const agent = createAgent({ provider, buildRunner, knowledge });
+      // Klassningen: modellanropet bor i agenten, omdömet i policy, och HÄR sätts de ihop. Ingen
+      // av dem känner den andra — modellen vet inte vad orden betyder, och policy vet inte att en
+      // modell finns. Provider är densamma som agentens, alltså med maskningen framför sig: ett
+      // personnummer i önskemålet lämnar inte servern omaskerat, inte heller på den här vägen.
+      const classifier = createClassifier({ provider });
       builder = createBuilder({
         dataDir: join(config.dataDir, BUILDER_DIRECTORY),
         control: openControl,
@@ -208,6 +214,10 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
         // Röda linjer: önskemålet prövas före agenten, så att ett förbjudet bygge aldrig når
         // modellen. Prövningen är mönsterbaserad och är försvar på djupet, inte en garanti.
         checkRedlines,
+        // Klassningen får aldrig kasta — allt som går fel är `fail-closed`, och `classify` gör om
+        // ett `null` från modellen till den strängaste klassen. Därför ingen try/catch här: det
+        // finns inget fall kvar att fånga, och en tom catch hade dolt om det ändå uppstod ett.
+        classifyRequest: async (request, signal) => classify({ request, answer: await classifier(request, signal) }),
         ...(config.version === undefined ? {} : { version: config.version }),
         logger: (entry) => log({ source: 'builder', ...entry }),
       });

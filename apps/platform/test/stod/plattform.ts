@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BuildRunner, LlmProvider } from '@vibesandbox/contracts';
+import { CLASSIFICATION_SYSTEM_PROMPT } from '@vibesandbox/agent';
 import { createFakeProvider } from '@vibesandbox/llm';
 import type { FakeProvider, FakeReply } from '@vibesandbox/llm';
 import type { BuilderConfig, IdentityConfig, PlatformConfig } from '../../src/config.ts';
@@ -37,6 +38,8 @@ export interface Testplattform {
 export interface Val {
   readonly identitet?: 'email-otp' | 'test';
   readonly modellsvar?: readonly FakeReply[];
+  /** Vad modellen svarar på klassningsfrågan. Standard: den mildaste klassen, så att den inte stör. */
+  readonly klassning?: FakeReply;
   /** Utan byggverktyg: ingen `LLM_MODEL`. */
   readonly utanByggverktyg?: boolean;
   /** Utan byggkedja trots påslaget byggverktyg (för startfelet). */
@@ -77,7 +80,17 @@ export async function startaPlattform(val: Val = {}): Promise<Testplattform> {
 
   const modell = createFakeProvider(val.modellsvar ?? []);
   const byggkedja = fejkadByggkedja();
-  const llmProvider: LlmProvider = modell;
+  // Klassningen frågar modellen en EGEN fråga före varje bygge, med egen systemprompt. Den får
+  // därför ett eget svar och rör inte `modellsvar` — annars hade varje test som spelar in ett
+  // agentsvar fått det uppätet av klassningen. `val.klassning` styr bara den frågan.
+  const klassning = (): FakeReply => val.klassning ?? 'oppen';
+  const llmProvider: LlmProvider = {
+    name: 'fejk',
+    complete: (request) =>
+      request.messages.some((m) => m.role === 'system' && m.content === CLASSIFICATION_SYSTEM_PROMPT)
+        ? createFakeProvider([klassning()]).complete(request)
+        : modell.complete(request),
+  };
   const riktig: BuildRunner | undefined =
     val.riktigByggkedja === true ? await createPlatformBuildRunner({ ...config, ...(config.builder === undefined ? {} : { builder }) }) : undefined;
   const knowledge = await loadAgentKnowledge();

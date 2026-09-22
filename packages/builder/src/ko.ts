@@ -8,7 +8,17 @@
  * körs en gång till utan att någon väntar på det.
  */
 import { MAX_EVENT_DIAGNOSTICS, MAX_EVENT_DIAGNOSTIC_CHARS } from '@vibesandbox/contracts';
-import type { AgentEvent, AgentTurnResult, BuildResult, Diagnostic, RedlineCategory, SourceFiles, Agent } from '@vibesandbox/contracts';
+import type {
+  AgentEvent,
+  AgentTurnResult,
+  BuildResult,
+  Classification,
+  ClassificationSource,
+  Diagnostic,
+  RedlineCategory,
+  SourceFiles,
+  Agent,
+} from '@vibesandbox/contracts';
 import { storedAppId } from './control.ts';
 import type { BuilderControl } from './control.ts';
 import type { JobOutcome, Storage } from './lagring.ts';
@@ -76,6 +86,17 @@ export interface JobRunnerOptions {
    * att köra utan policy-paketet, precis som utan bryggan till användarregistret.
    */
   readonly checkRedlines?: ((request: string) => RedlineCategory | null) | undefined;
+  /**
+   * Klassar önskemålet: hur känsliga uppgifter appen kommer att hantera. Saknas den klassas
+   * ingenting och appen står kvar som oklassad i registret — som läses som den strängaste klassen.
+   * Att sakna klassning kan alltså aldrig se ofarligare ut än att ha den.
+   *
+   * Funktionen får INTE kasta: allt som går fel ska den själv göra om till `fail-closed`. Kön
+   * fångar ändå, men ett bygge ska aldrig falla på att klassningen strulade.
+   */
+  readonly classifyRequest?:
+    | ((request: string, signal: AbortSignal) => Promise<{ classification: Classification; source: ClassificationSource }>)
+    | undefined;
 }
 
 export interface JobRunner {
@@ -251,6 +272,35 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       log({ level: 'info', event: 'request_stopped', ...base, category });
       finish({ status: 'failed' }, { reason: 'redline' });
       return;
+    }
+
+    // Klassningen sitter EFTER de röda linjerna och FÖRE agenten. Ordningen är inte
+    // godtycklig: ett önskemål som stoppats ska aldrig skickas till en modell, inte ens för att
+    // klassas — spärren före modellen vore meningslös om nästa rad ändå skickade texten dit.
+    //
+    // Den får inte fälla bygget. Går klassningen fel blir klassen den strängaste (det är vad
+    // `fail-closed` betyder), och appen byggs ändå: klassen styr hur appen får förvaltas, inte
+    // om den får finnas. Kastar funktionen ändå — vilket den inte ska — höjs ingenting, och
+    // appen står kvar som oklassad, vilket läses som den strängaste klassen.
+    if (options.classifyRequest !== undefined) {
+      try {
+        const verdict = await options.classifyRequest(request, controller.signal);
+        const stored = storage.raiseClassification(appId, verdict, iso());
+        // Klass och källa är fasta ord ur vår egen kod och får loggas. Önskemålet får det aldrig.
+        //
+        // Båda läses ur `stored`, inte ur `verdict`: loggen ska säga vad appen ÄR efter det här
+        // önskemålet. Blev bedömningen avvisad för att den var mildare än det som redan stod, vore
+        // det missvisande att logga den avvisade bedömningens källa bredvid den kvarstående klassen.
+        log({
+          level: 'info',
+          event: 'request_classified',
+          ...base,
+          classification: stored.classification,
+          classificationSource: stored.source,
+        });
+      } catch (error) {
+        log({ level: 'warn', event: 'internal_error', reason: 'classification_failed', ...describeError(error) });
+      }
     }
 
     let result: AgentTurnResult;

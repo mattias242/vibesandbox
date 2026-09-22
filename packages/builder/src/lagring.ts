@@ -6,7 +6,8 @@
  * "ingen app" ger samma resultat: `null`.
  */
 import { createHmac, randomBytes } from 'node:crypto';
-import type { AgentEvent, BuilderJobStatus, BuilderMessage, ConversationEntry, SourceFiles } from '@vibesandbox/contracts';
+import { asClassification, classificationRank, CLASSIFICATION_SOURCES } from '@vibesandbox/contracts';
+import type { AgentEvent, BuilderJobStatus, BuilderMessage, Classification, ClassificationSource, ConversationEntry, SourceFiles } from '@vibesandbox/contracts';
 import type { BuilderDatabase, Row } from './databas.ts';
 import * as adminSql from './sql-admin.ts';
 import * as sql from './sql.ts';
@@ -63,11 +64,29 @@ export interface StoredAdminApp {
   readonly appId: string;
   readonly ownerUserId: string;
   readonly name: string;
+  /** Sant om namnet är plattformens standardnamn — de första tecknen ur det första önskemålet. */
+  readonly nameIsDefault: boolean;
   readonly updatedAt: string;
   readonly hasDraft: boolean;
   readonly published: boolean;
   readonly inputTokens: number;
   readonly outputTokens: number;
+}
+
+/**
+ * En rad i AI-registret, RÅ ur databasen. Klassen och källan är `string | null` med flit: en rad
+ * skriven av en äldre version av vår egen kod kan bära ett ord som inte längre finns i kontraktet,
+ * och lagret ska inte tysta det. Prövningen — och fallet åt det stränga hållet — görs i admin.ts.
+ */
+export interface StoredRegisterRow {
+  readonly appId: string;
+  readonly ownerUserId: string;
+  readonly name: string;
+  readonly nameIsDefault: boolean;
+  readonly classification: string | null;
+  readonly source: string | null;
+  readonly classifiedAt: string | null;
+  readonly published: boolean;
 }
 
 export interface JobOutcome {
@@ -81,6 +100,12 @@ function text(row: Row, column: string): string {
   const value = row[column];
   if (typeof value !== 'string') throw new Error(`Kolumnen ${column} är inte text.`);
   return value;
+}
+
+/** Text eller `null`. Allt annat än en sträng läses som `null` — ett tal i kolumnen är inte ett ord. */
+function optionalText(row: Row, column: string): string | null {
+  const value = row[column];
+  return typeof value === 'string' ? value : null;
 }
 
 function integer(row: Row, column: string): number {
@@ -183,7 +208,7 @@ export function createStorage(db: BuilderDatabase) {
         const seq = integer(db.get(sql.NEXT_MESSAGE_SEQ, { appId }) ?? {}, 'next');
         db.run(sql.INSERT_MESSAGE, { appId, seq, role: 'user', text: request, now });
         db.run(sql.INSERT_JOB, { jobId, appId, messageSeq: seq, now });
-        db.run(sql.RENAME_DEFAULT_APP, { appId, name: defaultName });
+        db.run(sql.RENAME_DEFAULT_APP, { appId, name: defaultName, seq });
         db.run(sql.TOUCH_APP, { appId, now });
         return true;
       });
@@ -350,6 +375,7 @@ export function createStorage(db: BuilderDatabase) {
         appId: text(row, 'app_id'),
         ownerUserId: text(row, 'owner_user_id'),
         name: text(row, 'name'),
+        nameIsDefault: integer(row, 'name_is_default') === 1,
         updatedAt: text(row, 'updated_at'),
         hasDraft: integer(row, 'has_draft') === 1,
         published: typeof row['published_version'] === 'string',
@@ -363,6 +389,63 @@ export function createStorage(db: BuilderDatabase) {
         appId: text(row, 'app_id'),
         reason: text(row, 'stop_reason'),
         at: text(row, 'created_at'),
+      }));
+    },
+
+    /**
+     * Sätter appens klass — men BARA uppåt. `rank` är kontraktets ordning och kommer utifrån, så
+     * att den bara står skriven på ett ställe.
+     *
+     * Läsningen och skrivningen ligger i samma transaktion. Utan den kunde två jobb mot samma app
+     * läsa samma gamla klass och den senare skriva över den strängare: höjningsregeln hade då
+     * gällt "oftast", vilket är samma sak som inte alls för en regel som ska gå att lita på.
+     *
+     * Svaret säger vad klassen BLEV, inte vad som skrevs — anroparen ska kunna logga utfallet utan
+     * att läsa om raden.
+     */
+    raiseClassification(
+      appId: string,
+      next: { classification: Classification; source: ClassificationSource },
+      now: string,
+    ): { classification: Classification; source: ClassificationSource; raised: boolean } {
+      return db.transaction(() => {
+        const row = db.get(sql.SELECT_CLASSIFICATION, { appId });
+        if (row === undefined) return { ...next, raised: false };
+        const current = optionalText(row, 'classification');
+        // Lika strängt är ingen höjning. En omklassning som landar på samma klass ska inte flytta
+        // `classified_at` framåt: tidpunkten svarar på när klassen SATTES, inte när den senast
+        // bekräftades, och en app som byggs om varje dag ska inte se nyklassad ut varje dag.
+        //
+        // `classificationRank` läser ett okänt ord ur kolumnen som den STRÄNGASTE klassen. En rad
+        // skriven av en äldre version av vår egen kod kan alltså inte sänkas av det här anropet.
+        if (current !== null && classificationRank(next.classification) <= classificationRank(current)) {
+          // Svaret beskriver det som STÅR, inte det som föreslogs: en avvisad bedömning får inte
+          // läcka ut som om den vore appens källa. Står det ett ord vi inte känner igen i kolumnen
+          // är det inte en källa — då är svaret `fail-closed`, samma regel som registret följer.
+          const currentSource = optionalText(row, 'classification_source');
+          return {
+            classification: asClassification(current),
+            source: CLASSIFICATION_SOURCES.includes(currentSource as ClassificationSource)
+              ? (currentSource as ClassificationSource)
+              : 'fail-closed',
+            raised: false,
+          };
+        }
+        db.run(sql.SET_CLASSIFICATION, { appId, classification: next.classification, source: next.source, now });
+        return { ...next, raised: true };
+      });
+    },
+
+    listRegister(): StoredRegisterRow[] {
+      return db.all(adminSql.LIST_REGISTER, {}).map((row) => ({
+        appId: text(row, 'app_id'),
+        ownerUserId: text(row, 'owner_user_id'),
+        name: text(row, 'name'),
+        nameIsDefault: integer(row, 'name_is_default') === 1,
+        classification: optionalText(row, 'classification'),
+        source: optionalText(row, 'classification_source'),
+        classifiedAt: optionalText(row, 'classified_at'),
+        published: typeof row['published_version'] === 'string',
       }));
     },
   };

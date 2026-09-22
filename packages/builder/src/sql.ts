@@ -8,14 +8,17 @@
  */
 
 /** Höjs vid varje schemaändring, tillsammans med ett nytt steg i `MIGRATIONS`. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * Steg N tar databasen från schemaversion N till N+1. Nya steg läggs SIST; ett steg som har körts
  * i drift ändras aldrig.
  *
- * - `apps.name_is_default`: appen fick inget namn när den skapades. Första önskemålet blir då
- *   namnet — men ett namn som ägaren själv valt skrivs aldrig över.
+ * - `apps.name_is_default`: namnet är PLATTFORMENS, inte ägarens. Gav ägaren inget namn när appen
+ *   skapades blir de första tecknen ur det första önskemålet namnet, och flaggan står kvar på 1.
+ *   Den säger alltså inte "saknar namn" utan "det här namnet är vår avskrift av vad någon skrev",
+ *   och det är därför kontrollrummet inte visar det (se `visatNamn` i admin.ts). Ett namn som
+ *   ägaren själv valt har flaggan 0 och skrivs aldrig över.
  * - `apps.published_version`: vilken av byggverktygets revisioner som senast publicerades. Control
  *   är facit för vad som serveras; kolumnen finns för att byggverktyget ska kunna svara på
  *   "är appen publicerad?" utan att fråga control.
@@ -122,6 +125,24 @@ export const MIGRATIONS: readonly string[] = [
 
   CREATE INDEX jobs_by_stop ON jobs (stop_reason, created_at);
   `,
+  // 4: appens informationsklass. NULL betyder aldrig klassad — inte "ofarlig". Den som läser
+  // kolumnen ska läsa NULL som den strängaste klassen, precis som ett okänt värde. Kolumnerna
+  // saknar CHECK med flit: en framtida klass ska inte kräva att tabellen skrivs om, och läsningen
+  // prövar ändå värdet mot kontraktet. Befintliga rader blir NULL och är därmed redan rätt.
+  `
+  ALTER TABLE apps ADD COLUMN classification TEXT;
+  ALTER TABLE apps ADD COLUMN classification_source TEXT;
+  ALTER TABLE apps ADD COLUMN classified_at TEXT;
+
+  -- name_is_default betyder härefter "namnet är plattformens avskrift av ett önskemål", inte
+  -- "appen saknar namn ännu". För rader skrivna före den här versionen går de två fallen inte att
+  -- skilja åt: flaggan nollställdes när appen döptes. Därför sätts den till 1 för allt som redan
+  -- har ett önskemål bakom sig. Det är fail-closed åt rätt håll — priset är att en app som ägaren
+  -- själv döpte står som "Namnlös app" i kontrollrummet, vilket är en förlorad etikett och inte
+  -- en förlorad uppgift. Ägaren ser sitt namn som förut i sin egen lista.
+  UPDATE apps SET name_is_default = 1
+  WHERE name_is_default = 0 AND EXISTS (SELECT 1 FROM messages m WHERE m.app_id = apps.app_id);
+  `,
 ];
 
 // ── Hemligheter ──────────────────────────────────────────────────────────────────
@@ -161,12 +182,41 @@ export const LIST_APP_OWNERS = `SELECT app_id, owner_user_id FROM apps ORDER BY 
 
 export const TOUCH_APP = `UPDATE apps SET updated_at = :now WHERE app_id = :appId`;
 
+/**
+ * Ger appen ett namn ur det FÖRSTA önskemålet. `:seq` är önskemålets ordningsnummer, så att bara
+ * det första döper appen — tidigare gjordes det genom att nollställa `name_is_default`, men då
+ * blev plattformens avskrift av önskemålet omöjlig att skilja från ett namn ägaren valt, och
+ * kontrollrummet visade texten vidare.
+ *
+ * Ett namn ägaren valt har flaggan 0 från början och matchas därför aldrig av satsen.
+ */
 export const RENAME_DEFAULT_APP = `
-  UPDATE apps SET name = :name, name_is_default = 0 WHERE app_id = :appId AND name_is_default = 1
+  UPDATE apps SET name = :name WHERE app_id = :appId AND name_is_default = 1 AND :seq = 1
 `;
 
 export const SET_PUBLISHED = `
   UPDATE apps SET published_version = :versionId, updated_at = :now WHERE app_id = :appId
+`;
+
+// ── Klassning ────────────────────────────────────────────────────────────────────
+
+/** Appens klass som den står nu. NULL i kolumnerna = aldrig klassad. */
+export const SELECT_CLASSIFICATION = `
+  SELECT classification, classification_source, classified_at FROM apps WHERE app_id = :appId
+`;
+
+/**
+ * Sätter klassen. Jämförelsen som avgör OM den ska sättas görs i JS mot kontraktets ordning, inte
+ * här: ordningen bor i `CLASSIFICATIONS` och ska inte finnas avskriven i en CASE-sats som kan
+ * glömmas bort när en klass tillkommer. Satsen körs i samma transaktion som läsningen ovanför.
+ *
+ * `updated_at` rörs INTE. En klassning är inget den som äger appen har gjort, och ska inte flytta
+ * appen till toppen av hens lista som om något hänt med den.
+ */
+export const SET_CLASSIFICATION = `
+  UPDATE apps
+  SET classification = :classification, classification_source = :source, classified_at = :now
+  WHERE app_id = :appId
 `;
 
 // ── Meddelanden ──────────────────────────────────────────────────────────────────

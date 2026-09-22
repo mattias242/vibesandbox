@@ -15,6 +15,8 @@ export type BuilderLogEvent =
   | 'job_timed_out'
   /** Ett önskemål stoppades av en röd linje: ingen tur startades, ingen modell anropades. */
   | 'request_stopped'
+  /** Ett önskemål klassades. Står i loggen för att en fail-closed ska gå att se utan databasen. */
+  | 'request_classified'
   | 'jobs_failed_on_startup'
   | 'app_published'
   | 'publish_failed'
@@ -52,6 +54,18 @@ export interface BuilderLogEntry {
    * kommit in med önskemålet, som kan bära personuppgifter.
    */
   readonly category?: string;
+  /**
+   * Appens klass EFTER klassningen, och hur den sattes. Båda är fasta ord ur kontraktet —
+   * `CLASSIFICATIONS` och `CLASSIFICATION_SOURCES` — och aldrig något som kommit in med
+   * önskemålet. Att de finns här är hur en rad fail-closed i följd syns som ett driftfel och inte
+   * bara som en sträng rad i registret.
+   *
+   * Fältet heter `classificationSource` och inte `source`: plattformens egen loggrad har redan ett
+   * `source` (vilken modul raden kom från), och en post härifrån breds ut i den. Ett fält som
+   * heter likadant hade tyst skrivit över det.
+   */
+  readonly classification?: string;
+  readonly classificationSource?: string;
   /** Felets klassnamn och anropsstack UTAN felmeddelandet — meddelanden kan innehålla data. */
   readonly errorName?: string;
   readonly stackFrames?: readonly string[];

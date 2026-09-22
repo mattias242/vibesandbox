@@ -157,6 +157,7 @@ type Route =
   | { readonly kind: 'adminOverview' }
   | { readonly kind: 'adminApps' }
   | { readonly kind: 'adminStops' }
+  | { readonly kind: 'adminRegister' }
   | { readonly kind: 'adminUsers' }
   | { readonly kind: 'adminUser'; readonly userId: string };
 
@@ -177,6 +178,7 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   adminOverview: ['GET'],
   adminApps: ['GET'],
   adminStops: ['GET'],
+  adminRegister: ['GET'],
   adminUsers: ['GET', 'POST'],
   adminUser: ['POST'],
 };
@@ -214,6 +216,7 @@ function matchRoute(path: string): Route | null {
     if (second === 'oversikt' && third === undefined) return { kind: 'adminOverview' };
     if (second === 'appar' && third === undefined) return { kind: 'adminApps' };
     if (second === 'stopp' && third === undefined) return { kind: 'adminStops' };
+    if (second === 'register' && third === undefined) return { kind: 'adminRegister' };
     if (second === 'anvandare') {
       if (third === undefined) return { kind: 'adminUsers' };
       if (third.length > 0) return { kind: 'adminUser', userId: third };
@@ -540,6 +543,7 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
       route.kind === 'adminOverview' ||
       route.kind === 'adminApps' ||
       route.kind === 'adminStops' ||
+      route.kind === 'adminRegister' ||
       route.kind === 'adminUsers' ||
       route.kind === 'adminUser'
     ) {
@@ -551,6 +555,8 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
           return admin.apps();
         case 'adminStops':
           return admin.stops();
+        case 'adminRegister':
+          return admin.register();
         case 'adminUsers':
           return request.method === 'GET' ? admin.users(identity) : admin.invite(identity, parseBody(request));
         case 'adminUser':

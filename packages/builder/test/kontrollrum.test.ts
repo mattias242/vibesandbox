@@ -132,7 +132,8 @@ describe('GET /admin/appar', () => {
     const svar = await anropa(m.builder, ADAM, 'GET', APPAR);
     expect(svar.json.apps[0]).toEqual({
       appIdPrefix: appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
-      name: 'En todo-lista',
+      // Önskemålets text, inte ägarens namnval — kontrollrummet visar den inte. Se `visatNamn`.
+      name: 'Namnlös app',
       ownerEmail: ANNA.email,
       updatedAt: expect.any(String),
       hasDraft: true,
@@ -140,6 +141,22 @@ describe('GET /admin/appar', () => {
       members: 2,
       tokens: { input: 1200, output: 800 },
     });
+  });
+
+  it('visar ägarens eget namnval, men aldrig plattformens avskrift av önskemålet', async () => {
+    // Två appar: en som ägaren döpt själv, en som fick sitt namn ur det första önskemålet. Bara
+    // den första har ett namn kontrollrummet får visa — den andra bär texten någon skrev.
+    const dopt = await nyApp(m.builder, ANNA, 'Lokalbokningen');
+    await vantaPaJobb(m.builder, await skicka(m.builder, dopt, 'En lista med rum', ANNA), ANNA);
+    m.tid.ms += 60_000;
+    const odopt = await byggdApp(ANNA);
+
+    const svar = await anropa(m.builder, ADAM, 'GET', APPAR);
+    const rad = (id: string): { name: string } =>
+      svar.json.apps.find((app: { appIdPrefix: string }) => id.startsWith(app.appIdPrefix));
+    expect(rad(dopt).name).toBe('Lokalbokningen');
+    expect(rad(odopt).name).toBe('Namnlös app');
+    expect(svar.text).not.toContain('En todo-lista');
   });
 
   it('senast ändrad först, oavsett vem som äger appen', async () => {

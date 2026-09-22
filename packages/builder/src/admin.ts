@@ -21,8 +21,26 @@
  * (anvandare.ts) och den är valfri: utan den blir `users` nollor och användarrutterna svarar
  * `unavailable`, i stället för att byggverktyget gissar.
  */
-import { ADMIN_APP_ID_PREFIX_LENGTH, ADMIN_TOKEN_WINDOW_DAYS, DataApiError, REDLINE_CATEGORIES } from '@vibesandbox/contracts';
-import type { AdminApp, AdminOverview, AdminStop, AdminUser, Identity, PlatformResponse, RedlineCategory, Role } from '@vibesandbox/contracts';
+import {
+  ADMIN_APP_ID_PREFIX_LENGTH,
+  ADMIN_TOKEN_WINDOW_DAYS,
+  asClassification,
+  CLASSIFICATION_SOURCES,
+  DataApiError,
+  REDLINE_CATEGORIES,
+} from '@vibesandbox/contracts';
+import type {
+  AdminApp,
+  AdminOverview,
+  AdminRegisterEntry,
+  AdminStop,
+  AdminUser,
+  ClassificationSource,
+  Identity,
+  PlatformResponse,
+  RedlineCategory,
+  Role,
+} from '@vibesandbox/contracts';
 
 /**
  * Tak för hur många stopp kontrollrummet hämtar. Listan finns för att upptäcka en för bred regel,
@@ -61,10 +79,14 @@ function isRole(value: unknown): value is Role {
 
 const NO_USERS: Readonly<Record<Role, number>> = { admin: 0, builder: 0, viewer: 0 };
 
+/** Det kontrollrummet skriver i stället för ett namn ägaren aldrig har valt. Se `visatNamn`. */
+const NAMNLOS = 'Namnlös app';
+
 export function createAdmin(deps: AdminDependencies): {
   overview(): PlatformResponse;
   apps(): Promise<PlatformResponse>;
   stops(): PlatformResponse;
+  register(): Promise<PlatformResponse>;
   users(identity: Identity): PlatformResponse;
   invite(identity: Identity, body: Record<string, unknown>): Promise<PlatformResponse>;
   setRole(identity: Identity, userId: string, body: Record<string, unknown>): PlatformResponse;
@@ -120,6 +142,54 @@ export function createAdmin(deps: AdminDependencies): {
     };
   }
 
+  /**
+   * Varje app med sin åtkomstlista och ägarens ADRESS. Adressen finns inte i byggverktygets
+   * databas: den hämtas ur control (åtkomstlistan) och, för appar från före åtkomstlistan
+   * (se atkomst.ts), ur identiteten. Saknas den båda ställena förblir den `null` —
+   * kontrollrummet gissar aldrig vems appen är.
+   *
+   * Ett control-anrop per app. Databasen är en fil på samma maskin och listan är plattformens
+   * alla appar — går den någon gång i tusental är det här stället att slå ihop anropen.
+   * Uppslagningen i identiteten görs däremot i EN vändning för hela listan, inte en per app.
+   *
+   * Både applistan och registret går genom den här: de två får aldrig svara olika på frågan om
+   * vem som äger en app.
+   */
+  async function withOwners<T extends { readonly appId: string; readonly ownerUserId: string }>(
+    rows: readonly T[],
+  ): Promise<{ row: T; access: readonly BuilderAccessEntry[]; ownerEmail: string | null }[]> {
+    const listed = rows.map((row) => ({ row, access: [] as readonly BuilderAccessEntry[], ownerEmail: null as string | null }));
+    for (const entry of listed) {
+      entry.access = await accessFor(entry.row.appId);
+      entry.ownerEmail = entry.access.find((a) => a.role === 'owner')?.email ?? null;
+    }
+    const ownerUserId = (entry: (typeof listed)[number]): string =>
+      entry.access.find((a) => a.role === 'owner')?.userId ?? entry.row.ownerUserId;
+    const unknown = listed.filter((entry) => entry.ownerEmail === null).map(ownerUserId);
+    if (unknown.length > 0) {
+      const emails = deps.users?.emails(unknown) ?? new Map<string, string>();
+      for (const entry of listed) {
+        if (entry.ownerEmail === null) entry.ownerEmail = emails.get(ownerUserId(entry)) ?? null;
+      }
+    }
+    return listed;
+  }
+
+/**
+   * Appens namn som kontrollrummet får visa det.
+   *
+   * En app som ägaren själv har döpt visas med sitt namn. En app som bär PLATTFORMENS standardnamn
+   * gör det inte: standardnamnet är de första tecknen ur det första önskemålet (se `defaultName` i
+   * api.ts), alltså exakt den text varken stopplistan eller registret får visa. Den texten kan
+   * bära personuppgifter, och att den råkar stå i en namnkolumn gör den inte till ett namn.
+   *
+   * Ägaren ser fortfarande sitt standardnamn i sin egen lista — det är hennes egen text om hennes
+   * egen app. Det som ändras är att den inte följer med hit.
+   */
+  function visatNamn(row: { readonly name: string; readonly nameIsDefault: boolean }): string {
+    return row.nameIsDefault ? NAMNLOS : row.name;
+  }
+
   function readRole(body: Record<string, unknown>): Role {
     const role = body['role'];
     if (!isRole(role)) throw invalid('Välj en roll: administratör, byggare eller den som bara tittar.');
@@ -165,29 +235,11 @@ export function createAdmin(deps: AdminDependencies): {
     },
 
     async apps(): Promise<PlatformResponse> {
-      const rows = storage.listAllApps();
-      // Ett control-anrop per app. Databasen är en fil på samma maskin och listan är plattformens
-      // alla appar — går den någon gång i tusental är det här stället att slå ihop anropen.
-      const listed: { row: (typeof rows)[number]; access: readonly BuilderAccessEntry[]; owner?: BuilderAccessEntry }[] = [];
-      for (const row of rows) {
-        const access = await accessFor(row.appId);
-        const owner = access.find((entry) => entry.role === 'owner');
-        listed.push({ row, access, ...(owner === undefined ? {} : { owner }) });
-      }
-
-      // Appar från före åtkomstlistan har en ägare i control men ingen adress (se atkomst.ts).
-      // Adressen slås upp i identiteten i EN vändning för hela listan, inte en per app. Saknas
-      // den även där förblir fältet `null` — kontrollrummet gissar aldrig vems appen är.
-      const unknownOwners = listed
-        .filter((entry) => (entry.owner?.email ?? null) === null)
-        .map((entry) => entry.owner?.userId ?? entry.row.ownerUserId);
-      const emails = unknownOwners.length === 0 ? new Map<string, string>() : (deps.users?.emails(unknownOwners) ?? new Map());
-
-      const apps: AdminApp[] = listed.map(({ row, access, owner }) => ({
+      const apps: AdminApp[] = (await withOwners(storage.listAllApps())).map(({ row, access, ownerEmail }) => ({
         // Bara prefixet. Resten av id:t lämnar aldrig det här lagret.
         appIdPrefix: row.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
-        name: row.name,
-        ownerEmail: owner?.email ?? emails.get(owner?.userId ?? row.ownerUserId) ?? null,
+        name: visatNamn(row),
+        ownerEmail,
         updatedAt: row.updatedAt,
         hasDraft: row.hasDraft,
         published: row.published,
@@ -195,6 +247,35 @@ export function createAdmin(deps: AdminDependencies): {
         tokens: { input: row.inputTokens, output: row.outputTokens },
       }));
       return json(200, { apps });
+    },
+
+    /**
+     * AI-registret: varje app med hur känsliga uppgifter den hanterar, och hur den nivån sattes.
+     *
+     * Två saker att läsa noga. Klassen ur databasen prövas mot kontraktet och ett okänt eller
+     * saknat värde blir den STRÄNGASTE klassen — en app som aldrig klassats, eller en rad skriven
+     * av en äldre version av vår egen kod, får alltså aldrig se ofarligare ut än den är. Och
+     * önskemålets text finns inte i svaret, av samma skäl som i stopplistan: registret svarar på
+     * att appen finns och hur känslig den är, aldrig på vad någon har skrivit i den.
+     */
+    async register(): Promise<PlatformResponse> {
+      const entries: AdminRegisterEntry[] = (await withOwners(storage.listRegister())).map(({ row, ownerEmail }) => ({
+        appIdPrefix: row.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+        name: visatNamn(row),
+        ownerEmail,
+        classification: asClassification(row.classification),
+        // En källa vi inte känner igen säger inget sant om hur klassen sattes. Då är svaret att vi
+        // inte vet — vilket är precis vad `fail-closed` betyder.
+        source: CLASSIFICATION_SOURCES.includes(row.source as ClassificationSource)
+          ? (row.source as ClassificationSource)
+          : 'fail-closed',
+        // Tidpunkten följer bara med när klassen faktiskt är satt. En oklassad app läses som den
+        // strängaste klassen, men den fick inte den klassen VID någon tidpunkt, och registret ska
+        // inte hitta på en.
+        classifiedAt: row.classification === null ? null : row.classifiedAt,
+        published: row.published,
+      }));
+      return json(200, { entries });
     },
 
     users(identity: Identity): PlatformResponse {
