@@ -71,7 +71,7 @@ TAILSCALE_NYCKEL_FPR="${TAILSCALE_NYCKEL_FPR:-2596A99EAAB33821893C0A79458CA83295
 
 # Stegen i den ordning de körs. De tre första är "fas 1"; resten kräver att ägaren har
 # bekräftat att SSH över tailnet fungerar.
-readonly STEG_ORDNING=(uppdatering anvandare tailscale brandvagg ssh leverantor dockerdisk gvisor docker system kataloger overvakning)
+readonly STEG_ORDNING=(uppdatering anvandare tailscale brandvagg ssh leverantor dockerdisk gvisor docker system kataloger backup overvakning)
 readonly FAS1=(uppdatering anvandare tailscale)
 
 # ── Flaggor ────────────────────────────────────────────────────────────────────────────────
@@ -429,6 +429,17 @@ las_konfiguration() {
   AUTO_REBOOT_TIME="${AUTO_REBOOT_TIME:-04:00}"
   AUTO_UPGRADE_DOCKER="${AUTO_UPGRADE_DOCKER:-1}"
   DEPLOY_UTAN_LOSENORD="${DEPLOY_UTAN_LOSENORD:-1}"
+  # Säkerhetskopieringen. INSTALL_BACKUP=0 installerar ingenting och tar bort det vi själva har
+  # lagt dit — ett halvt läge (timer utan skript, sudo-regel som pekar på ingenting) är värre än
+  # inget. Tiden är TT:MM och blir en OnCalendar-rad; timern får RandomizedDelaySec, så lägg den
+  # med marginal före AUTO_REBOOT_TIME.
+  INSTALL_BACKUP="${INSTALL_BACKUP:-1}"
+  BACKUP_TID="${BACKUP_TID:-02:30}"
+  BACKUP_BEHALL="${BACKUP_BEHALL:-7}"
+  # Den PUBLIKA nyckeln som säkerhetskopian krypteras till. Utan den blir varje timerkörning
+  # okrypterad, och en kopia som ska hämtas av NAS:en får inte vara det.
+  BACKUP_PUBNYCKEL="${BACKUP_PUBNYCKEL:-}"
+  BACKUP_MAX_ALDER_TIMMAR="${BACKUP_MAX_ALDER_TIMMAR:-36}"
   LOCK_ROOT_PASSWORD="${LOCK_ROOT_PASSWORD:-1}"
   HARDEN_GUEST_AGENT="${HARDEN_GUEST_AGENT:-0}"
   INSTALL_GVISOR="${INSTALL_GVISOR:-0}"
@@ -451,14 +462,15 @@ las_konfiguration() {
   fi
 
   local v p
-  for v in DOCKER_XFS_SIZE_GB SWAPFILE_SIZE_GB VM_SWAPPINESS DOCKREMAP_SUBID_BASE PLATFORM_CONTAINER_UID BEKRAFTELSE_SEKUNDER; do
+  for v in DOCKER_XFS_SIZE_GB SWAPFILE_SIZE_GB VM_SWAPPINESS DOCKREMAP_SUBID_BASE PLATFORM_CONTAINER_UID BEKRAFTELSE_SEKUNDER \
+    BACKUP_BEHALL BACKUP_MAX_ALDER_TIMMAR; do
     [[ "${!v}" =~ ^[0-9]+$ ]] || avbryt "${v} måste vara ett heltal (är '${!v}')."
   done
   (( 10#$BEKRAFTELSE_SEKUNDER >= 5 && 10#$BEKRAFTELSE_SEKUNDER <= 600 )) \
     || avbryt "BEKRAFTELSE_SEKUNDER måste vara 5–600 (är '${BEKRAFTELSE_SEKUNDER}')."
   BEKRAFTELSE_SEKUNDER=$(( 10#$BEKRAFTELSE_SEKUNDER ))
   readonly BEKRAFTELSE_SEKUNDER
-  for v in OPEN_TAILSCALE_UDP AUTO_REBOOT AUTO_UPGRADE_DOCKER LOCK_ROOT_PASSWORD HARDEN_GUEST_AGENT INSTALL_GVISOR DOCKER_XFS_LOOP DEPLOY_UTAN_LOSENORD; do
+  for v in OPEN_TAILSCALE_UDP AUTO_REBOOT AUTO_UPGRADE_DOCKER LOCK_ROOT_PASSWORD HARDEN_GUEST_AGENT INSTALL_GVISOR DOCKER_XFS_LOOP DEPLOY_UTAN_LOSENORD INSTALL_BACKUP; do
     [[ "${!v}" =~ ^[01]$ ]] || avbryt "${v} måste vara 0 eller 1 (är '${!v}')."
   done
   for v in PUBLIC_TCP_PORTS PUBLIC_UDP_PORTS; do
@@ -474,6 +486,23 @@ las_konfiguration() {
   [[ "$OPS_USER" != "root" ]] || avbryt "OPS_USER får inte vara root."
   [[ "$DATA_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || avbryt "DATA_USER '${DATA_USER}' är inget giltigt användarnamn."
   [[ "$AUTO_REBOOT_TIME" =~ ^[0-2][0-9]:[0-5][0-9]$ ]] || avbryt "AUTO_REBOOT_TIME ska vara TT:MM."
+  # BACKUP_TID hamnar ORDAGRANT i en OnCalendar-rad ⇒ samma smala mönster som ovan, inget annat.
+  [[ "$BACKUP_TID" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || avbryt "BACKUP_TID ska vara TT:MM (är '${BACKUP_TID}')."
+  (( 10#$BACKUP_BEHALL >= 1 )) || avbryt "BACKUP_BEHALL måste vara minst 1 — en rotation som raderar allt är ingen rotation."
+  if [ -n "$BACKUP_PUBNYCKEL" ]; then
+    [ -r "$BACKUP_PUBNYCKEL" ] || avbryt "BACKUP_PUBNYCKEL pekar inte på en läsbar fil: '${BACKUP_PUBNYCKEL}'."
+    # En PRIVAT nyckel på värden vore hela poängen upp och ned: då kan en övertagen värd läsa sina
+    # egna gamla kopior. backup.sh vägrar också, men felet ska fångas innan något installeras.
+    if grep -q 'PRIVATE KEY' "$BACKUP_PUBNYCKEL"; then
+      avbryt "BACKUP_PUBNYCKEL bär en PRIVAT nyckel. Bara den publika halvan hör hemma på värden."
+    fi
+  fi
+  # Tröskeln för "för gammal kopia" (verify.sh). Kortare än ett dygn larmar på varje normal
+  # körning; timern kör dagligen med upp till en halvtimmes slumpfördröjning.
+  (( 10#$BACKUP_MAX_ALDER_TIMMAR >= 25 )) \
+    || avbryt "BACKUP_MAX_ALDER_TIMMAR måste vara minst 25 — timern kör en gång per dygn med slumpfördröjning, och en lägre tröskel larmar på ett friskt läge (är '${BACKUP_MAX_ALDER_TIMMAR}')."
+  BACKUP_BEHALL=$(( 10#$BACKUP_BEHALL ))
+  BACKUP_MAX_ALDER_TIMMAR=$(( 10#$BACKUP_MAX_ALDER_TIMMAR ))
   # Sökvägarna hamnar i state-filen (som verify.sh läser in som root varje timme) och i fstab.
   # Bara tråkiga tecken, ingen '..', inte roten.
   for v in PLATFORM_ROOT DOCKER_XFS_IMAGE; do
@@ -503,7 +532,8 @@ skriv_tillstand() {
     printf '# Skriven av provision.sh — läses av verify.sh. Innehåller inga hemligheter.\n'
     for v in OPS_USER PUBLIC_TCP_PORTS PUBLIC_UDP_PORTS OPEN_TAILSCALE_UDP LOCK_ROOT_PASSWORD \
       HARDEN_GUEST_AGENT INSTALL_GVISOR DOCKER_XFS_LOOP SWAPFILE_SIZE_GB VM_SWAPPINESS \
-      PLATFORM_ROOT DATA_USER DATA_UID DOCKREMAP_SUBID_BASE TAILSCALE_TAGS AUTO_REBOOT AUTO_REBOOT_TIME DEPLOY_UTAN_LOSENORD; do
+      PLATFORM_ROOT DATA_USER DATA_UID DOCKREMAP_SUBID_BASE TAILSCALE_TAGS AUTO_REBOOT AUTO_REBOOT_TIME DEPLOY_UTAN_LOSENORD \
+      INSTALL_BACKUP BACKUP_TID BACKUP_BEHALL BACKUP_MAX_ALDER_TIMMAR BACKUP_PUBNYCKEL; do
       printf '%s=%q\n' "$v" "${!v}"
     done
   )"
@@ -2160,10 +2190,114 @@ steg_kataloger() {
   fi
 }
 
-# ── Steg 12: avdriftskontroll ──────────────────────────────────────────────────────────────
+# ── Steg 12: säkerhetskopiering ────────────────────────────────────────────────────────────
+#
+# Kravet är flyttbarhet: provision.sh på en ny värd + restore.sh ska räcka. Då duger det inte
+# att backup.sh måste köras ur repot för hand — det som inte står i ett skript finns inte efter
+# en flytt. Steget lägger därför skripten på värden, ger ops en egen NOPASSWD-regel för
+# säkerhetskopian (INTE för återställningen: den är sällsynt och förstörande och ska kosta ett
+# lösenord) och sätter en timer som kör den varje dygn.
+#
+# INSTALL_BACKUP=0 stänger av allt OCH tar bort det vi själva har lagt dit: en timer utan skript,
+# eller en sudo-regel som pekar på ingenting, är sämre än ingenting alls.
+
+steg_backup() {
+  rubrik "Steg 12 — säkerhetskopiering: skript, sudo-regel och timer"
+
+  local kmd=/usr/local/sbin/vibesandbox-backup
+  local aterstall_kmd=/usr/local/sbin/vibesandbox-restore
+  local regelfil=/etc/sudoers.d/vibesandbox-backup
+  local tjanstfil=/etc/systemd/system/vibesandbox-backup.service
+  local timerfil=/etc/systemd/system/vibesandbox-backup.timer
+
+  if (( ! INSTALL_BACKUP )); then
+    local f fanns=0
+    # Symlänken är det konkreta som gör att timern kör; 'is-enabled' duger inte som grund för
+    # att göra något — ett andra varv ska inte köra 'disable' en gång till.
+    if [[ -e "$timerfil" || -e /etc/systemd/system/timers.target.wants/vibesandbox-backup.timer ]]; then
+      fanns=1
+      gor "stoppar och avaktiverar vibesandbox-backup.timer (INSTALL_BACKUP=0)"
+      kor systemctl disable --now vibesandbox-backup.timer
+    fi
+    for f in "$regelfil" "$timerfil" "$tjanstfil" "$kmd" "$aterstall_kmd"; do
+      if [[ -e "$f" ]]; then
+        fanns=1
+        gor "tar bort ${f} (INSTALL_BACKUP=0)"
+        kor rm -f -- "$f"
+      fi
+    done
+    if (( fanns )); then kor systemctl daemon-reload; fi
+    varna "INSTALL_BACKUP=0: ingen säkerhetskopiering på värden. Den måste då köras ur repot för hand — och finns inte efter en flytt."
+    return 0
+  fi
+
+  [[ -f "${SKRIPTKATALOG}/backup.sh" && -f "${SKRIPTKATALOG}/restore.sh" ]] \
+    || avbryt "hittar inte ${SKRIPTKATALOG}/backup.sh och ${SKRIPTKATALOG}/restore.sh — utan dem finns ingen säkerhetskopiering på värden. (INSTALL_BACKUP=0 om det är meningen.)"
+
+  # Samma mönster som driftsättningens rotsteg: fasta, rootägda filer under /usr/local/sbin.
+  # Läget är 0755 root:root — kan någon annan skriva i filen blir hen root via sudo-regeln.
+  skriv_fil "$kmd" 0755 <"${SKRIPTKATALOG}/backup.sh"
+  skriv_fil "$aterstall_kmd" 0755 <"${SKRIPTKATALOG}/restore.sh"
+
+  # EGEN fil i sudoers.d: regeln för driftsättningen rörs inte. En trasig fil i sudoers.d
+  # stänger av ALL sudo ⇒ kandidaten prövas med visudo FÖRE bytet, precis som där.
+  local regel="${OPS_USER} ALL=(root) NOPASSWD: ${kmd}"
+  if (( ! DRY_RUN )) && ! printf '%s\n' "$regel" | visudo -cqf - >/dev/null 2>&1; then
+    avbryt "visudo underkänner sudo-regeln för säkerhetskopieringen: '${regel}'. Ingenting är ändrat."
+  fi
+  skriv_fil "$regelfil" 0440 <<<"$regel"
+
+  # Den publika nyckeln läggs på värden om en sådan är angiven. Den ÄR publik — 0644 root duger,
+  # och en värd som tas över kan inte läsa sina egna gamla kopior med den. Saknas den kör timern
+  # okrypterat, och `backup.sh` säger då själv att kopian inte får lämna värden.
+  local pubnyckel_flagga=''
+  if [ -n "$BACKUP_PUBNYCKEL" ]; then
+    sakerstall_katalog /etc/vibesandbox 0755 "0:0"
+    skriv_fil /etc/vibesandbox/backup-pub.asc 0644 <"$BACKUP_PUBNYCKEL"
+    pubnyckel_flagga=' --publik-nyckel /etc/vibesandbox/backup-pub.asc'
+  fi
+
+  # Timern kör som root via systemd; sudo-regeln finns för den kopia man vill ta FÖR HAND innan
+  # något riskabelt. Persistent=true ⇒ en körning som missades medan värden var nere tas igen.
+  skriv_fil "$tjanstfil" 0644 <<EOF
+[Unit]
+Description=vibesandbox: säkerhetskopiera plattformens data och compose-filer
+Documentation=file:/usr/local/share/doc/vibesandbox/README.md
+
+[Service]
+Type=oneshot
+ExecStart=${kmd} --behall ${BACKUP_BEHALL}${pubnyckel_flagga}
+EOF
+  local tjanst_andrad=$FIL_ANDRAD
+  skriv_fil "$timerfil" 0644 <<EOF
+[Unit]
+Description=vibesandbox: säkerhetskopiering ${BACKUP_TID} varje dygn
+
+[Timer]
+OnCalendar=*-*-* ${BACKUP_TID}:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  if (( tjanst_andrad || FIL_ANDRAD )); then
+    kor systemctl daemon-reload
+  fi
+  if [[ "$(systemctl is-enabled vibesandbox-backup.timer 2>/dev/null || true)" == "enabled" ]]; then
+    klart "vibesandbox-backup.timer är aktiverad"
+  else
+    sakerstall_omaskad vibesandbox-backup.timer
+    gor "aktiverar vibesandbox-backup.timer"
+    kor systemctl enable --now vibesandbox-backup.timer
+  fi
+  klart "kopian ligger kvar PÅ värden. Att den inte förs någon annanstans — krypterad — är fortfarande ett öppet krav (se README)."
+}
+
+# ── Steg 13: avdriftskontroll ──────────────────────────────────────────────────────────────
 
 steg_overvakning() {
-  rubrik "Steg 12 — avdriftskontroll: verify.sh som timer"
+  rubrik "Steg 13 — avdriftskontroll: verify.sh som timer"
 
   [[ -f "${SKRIPTKATALOG}/verify.sh" ]] || avbryt "hittar inte ${SKRIPTKATALOG}/verify.sh."
   skriv_fil /usr/local/sbin/vibesandbox-verify 0755 <"${SKRIPTKATALOG}/verify.sh"
@@ -2218,6 +2352,7 @@ kor_steg() {
     gvisor) steg_gvisor ;;
     system) steg_system ;;
     kataloger) steg_kataloger ;;
+    backup) steg_backup ;;
     overvakning) steg_overvakning ;;
     *) avbryt "okänt steg '$1'. Giltiga: ${STEG_ORDNING[*]}" ;;
   esac

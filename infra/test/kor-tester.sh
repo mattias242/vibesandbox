@@ -14,7 +14,7 @@ set -euo pipefail
 INFRA="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BAS="${BAS:-debian:13}"
 AVBILD="vibesandbox-infra-test:${BAS//[:.]/}"
-ALLA=(statisk vagran dryrun fas1 angra fas2 flaggor avbrott fas2ja inloggning filer verify besked angrafel backup)
+ALLA=(statisk vagran dryrun fas1 angra fas2 flaggor avbrott fas2ja inloggning filer verify besked angrafel backup backupinstall)
 
 command -v docker >/dev/null || { echo "docker saknas" >&2; exit 2; }
 docker info >/dev/null 2>&1 || { echo "docker-demonen svarar inte — starta Docker först" >&2; exit 2; }

@@ -5,16 +5,19 @@
 # Körs som root på driftvärden. ops kan INTE köra den utan sudo: datat ägs av DATA_UID
 # (110001 med standardvärdena) och ingen annan än root kommer åt det.
 #
-#   vibesandbox-backup [--dry-run] [--behall N]
+#   vibesandbox-backup [--dry-run] [--behall N] [--publik-nyckel FIL]
+#   vibesandbox-backup --lista | --manifest NAMN | --skicka NAMN   (läsgränssnittet, se nedan)
 #
 # Resultatet är en katalog under ${PLATFORM_ROOT}/backups/<tidsstämpel>/:
 #
-#   databaser/…   en konsekvent kopia av varje SQLite-fil, verifierad med integrity_check
-#   filer/        uppladdningarna och allt annat under data/ som inte är en databas
-#   compose/      compose-filerna och .env  (se "Hemligheter" nedan)
-#   manifest      vad som ingick, vilken version som kördes, och integritetsresultaten
+#   databaser/…     en konsekvent kopia av varje SQLite-fil, verifierad med integrity_check
+#   filer/          uppladdningarna och allt annat under data/ som inte är en databas
+#   compose/        compose-filerna och .env  (se "Hemligheter" nedan)
+#   manifest        vad som ingick, vilken version som kördes, och integritetsresultaten
+#   arkiv.tar.gpg   allt ovanstående, krypterat till en PUBLIK nyckel. Skrivs bara när
+#                   --publik-nyckel är satt, och är det enda som får lämna värden.
 #
-# Tre saker avgör om det här är en säkerhetskopia eller bara en förhoppning:
+# Fyra saker avgör om det här är en säkerhetskopia eller bara en förhoppning:
 #
 #   1. INGEN 'cp' AV EN LEVANDE SQLITE-DATABAS. Plattformen kör i WAL-läge: de senaste
 #      transaktionerna ligger i <db>-wal och sidcachen samordnas via <db>-shm. En rå kopia
@@ -28,6 +31,12 @@
 #   3. BACKUPKATALOGEN BYTER NAMN FÖRST NÄR ALLT ÄR KLART. Arbetet sker i .ofullstandig och
 #      flyttas på plats när manifestet är skrivet. En avbruten körning (Ctrl-C, strömavbrott,
 #      full disk) kan alltså inte lämna efter sig något som ser ut som en färdig backup.
+#   4. EN KOPIA SOM SKA LÄMNA VÄRDEN KRYPTERAS HÄR, MED EN NYCKEL VÄRDEN INTE KAN LÄSA MED.
+#      Se KRYPTERINGSBESLUT nedan. En kopia som bara ligger kvar på maskinen överlever inte
+#      att maskinen gör det — och en kopia som lämnar maskinen i klartext bär hela driften.
+#
+# Läsgränssnittet (--lista / --manifest / --skicka) finns för EN sak: att NAS:en ska kunna
+# hämta arkivet utan att kunna läsa något annat i backups/. Se HAMTNINGSBESLUT nedan.
 #
 # Hemligheter: compose/.env FÖLJER MED. Skälet och priset står vid ENV_BESLUT nedan.
 #
@@ -45,9 +54,17 @@ readonly MANIFEST_VERSION=1
 # som någon har lagt dit för hand (eller vår egen .ofullstandig) tas därför aldrig bort.
 readonly KATALOGMONSTER='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z(-[0-9]+)?$'
 readonly PLATTFORMSBILD="${PLATTFORMSBILD:-vibesandbox-platform:lokal}"
+# Namnet på det krypterade arkivet inuti en backupkatalog. hamta-backup.sh känner till det,
+# och restore.sh rör det inte (den läser bara databaser/, filer/, compose/ och manifest).
+readonly ARKIV='arkiv.tar.gpg'
 
 DRY_RUN=0
 BEHALL="${BEHALL_BACKUPER:-7}"
+# Sökvägen till den PUBLIKA nyckeln. Tom ⇒ ingen kryptering, och då får kopian inte lämna värden.
+PUBNYCKEL="${VIBESANDBOX_BACKUP_PUBNYCKEL:-}"
+# backup | lista | manifest | skicka — de tre sista är läsgränssnittet och skriver bara ut.
+LAGE=backup
+NAMNARG=""
 
 # ── Utskrift ───────────────────────────────────────────────────────────────────────────────
 # Samma språk som provision.sh: ==> steg, → gör, ✓ klart, ! varning, ✗ avbrott.
@@ -68,9 +85,22 @@ Användning: backup.sh [flaggor]
   --dry-run        Säg vad som skulle säkras, ändra ingenting.
   --behall <N>     Behåll de N nyaste säkerhetskopiorna (minst 1, standard 7).
                    Går också att sätta med BEHALL_BACKUPER.
+  --publik-nyckel <fil>
+                   Kryptera den färdiga kopian till den här PUBLIKA OpenPGP-nyckeln.
+                   Går också att sätta med VIBESANDBOX_BACKUP_PUBNYCKEL. Utan den skrivs
+                   kopian i klartext och FÅR INTE lämna värden.
   --hjalp          Den här texten.
 
+Läsgränssnittet — det NAS:en anropar över SSH, aldrig en människa:
+
+  --lista          En rad per säkerhetskopia som har ett krypterat arkiv:
+                   <namn> <sha256 ur manifestet> <byte>.
+  --manifest <namn>  Skriv ut den säkerhetskopians manifest (klartext, inga hemligheter).
+  --skicka <namn>    Skriv ut den säkerhetskopians arkiv.tar.gpg på stdout. Ingenting annat
+                     i backups/ går att komma åt den vägen.
+
 Körs som root på en värd som provision.sh har förberett. Återställning: restore.sh.
+Hämtning till NAS:en: hamta-backup.sh, som körs PÅ NAS:en.
 EOF
 }
 
@@ -78,6 +108,10 @@ while (( $# > 0 )); do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --behall) shift; BEHALL="${1:-}" ;;
+    --publik-nyckel) shift; PUBNYCKEL="${1:-}" ;;
+    --lista) LAGE=lista ;;
+    --manifest) LAGE=manifest; shift; NAMNARG="${1:-}" ;;
+    --skicka) LAGE=skicka; shift; NAMNARG="${1:-}" ;;
     --hjalp | -h) anvandning; exit 0 ;;
     *) printf 'okänd flagga: %s\n\n' "$1" >&2; anvandning >&2; exit 2 ;;
   esac
@@ -127,6 +161,158 @@ agare_data="$(stat -c '%u' "$DATA")"
 if [[ "$agare_data" != "$DATA_UID" ]]; then
   varna "${DATA} ägs av uid ${agare_data}, förväntade ${DATA_UID} (${DATA_USER}). Säkerhetskopian tas ändå — men se efter varför."
 fi
+
+# ── Läsgränssnittet: --lista, --manifest, --skicka ─────────────────────────────────────────
+#
+# HAMTNINGSBESLUT — varför NAS:en HÄMTAR, och varför den hämtar genom det här skriptet.
+#
+# RIKTNINGEN ÄR INTE FÖRHANDLINGSBAR. Tailnet-ACL:en tillåter inte driftvärden att initiera
+# trafik in i tailnetet, och det är ett medvetet val: en övertagen driftvärd ska inte kunna nå
+# NAS:en eller de äldre säkerhetskopiorna där. Därför HÄMTAR NAS:en (NAS → värd), alltid.
+# Den som "förbättrar" det här till en push från värden — en rsync eller scp i värdens cron —
+# river den spärren och gör NAS:en anträffbar från precis den maskin som säkerhetskopiorna
+# finns till för att överleva. GÖR INTE DET. Värden ska inte ens veta NAS:ens adress.
+#
+# VARFÖR INTE BARA rsync MOT backups/. ${PLATFORM_ROOT}/backups är 0700 root, så ops — den
+# enda NAS:en loggar in som — kan inte läsa där. Att lösa det med en sudoers-rad för rsync
+# vore att ge ops läsning av hela värden som root. I stället får ops köra just det här
+# skriptet, och skriptet lämnar ut exakt två saker: manifestet (klartext, men bara sökvägar,
+# hashar och versioner) och arkiv.tar.gpg (krypterat). Databaserna, uppladdningarna och
+# compose/.env i klartext går inte att nå den vägen — inte ens med ops nyckel i handen.
+#
+# Namnet kommer från andra sidan av en SSH-anslutning och behandlas som det indata det är: det
+# prövas mot KATALOGMONSTER, som varken tillåter '/' eller '..', innan det rör en sökväg.
+# I de här lägena skrivs INGENTING annat än nyttolasten på stdout — --skicka strömmar binärt.
+
+giltigt_backupnamn() { [[ "$1" =~ $KATALOGMONSTER ]]; }
+
+case "$LAGE" in
+  lista)
+    while IFS= read -r ls_namn; do
+      [[ -n "$ls_namn" ]] || continue
+      ls_manifest="${BACKUPS}/${ls_namn}/manifest"
+      [[ -f "$ls_manifest" && -f "${BACKUPS}/${ls_namn}/${ARKIV}" ]] || continue
+      # Summan och storleken läses UR MANIFESTET, inte ur filen på disk. Räknade vi om dem här
+      # skulle en bit som ruttnat på värdens disk räknas om till "rätt" och NAS:en hämta en
+      # trasig kopia utan att märka något. Manifestet säger vad kopian var när den skrevs.
+      ls_summa="$(awk -F= '$1 == "arkiv_sha256" { print $2; exit }' "$ls_manifest")"
+      ls_storlek="$(awk -F= '$1 == "arkiv_storlek" { print $2; exit }' "$ls_manifest")"
+      [[ "$ls_summa" =~ ^[0-9a-f]{64}$ && "$ls_storlek" =~ ^[0-9]+$ ]] || continue
+      printf '%s %s %s\n' "$ls_namn" "$ls_summa" "$ls_storlek"
+    done < <(find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d -printf '%P\n' 2>/dev/null \
+      | grep -E "$KATALOGMONSTER" | LC_ALL=C sort || true)
+    exit 0
+    ;;
+  manifest | skicka)
+    giltigt_backupnamn "$NAMNARG" \
+      || vagra "'${NAMNARG}' är inget giltigt namn på en säkerhetskopia."
+    if [[ "$LAGE" == manifest ]]; then ut_fil="${BACKUPS}/${NAMNARG}/manifest"; else ut_fil="${BACKUPS}/${NAMNARG}/${ARKIV}"; fi
+    [[ -f "$ut_fil" && ! -L "$ut_fil" ]] \
+      || vagra "${ut_fil} finns inte. (--lista visar vad som går att hämta.)"
+    cat -- "$ut_fil"
+    exit 0
+    ;;
+esac
+
+# ── Kryptering ─────────────────────────────────────────────────────────────────────────────
+#
+# KRYPTERINGSBESLUT — vilket verktyg, och vad som händer när det inte går att använda.
+#
+# VERKTYGET ÄR gpg, INTE age.
+#   age hade varit trevligare: en binär, en rad som mottagare, inget nyckelknippe och ingen
+#   agent. Men age är inte installerat på värden och provision.sh installerar det inte. gnupg
+#   DÄREMOT installeras redan som grundpaket där — det behövs för att kontrollera apt-nycklarnas
+#   fingeravtryck — och finns alltså garanterat på varje värd provision.sh har rört. Att välja
+#   det verktyg värden bevisligen har slår att välja det finare verktyg värden kanske får:
+#   krypteringen vi har i dag är ingen alls, och den skulden betalas inte av ännu ett
+#   paketberoende. Läggs age in i provision.sh senare är det här stället att byta ut, och bara
+#   här: allt annat i skriptet talar om "arkivet", inte om OpenPGP.
+#
+# ASYMMETRISKT, OCH DET ÄR HELA POÄNGEN. Värden får bara den PUBLIKA nyckeln. En värd som har
+# tagits över kan då skriva nya kopior men inte läsa en enda gammal, och nyckeln ligger aldrig
+# på samma maskin som kopian. Den privata nyckeln bor i Bitwarden och på NAS:en. Skriptet
+# vägrar uttryckligen om någon råkar peka ut en fil som innehåller den privata halvan.
+#
+# NÄR gpg ELLER NYCKELN INTE GÅR ATT ANVÄNDA: VI VÄGRAR — kod 2, innan en byte har skrivits.
+#   De två alternativen håller inte:
+#     • Tyst falla tillbaka till klartext är uteslutet. Det ÄR felet vi bygger bort — en kopia
+#       med driftens samtliga hemligheter som lämnar värden oskyddad — och ingen hade sett det.
+#     • Klartext med en varning betyder slutkod 0. Ett cron-jobb som avslutas med 0 larmar
+#       ingen, och varningen hamnar i en logg som läses den dag det redan är för sent.
+#   Kontrollen ligger därför bland de andra VÄGRAR-kontrollerna, före allt arbete: antingen får
+#   du en krypterad säkerhetskopia, eller så får du ingen och ett larm. Rotationen kör sist, så
+#   priset för en vägran är att dagens kopia uteblir — inte att gårdagens försvinner.
+#
+# UTAN --publik-nyckel alls är det inte ett fel utan ett annat läge: den lokala kopian. Den
+# skrivs i klartext precis som förut, manifestet säger kryptering=nej, och sammanfattningen
+# säger rakt ut att den inte får lämna värden.
+
+GPG_HEM=""
+GPG_MOTTAGARE=""
+STADA_ARB=0
+
+# Varje väg ut ur skriptet städar. Halvfärdigt arbete ska inte ligga kvar och se ut som något
+# man kan återställa ifrån, och gpg ska inte lämna något nyckelknippe efter sig på värden.
+stada() {
+  if [[ -n "${GPG_HEM:-}" && -d "$GPG_HEM" ]]; then
+    GNUPGHOME="$GPG_HEM" gpgconf --kill all >/dev/null 2>&1 || true
+    rm -rf -- "$GPG_HEM"
+  fi
+  (( STADA_ARB )) && [[ -n "${ARB:-}" ]] && rm -rf -- "$ARB"
+  return 0
+}
+trap stada EXIT
+
+# Ett eget, tomt GNUPGHOME. Utan det skriver gpg i /root/.gnupg och lämnar beständig
+# nyckelstat efter sig på värden — värden ska inte ha någon alls.
+#   Katalogen skapas HÄR och inte i gpgkor: gpgkor anropas både i en kommandosubstitution och i
+# en pipeline, och båda är underskal. En tilldelning där hade försvunnit, och katalogen hade
+# blivit kvar på disken eftersom EXIT-fällan aldrig fått se namnet.
+gpg_hem_krav() {
+  [[ -n "$GPG_HEM" ]] && return 0
+  GPG_HEM="$(mktemp -d)" || avbryt "kunde inte skapa en temporär katalog åt gpg."
+  chmod 700 "$GPG_HEM"
+}
+
+gpgkor() { GNUPGHOME="$GPG_HEM" gpg --batch --no-tty "$@"; }
+
+forbered_kryptering() {
+  [[ -n "$PUBNYCKEL" ]] || return 0
+  har_kommando gpg \
+    || vagra "--publik-nyckel angavs men gpg finns inte på värden. Ingen säkerhetskopia skrevs (se KRYPTERINGSBESLUT i backup.sh). Installera gnupg."
+  [[ -f "$PUBNYCKEL" && ! -L "$PUBNYCKEL" ]] \
+    || vagra "hittar ingen vanlig fil på ${PUBNYCKEL} — det är där den publika nyckeln ska ligga."
+  gpg_hem_krav
+  local rader
+  rader="$(gpgkor --with-colons --show-keys -- "$PUBNYCKEL" 2>/dev/null)" || rader=""
+  [[ -n "$rader" ]] \
+    || vagra "${PUBNYCKEL} innehåller ingen OpenPGP-nyckel som gpg känner igen. Exportera med 'gpg --armor --export <id>'."
+  # En privat nyckel på värden vore hela poängen upp och ned: då kan den som tar över värden
+  # läsa varje kopia värden någonsin har skrivit. Det är ett fel, inte en bekvämlighet.
+  if printf '%s\n' "$rader" | grep -q '^sec:'; then
+    vagra "${PUBNYCKEL} innehåller en PRIVAT nyckel. På värden ska bara den publika ligga — annars kan en övertagen värd läsa sina egna gamla säkerhetskopior. Exportera rätt halva med 'gpg --armor --export <id>'."
+  fi
+  GPG_MOTTAGARE="$(printf '%s\n' "$rader" | awk -F: '$1 == "fpr" { print $10; exit }')"
+  [[ "$GPG_MOTTAGARE" =~ ^[0-9A-F]{40}$ ]] \
+    || vagra "kunde inte läsa något fingeravtryck ur ${PUBNYCKEL}."
+}
+
+# Tarar ihop den färdiga säkerhetskopian och krypterar strömmen. --recipient-file betyder att
+# nyckeln används direkt ur filen: inget nyckelknippe byggs upp, ingen tillit behöver sättas,
+# och ingenting ligger kvar efteråt. Klartexten passerar aldrig disken som en extra kopia —
+# tar skriver in i gpg, och bara arkivet landar.
+skriv_arkiv() { # <arbetskatalog> <medlem…>
+  local kat="$1"; shift
+  tar -C "$kat" -cf - -- "$@" \
+    | gpgkor --yes --compress-algo zlib -z 6 \
+        --recipient-file "$PUBNYCKEL" --encrypt --output "${kat}/${ARKIV}" \
+    || avbryt "krypteringen misslyckades (mottagare ${GPG_MOTTAGARE}). INGEN säkerhetskopia skrevs."
+  [[ -s "${kat}/${ARKIV}" ]] \
+    || avbryt "gpg skrev ett tomt arkiv. INGEN säkerhetskopia skrevs."
+  chmod 0600 "${kat}/${ARKIV}"
+}
+
+forbered_kryptering
 
 # ── Körtid för SQLite ──────────────────────────────────────────────────────────────────────
 #
@@ -280,6 +466,11 @@ if (( DRY_RUN )); then
   if [[ -d "$COMPOSE" ]]; then
     printf '  [dry-run] skulle kopiera %s, inklusive .env med driftens hemligheter\n' "$COMPOSE"
   fi
+  if [[ -n "$PUBNYCKEL" ]]; then
+    printf '  [dry-run] skulle kryptera alltihop till %s/%s (gpg, mottagare %s)\n' "$NAMN" "$ARKIV" "$GPG_MOTTAGARE"
+  else
+    printf '  [dry-run] skulle INTE kryptera — kopian får då inte lämna värden (--publik-nyckel)\n'
+  fi
   mapfile -t BEFINTLIGA < <(find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d -printf '%P\n' 2>/dev/null \
     | grep -E "$KATALOGMONSTER" | LC_ALL=C sort -r || true)
   printf '  [dry-run] %d säkerhetskopior finns; efter rotationen skulle %d finnas kvar\n' \
@@ -295,11 +486,8 @@ if [[ -e "$ARB" ]]; then
   varna "en tidigare, avbruten körning lämnade ${ARB} — den kastas."
   rm -rf -- "$ARB"
 fi
-# Varje väg ut ur skriptet städar bort arbetskatalogen. Halvfärdigt arbete ska inte ligga kvar
-# och se ut som något man kan återställa ifrån.
+# Från och med nu städar EXIT-fällan (satt vid KRYPTERINGSBESLUT ovan) också arbetskatalogen.
 STADA_ARB=1
-stada() { (( STADA_ARB )) && [[ -n "${ARB:-}" ]] && rm -rf -- "$ARB"; return 0; }
-trap stada EXIT
 
 install -d -m 0700 -o 0 -g 0 "$ARB" "${ARB}/databaser"
 
@@ -437,10 +625,50 @@ STORLEK="$(du -sb "$ARB" | cut -f1)"
   printf 'antal_filer=%s\n' "$ANTAL_FILER"
   printf 'compose_env=%s\n' "$HAR_ENV"
   printf 'storlek_byte=%s\n' "$STORLEK"
+  # Vad som gäller för DEN HÄR kopian, så att den som hittar katalogen om två år slipper gissa.
+  # storlek_byte är klartextens storlek; arkivets egen storlek står i arkiv_storlek nedan.
+  if [[ -n "$PUBNYCKEL" ]]; then
+    printf 'kryptering=gpg\n'
+    printf 'kryptering_mottagare=%s\n' "$GPG_MOTTAGARE"
+  else
+    printf 'kryptering=nej\n'
+  fi
   printf '%s' "$MANIFESTRADER"
 } >"${ARB}/manifest"
 chmod 0600 "${ARB}/manifest"
 klart "manifest skrivet (version ${APP_VERSION}, ${ANTAL_OK} databaser)"
+
+# ── Det krypterade arkivet ─────────────────────────────────────────────────────────────────
+#
+# Arkivet ligger INUTI backupkatalogen, inte bredvid den. Tre följder, alla avsiktliga:
+# rotationen behöver inte lära sig ett andra namnmönster (kopian och dess arkiv åldras och
+# raderas tillsammans), restore.sh rörs inte (den läser bara databaser/, filer/, compose/ och
+# manifest, och bryr sig inte om extra filer i toppen), och en hämtning kan aldrig få tag i ett
+# arkiv vars klartext har rullat ut.
+#   Priset är att varje säkerhetskopia tar ungefär dubbelt så mycket plats: klartexten som
+# restore.sh läser lokalt, plus det komprimerade arkivet som NAS:en hämtar. Klartexten går inte
+# att slopa — den är hela den lokala återställningsvägen — och --behall styr båda, eftersom de
+# är samma katalog.
+#
+# Manifestet inuti arkivet saknar de tre arkiv_*-raderna nedan. Det kan det inte undgå: de
+# beskriver arkivet och skrivs först när arkivet finns.
+ARKIV_SUMMA=""
+ARKIV_STORLEK=0
+if [[ -n "$PUBNYCKEL" ]]; then
+  rubrik "Kryptering — till ${GPG_MOTTAGARE}"
+  MEDLEMMAR=(databaser filer manifest)
+  [[ -d "${ARB}/compose" ]] && MEDLEMMAR+=(compose)
+  skriv_arkiv "$ARB" "${MEDLEMMAR[@]}"
+  ARKIV_SUMMA="$(sha256sum "${ARB}/${ARKIV}" | cut -d' ' -f1)"
+  ARKIV_STORLEK="$(stat -c '%s' "${ARB}/${ARKIV}")"
+  {
+    printf 'arkiv=%s\n' "$ARKIV"
+    printf 'arkiv_sha256=%s\n' "$ARKIV_SUMMA"
+    printf 'arkiv_storlek=%s\n' "$ARKIV_STORLEK"
+  } >>"${ARB}/manifest"
+  klart "${ARKIV} — ${ARKIV_STORLEK} byte, sha256 ${ARKIV_SUMMA:0:16}…"
+  klart "värden har bara den publika nyckeln och kan inte läsa arkivet den nyss skrev"
+fi
 
 # ── Byt namn: nu — och först nu — är det en säkerhetskopia ─────────────────────────────────
 
@@ -474,8 +702,24 @@ printf '  katalog     %s\n' "$MAL"
 printf '  version     %s\n' "$APP_VERSION"
 printf '  databaser   %s (alla godkända av integrity_check, körtid %s)\n' "$ANTAL_OK" "$SQLITE_KORNING"
 printf '  filer       %s\n' "$ANTAL_FILER"
-printf '  storlek     %s (%s byte)\n' "$MANSKLIG" "$STORLEK"
+if [[ -n "$PUBNYCKEL" ]]; then
+  # du ser hela katalogen; storlek_byte i manifestet är klartexten. Att säga båda är ärligare
+  # än att låta ett av talen se ut som det andra.
+  printf '  storlek     %s på disk — %s byte klartext plus arkivet\n' "$MANSKLIG" "$STORLEK"
+else
+  printf '  storlek     %s (%s byte)\n' "$MANSKLIG" "$STORLEK"
+fi
 printf '  rotation    %s kvar, %s borttagna\n' "$(( ${#ALLA[@]} - BORTTAGNA ))" "$BORTTAGNA"
+if [[ -n "$PUBNYCKEL" ]]; then
+  printf '  krypterat   %s/%s (%s byte, gpg → %s)\n' "$MAL" "$ARKIV" "$ARKIV_STORLEK" "$GPG_MOTTAGARE"
+fi
 if [[ "$HAR_ENV" == ja ]]; then
-  printf '\n  ! Säkerhetskopian innehåller compose/.env. Kryptera den INNAN den lämnar värden.\n'
+  if [[ -n "$PUBNYCKEL" ]]; then
+    printf '\n  Säkerhetskopian innehåller compose/.env. Katalogen i klartext stannar på värden;\n'
+    printf '  det är %s — och bara den — som NAS:en hämtar med hamta-backup.sh.\n' "$ARKIV"
+  else
+    printf '\n  ! Säkerhetskopian innehåller compose/.env och är OKRYPTERAD.\n'
+    printf '  ! Den FÅR INTE lämna värden. Kör med --publik-nyckel om den ska hämtas någonstans.\n'
+    printf '  ! Kryptera den INNAN den lämnar värden.\n'
+  fi
 fi

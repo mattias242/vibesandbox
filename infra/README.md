@@ -389,27 +389,67 @@ Priset som **inte** är betalt: i samma stund som en säkerhetskopia lämnar vä
 driftens samtliga hemligheter. **Kryptera den innan den kopieras någon annanstans.** Den
 kopieringen gör `backup.sh` inte, och ska inte göra.
 
-### Vad som krävs för att köra den utan lösenord (inte gjort)
+### Installerad av `provision.sh`
 
-`provision.sh` installerar varken `backup.sh` eller en timer för den — det hör till skiva 6.
-Tills det är gjort får det göras för hand, och då ska det göras så här (samma mönster som
-driftsättningens rotsteg, se steget `kataloger`):
+Steget `backup` lägger säkerhetskopieringen på värden — samma krav som hela katalogen finns för:
+*det som inte står i ett skript finns inte efter en flytt.*
 
-```sh
-install -m 0755 -o root -g root backup.sh  /usr/local/sbin/vibesandbox-backup
-install -m 0755 -o root -g root restore.sh /usr/local/sbin/vibesandbox-restore
-```
+| På värden | Vad |
+|---|---|
+| `/usr/local/sbin/vibesandbox-backup` | `backup.sh`, root 0755 |
+| `/usr/local/sbin/vibesandbox-restore` | `restore.sh`, root 0755 |
+| `/etc/sudoers.d/vibesandbox-backup` | `ops ALL=(root) NOPASSWD: /usr/local/sbin/vibesandbox-backup` (root 0440) |
+| `/etc/vibesandbox/backup-pub.asc` | den **publika** krypteringsnyckeln (root 0644 — den är publik) |
+| `vibesandbox-backup.timer` | `OnCalendar=*-*-* <BACKUP_TID>:00`, `RandomizedDelaySec=30m`, `Persistent=true` |
+| `vibesandbox-backup.service` | `ExecStart=… --behall <BACKUP_BEHALL> --publik-nyckel …` |
 
-- **Lösenordsfri körning** kräver en egen sudo-regel, prövad med `visudo` före bytet:
-  `ops ALL=(root) NOPASSWD: /usr/local/sbin/vibesandbox-backup`. Lägg den i en **egen** fil i
-  `sudoers.d` — regeln för `vibesandbox-driftsatt` ska inte röras. Observera att `verify.sh`
-  redovisar NOPASSWD-regler som avdrift; en ny regel ska vara ett medvetet beslut, inte en
-  överraskning vid nästa timkörning.
-- **Regelbunden körning** hör hemma i en systemd-timer (`OnCalendar=daily`,
-  `RandomizedDelaySec`), inte i cron — samma mönster som `vibesandbox-verify.timer`.
-- **Kopian ut ur värden** finns inte än. Så länge den inte finns överlever ingen
-  säkerhetskopia att värden går förlorad, och det är hela poängen med att ha en. Se
-  [Kommer i skiva 6](#kommer-i-skiva-6).
+Regeln ligger i en **egen** fil — driftsättningens rörs inte — och kandidaten prövas med `visudo`
+innan den byts in: en trasig fil i `sudoers.d` stänger av ALL sudo. **Återställningen har med flit
+ingen lösenordsfri regel**; den är sällsynt och förstörande. Timern kör som root via systemd, så
+sudo-regeln finns för den kopia man tar för hand innan något riskabelt — och för NAS:ens
+läsgränssnitt (`--lista`, `--manifest`, `--skicka`).
+
+Inställningar: `INSTALL_BACKUP`, `BACKUP_TID`, `BACKUP_BEHALL`, `BACKUP_MAX_ALDER_TIMMAR`,
+`BACKUP_PUBNYCKEL` (se `provision.env.example`). `INSTALL_BACKUP=0` installerar ingenting och tar
+bort det som redan ligger där — ett halvt läge (timer utan skript) är sämre än inget.
+
+`verify.sh` kontrollerar varje timme att skripten finns med rätt ägare och läge, att regeln är
+exakt vår, att enheterna inte har skrivits om, att timern är aktiverad och schemalagd — och **hur
+gammal den nyaste färdiga säkerhetskopian är** (standard 36 h). Det sista är poängen: en timer kan
+vara aktiv medan varje körning misslyckas, och det läget upptäcks annars först den dag någon
+behöver kopian. Finns ingen kopia alls räknas tiden från när `backup.sh` lades på värden, så en
+nyss förberedd värd larmar inte.
+
+### Kryptering och kopian ut ur värden
+
+Kopian krypteras med **gpg** och en publik nyckel. Valet föll på gpg och inte det finare `age`
+därför att `provision.sh` redan installerar gnupg (apt-nycklarnas fingeravtryck) — krypteringen vi
+hade var ingen alls, och den skulden betalas inte av ännu ett paketberoende.
+
+Asymmetrin är hela poängen: **värden har bara den publika halvan.** Inget nyckelknippe byggs där,
+och en värd som tas över kan inte läsa sina egna gamla kopior. `backup.sh` vägrar uttryckligen om
+nyckelfilen bär en privat nyckel, och `provision.sh` fångar samma fel innan något installeras.
+
+**Saknas nyckeln vägrar backupen**, med slutkod 2 och före första byten. Tyst klartext är felet vi
+bygger bort, och "klartext med varning" betyder slutkod 0 — ett schemalagt jobb som avslutas med 0
+larmar ingen. Priset för en vägran är att *dagens* kopia uteblir, inte att gårdagens försvinner.
+
+**NAS:en hämtar, värden skickar aldrig.** Tailnet-ACL:en förbjuder med flit värden att initiera
+trafik in i tailnetet — servern kör opålitlig kod och ska vara nåbar, aldrig nående.
+`hamta-backup.sh` körs därför på NAS:en och läser över SSH genom `backup.sh --lista/--manifest/
+--skicka`. Det gränssnittet lämnar bara ut det **krypterade** arkivet; databaserna, klartexten och
+`compose/.env` går inte att nå den vägen. (`rsync` vore enklare men hade krävt en sudo-regel som
+gav `ops` läsning av hela värden som root.)
+
+`--prov` på NAS-sidan dekrypterar med den privata nyckeln och kontrollerar integriteten. Det är
+värt att köra regelbundet: **en krypterad kopia som ingen kan dekryptera är samma sak som ingen
+kopia.**
+
+**Varje säkerhetskopia tar ungefär dubbel plats på värden** — klartext för en lokal återställning
+plus det krypterade arkivet för NAS:en. `--behall` styr båda.
+
+Innan hämtningen kan köras skarpt: NAS:ens publika SSH-nyckel måste in i `ops` `authorized_keys`
+på värden, och `gpg` måste finnas på DSM för `--prov` (`opkg install gnupg` via Entware).
 
 ---
 
@@ -628,6 +668,7 @@ det behöver inte finnas på din dator.
 | `filer` | **B4–B6, C:** radbrytning/säkerhetskopia/`findmnt --verify` vid tillägg i fstab/subuid/subgid; överlapp mot dockremap; `SSH_PORT` och 22 bland publika portar avvisas; env-filens ägare; `PLATFORM_ROOT`-injektion; halvfärdig XFS-avbild/swapfil; `daemon.json` valideras före bytet; gVisor utan kontrollsumma |
 | `verify` | **B7:** varje kontroll med sitt kommando i tre fellägen — tyst, saknas, och *rätt utdata men felkod* — ger aldrig `✓`; provinloggning mot en riktig sshd (en demon som startats med annan konfiguration än filerna fångas); sshd bland lyssnarna; `AuthorizedKeysCommand`; NOPASSWD; 20 körningar i rad med `pipefail` |
 | `fas2` | riktigt laddade nft-regler, riktig `sshd -T` med leverantörens dropins, riktig cloud-init-sammanslagning; **hela körningen två gånger**; `verify.sh` fångar 14 sorters avdrift |
+| `backupinstall` | **I1–I7:** `provision.sh` installerar backup.sh, restore.sh, sudo-regeln, den publika nyckeln och timern; ops kör säkerhetskopian genom sudo utan lösenord men inte återställningen; två körningar ändrar ingenting; `--dry-run` ändrar ingenting ens när inställningarna säger att filerna skulle skrivas om; sudo-regeln prövas med `visudo` FÖRE bytet och en underkänd kandidat rör aldrig den regel som gäller; driftsättningens regel orörd; `INSTALL_BACKUP=0` städar undan; `verify.sh` fångar saknad fil, fel läge, ändrad regel, omskriven enhet, stoppad och avaktiverad timer — och en säkerhetskopia som blivit för gammal; ett kommando som ljuger (rätt utdata, fel felkod) ger aldrig ✓ |
 | `flaggor` | `HARDEN_GUEST_AGENT`, `DOCKER_XFS_LOOP` (riktig `mkfs.xfs`), extra/tomma portlistor, gVisor |
 | `backup` | **S1–S7:** en LEVANDE WAL-databas (en skrivare håller anslutningen öppen med `wal_autocheckpoint=0` och skriver under tiden) — en rå `cp` av huvudfilen missar WAL:en, vår kopia gör det inte; integrity_check och en invariant över två tabeller; en databas som inte går att kopiera ⇒ INGEN säkerhetskopia alls; `restore.sh` underkänner en ändrad kopia på sha256 **och** en rätt summerad men trasig kopia på `integrity_check`, samt smuggelgods och saknat manifest; rotationen (`--behall`) rör bara sina egna kataloger; `--dry-run` i båda skripten ändrar ingenting; 0700/0600 `root` genomgående, också på `.env`; återställning på en tom värd ger tillbaka rader, ägare och lägen; `shellcheck` på båda skripten |
 | `tung-docker.sh` (docker) | Docker installerat av skriptet; `dockerd` med vår `daemon.json`; paket genom reglerna från ett låtsat internet och tailnet, IPv4 **och IPv6**, TCP och **UDP/443**, **169.254.169.254**, **hairpin mot :443** — med kontrollkörning utan tabellen |
@@ -647,6 +688,34 @@ körordningen ovan (ögonblicksbild först):
 - **Ubuntu 24.04 med socketaktiverad sshd** (`ssh.socket`): omladdning och lyssnarkontrollen är
   skrivna för det, men prövade bara mot `ssh.service`.
 - **SIGHUP och `/dev/tty` under `sudo` med `use_pty`** när anslutningen dör — därför `tmux`.
+
+**Säkerhetskopiering, kryptering och hämtning — det som inte är prövat**
+
+- **Den riktiga transporten.** Testerna kör värdsidan lokalt i en container. Ledet
+  `ssh ops@… sudo -n /usr/local/sbin/vibesandbox-backup` är aldrig kört i sviten: att NAS:ens
+  nyckel kommer in som `ops`, att sudo-regeln räcker, och att ACL:en släpper NAS → värd men inte
+  tvärtom, är verifierat först när det körts skarpt en gång.
+- **Synology själv.** `hamta-backup.sh` är skriven för DSM 7:s verktygsuppsättning men bara körd
+  på Debian 13. Busybox-varianterna av `find`, `tar`, `wc` och `sha256sum` är oprövade, och `gpg`
+  finns inte på ett oförändrat DSM — `--prov` kräver Entware och har därför aldrig körts på den
+  maskin där det ska köras.
+- **Att timern faktiskt löper ut och kör.** Testcontainern har ingen systemd: `OnCalendar`,
+  `RandomizedDelaySec` och `Persistent` är prövade som filinnehåll. Att systemd godtar
+  kalenderuttrycket visar `systemd-analyze calendar` på värden vid första skarpa körningen.
+- **Att larmet når någon.** En avvikelse hamnar i journalen för `vibesandbox-verify` och
+  ingenstans annars. En för gammal säkerhetskopia upptäcks alltså bara av den som läser
+  `systemctl status vibesandbox-verify`.
+- **Nyckelrotation.** Byts nyckelparet går gamla arkiv bara att läsa med den gamla privata
+  nyckeln. Det finns inget stöd för flera mottagare och ingen rutin för att kryptera om
+  historiken — behåll varje gammal privat nyckel så länge arkiv krypterade till den finns kvar.
+- **En övertagen värd kan ljuga i manifestet.** Både `--lista` och `arkiv_sha256` kommer från
+  värden. Krypteringen skyddar det som redan hämtats och det värden inte kan läsa — den gör inte
+  värden betrodd. Försvaret är NAS-sidans egen historik och rotation.
+- **Diskutrymme.** Varje kopia bär nu både klartext och krypterat arkiv. Att `--behall` räcker på
+  en 50 GB-disk när plattformen har riktig data är inte mätt.
+- **Stora datamängder och full disk.** `VACUUM INTO` läser hela databasen och kräver plats för en
+  hel kopia. Testets databaser är tiotals kilobyte; tid, utrymme och beteendet mot en disk som tar
+  slut är omätt.
 - **Journalbeviset** (`Accepted publickey for ops …` för just den sessionen) är bara prövat mot en
   efterbildning av journalen — därför kontrollen i körordningens steg 3.4.
 - **SSH-ångrandet via timern med riktig `systemctl reload`**: med riktig systemd prövas bara

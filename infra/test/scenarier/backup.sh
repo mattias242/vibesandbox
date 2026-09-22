@@ -11,6 +11,8 @@
 #   S-5  restore.sh vägrar mot en värd som redan har data, och lägger tillbaka rätt på en tom.
 #   S-6  Rättigheterna på resultatet är 0700/0600 root — också på .env.
 #   S-7  Statisk granskning: bash -n och shellcheck på båda skripten.
+#   S-8…S-18  Kryptering på värden och hämtning till NAS:en. Ligger längst ned i filen, i
+#        bk_kryptering_och_hamtning, med en egen innehållsförteckning där.
 #
 # Source:as av i-container.sh och använder dess hjälpfunktioner (godkand, underkand, pastar,
 # test_rubrik, ogonblicksbild, UT/KOD). Egna namn har prefixet bk_ så att de inte krockar med
@@ -431,4 +433,292 @@ scenario_backup() {
   if (( KOD == 0 )); then godkand "backup.sh kör igen med 0"; else underkand "kod ${KOD}"; printf '%s\n' "$UT" | tail -n 15 | sed 's/^/      | /'; fi
   bk_restore --kontrollera "$(bk_senaste)"
   if (( KOD == 0 )); then godkand "…och kopian är hel"; else underkand "kod ${KOD}"; fi
+
+  # S-8 till S-18 ligger i bk_kryptering_och_hamtning längst ned i filen.
+  bk_kryptering_och_hamtning
+}
+
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# S-8 till S-18 — kryptering på värden och hämtning till NAS:en.
+#
+#   S-8   Statisk granskning av hamta-backup.sh, och att riktningen (NAS → värd) står skriven.
+#   S-9   En krypteringsnyckel som inte går att använda ⇒ VÄGRAN, inte klartext. Det är det
+#         beslutade beteendet (KRYPTERINGSBESLUT i backup.sh), och det som skiljer en tyst
+#         nedgradering från ett larm.
+#   S-10  En krypterad kopia: arkivet finns, manifestet säger att och hur, och restore.sh
+#         störs inte av att det ligger där.
+#   S-11  Arkivet går INTE att läsa utan den privata nyckeln — och hemligheten ur .env syns
+#         inte bland arkivets byte, fast den syns i klartextkopian bredvid.
+#   S-12  …men GÅR att läsa med den (se S-18, hela vägen genom provet).
+#   S-13  Den okrypterade körningen fungerar kvar och säger rakt ut att kopian måste stanna.
+#   S-14  Läsgränssnittet lämnar ut arkivet och manifestet — och ingenting annat.
+#   S-15  Hämtaren: vägrar utan målkatalog, --dry-run rör inget, hämtar, verifierar, och
+#         hämtar inte om det den redan har.
+#   S-16  En manipulerad kopia fångas på sha256.
+#   S-17  En avbruten hämtning lämnar aldrig något som ser helt ut — inte ens när fjärrsidan
+#         påstår att allt gick bra.
+#   S-18  Provet: kopian går att läsa tillbaka på NAS-sidan med den privata nyckeln.
+#
+# Nycklarna skapas här i containern. Inga nycklar i repot, och den privata halvan hamnar
+# aldrig någonstans som liknar "värden".
+
+BK_PUB=/tmp/bk-pub.asc
+BK_SEC=/tmp/bk-sec.asc
+BK_FEL_SEC=/tmp/bk-fel-sec.asc
+BK_NAS=/volume1/NetBackup/vibesandbox
+BK_FJARR=/tmp/bk-fjarr.sh
+BK_FJARRLAGE=/tmp/bk-fjarrlage
+
+bk_hamta() { UT="$(bash /infra/hamta-backup.sh "$@" 2>&1)"; KOD=$?; }
+
+bk_skapa_nycklar() {
+  local h h2
+  h="$(mktemp -d)"; chmod 700 "$h"
+  GNUPGHOME="$h" gpg --batch --quiet --passphrase '' \
+    --quick-generate-key 'vibesandbox backup (test) <backup@example.invalid>' rsa3072 encr never
+  GNUPGHOME="$h" gpg --batch --quiet --armor --export >"$BK_PUB"
+  GNUPGHOME="$h" gpg --batch --quiet --armor --export-secret-keys >"$BK_SEC"
+  GNUPGHOME="$h" gpgconf --kill all >/dev/null 2>&1
+  # Ett helt annat nyckelpar, för att visa att det är RÄTT nyckel som krävs — inte vilken som helst.
+  h2="$(mktemp -d)"; chmod 700 "$h2"
+  GNUPGHOME="$h2" gpg --batch --quiet --passphrase '' \
+    --quick-generate-key 'nagon annan (test) <annan@example.invalid>' rsa3072 encr never
+  GNUPGHOME="$h2" gpg --batch --quiet --armor --export-secret-keys >"$BK_FEL_SEC"
+  GNUPGHOME="$h2" gpgconf --kill all >/dev/null 2>&1
+  chmod 600 "$BK_PUB" "$BK_SEC" "$BK_FEL_SEC"
+}
+
+# Står i stället för 'ssh ops@vard sudo -n /usr/local/sbin/vibesandbox-backup'. Testet kör
+# alltså den RIKTIGA värdsidan (backup.sh) — bara transporten är utbytt, och det är transporten
+# vi inte kan ha i en container. Lägena 'andrad' och 'avbruten' härmar en trasig överföring.
+bk_skriv_fjarrstubb() {
+  cat >"$BK_FJARR" <<'FJ'
+#!/usr/bin/env bash
+lage="$(cat /tmp/bk-fjarrlage 2>/dev/null || echo hel)"
+if [[ "${1:-}" == "--skicka" && "$lage" != hel ]]; then
+  case "$lage" in
+    andrad)
+      # Exakt lika många byte, en byte annorlunda: det är sha256 som ska fånga den, inte storleken.
+      bash /infra/backup.sh "$@" | python3 -c 'import sys
+d = sys.stdin.buffer.read()
+sys.stdout.buffer.write(d[:-1] + bytes([d[-1] ^ 0xff]))'
+      ;;
+    avbruten)
+      # Strömmen tar slut mitt i OCH fjärrsidan säger att allt gick bra. Det värsta fallet.
+      bash /infra/backup.sh "$@" | head -c 128
+      ;;
+  esac
+  exit 0
+fi
+exec bash /infra/backup.sh "$@"
+FJ
+  chmod +x "$BK_FJARR"
+  printf 'hel\n' >"$BK_FJARRLAGE"
+}
+
+bk_fjarrlage() { printf '%s\n' "$1" >"$BK_FJARRLAGE"; }
+
+# Allt hämtaren får röra: sökväg, läge, ägare och storlek.
+bk_nas_bild() { find "$BK_NAS" -printf '%p %m %u:%g %s\n' 2>/dev/null | LC_ALL=C sort; }
+
+bk_kryptering_och_hamtning() {
+  local b m ok kryptnamn oknamn nytt disk_sha m_sha tomhem fore efter
+
+  # ── S-8 ──────────────────────────────────────────────────────────────────────────────────
+  test_rubrik "S-8: statisk granskning av hamta-backup.sh"
+  pastar "bash -n hamta-backup.sh" bash -n /infra/hamta-backup.sh
+  if LC_ALL=C.UTF-8 shellcheck -x /infra/hamta-backup.sh; then
+    godkand "shellcheck utan anmärkningar"
+  else
+    underkand "shellcheck har anmärkningar på hamta-backup.sh"
+  fi
+  # Riktningen är hela säkerhetsmodellen, inte en smaksak: värden får aldrig initiera trafik
+  # in i tailnetet. Står det inte skrivet kommer någon att "förbättra" det till en push.
+  pastar "hamta-backup.sh säger uttryckligen att NAS:en hämtar" \
+    grep -q 'HÄMTAR NAS:en' /infra/hamta-backup.sh
+  pastar "…och backup.sh säger samma sak på värdsidan" \
+    grep -q 'HÄMTAR NAS:en' /infra/backup.sh
+
+  bk_skapa_nycklar
+  pastar "ett publikt nyckelblock skapades åt testet" grep -q 'BEGIN PGP PUBLIC KEY' "$BK_PUB"
+  pastar "…och ett privat, som aldrig ska röra värden" grep -q 'BEGIN PGP PRIVATE KEY' "$BK_SEC"
+
+  # ── S-9 ──────────────────────────────────────────────────────────────────────────────────
+  test_rubrik "S-9: en oanvändbar krypteringsnyckel ger VÄGRAN, aldrig tyst klartext"
+  local antal_fore; antal_fore="$(bk_antal_backuper)"
+  bk_backup --publik-nyckel /finns/inte/pub.asc
+  if (( KOD == 2 )) && innehaller "$UT" 'hittar ingen vanlig fil'; then godkand "vägrar när nyckelfilen inte finns (kod 2)"; else underkand "kod ${KOD} för en saknad nyckelfil"; fi
+  printf 'det har ar inte en nyckel\n' >/tmp/bk-skrap.asc
+  bk_backup --publik-nyckel /tmp/bk-skrap.asc
+  if (( KOD == 2 )) && innehaller "$UT" 'OpenPGP'; then godkand "vägrar när filen inte är en OpenPGP-nyckel"; else underkand "kod ${KOD} för en skräpfil"; fi
+  # Den privata nyckeln på värden vore hela poängen upp och ned.
+  bk_backup --publik-nyckel "$BK_SEC"
+  if (( KOD == 2 )) && innehaller "$UT" 'PRIVAT nyckel'; then godkand "vägrar när nyckelfilen bär den PRIVATA halvan"; else underkand "kod ${KOD} för en privat nyckel på värden"; fi
+  if [[ "$(bk_antal_backuper)" == "$antal_fore" ]]; then godkand "ingen av vägringarna skrev en säkerhetskopia"; else underkand "en säkerhetskopia skrevs trots vägran"; fi
+  pastar_inte "…och ingen .ofullstandig ligger kvar" test -e "${BK_BACKUPS}/.ofullstandig"
+  pastar_inte "gpg lämnade inget beständigt nyckelknippe på värden (/root/.gnupg)" test -e /root/.gnupg
+
+  # ── S-10 ─────────────────────────────────────────────────────────────────────────────────
+  test_rubrik "S-10: en krypterad säkerhetskopia"
+  sleep 1; bk_backup --publik-nyckel "$BK_PUB" --behall 3
+  if (( KOD == 0 )); then godkand "backup.sh med --publik-nyckel avslutas med 0"; else underkand "kod ${KOD}"; printf '%s\n' "$UT" | tail -n 15 | sed 's/^/      | /'; fi
+  bk_om "sammanfattningen säger vart kopian är krypterad" innehaller "$UT" 'krypterat   '
+  bk_om "…och att klartexten stannar på värden" innehaller "$UT" 'stannar på värden'
+  b="$(bk_senaste)"; m="${b}/manifest"; kryptnamn="${b##*/}"
+  pastar "arkiv.tar.gpg ligger i backupkatalogen" test -s "${b}/arkiv.tar.gpg"
+  if [[ "$(stat -c '%a %u:%g' "${b}/arkiv.tar.gpg")" == "600 0:0" ]]; then godkand "arkivet är 600 root:root"; else underkand "arkivet har $(stat -c '%a %u:%g' "${b}/arkiv.tar.gpg")"; fi
+  pastar "manifestet säger att kopian är krypterad" grep -qx 'kryptering=gpg' "$m"
+  pastar "…och med vilket verktyg och vilken mottagare" grep -qE '^kryptering_mottagare=[0-9A-F]{40}$' "$m"
+  pastar "…och vad arkivet heter" grep -qxF 'arkiv=arkiv.tar.gpg' "$m"
+  pastar "…och vilken sha256 det ska ha" grep -qE '^arkiv_sha256=[0-9a-f]{64}$' "$m"
+  pastar "…och hur stort det är" grep -qE '^arkiv_storlek=[0-9]+$' "$m"
+  m_sha="$(awk -F= '$1 == "arkiv_sha256" { print $2 }' "$m")"
+  disk_sha="$(sha256sum "${b}/arkiv.tar.gpg" | cut -d' ' -f1)"
+  if [[ "$m_sha" == "$disk_sha" ]]; then godkand "manifestets arkiv_sha256 stämmer med filen"; else underkand "arkiv_sha256 stämmer inte med filen"; fi
+  # restore.sh är inte vårt filområde och ska inte behöva bry sig om arkivet.
+  bk_restore --kontrollera "$b"
+  if (( KOD == 0 )); then godkand "restore.sh --kontrollera störs inte av arkivet i katalogen"; else underkand "restore.sh underkände en krypterad kopia (kod ${KOD})"; printf '%s\n' "$UT" | tail -n 10 | sed 's/^/      | /'; fi
+
+  # ── S-11 ─────────────────────────────────────────────────────────────────────────────────
+  test_rubrik "S-11: arkivet går inte att läsa utan den privata nyckeln"
+  tomhem="$(mktemp -d)"; chmod 700 "$tomhem"
+  if GNUPGHOME="$tomhem" gpg --batch --no-tty --decrypt "${b}/arkiv.tar.gpg" >/dev/null 2>&1; then
+    underkand "arkivet gick att dekryptera UTAN nyckel"
+  else
+    godkand "gpg utan den privata nyckeln misslyckas"
+  fi
+  if LC_ALL=C grep -a -q 'inte-en-riktig-hemlighet' "${b}/arkiv.tar.gpg"; then
+    underkand "hemligheten ur compose/.env syns i klartext bland arkivets byte"
+  else
+    godkand "hemligheten ur compose/.env syns inte bland arkivets byte"
+  fi
+  # …och att provet inte är trivialt: i klartextkopian bredvid syns den mycket riktigt.
+  pastar "…medan den syns i klartextkopian som stannar på värden" \
+    grep -q 'inte-en-riktig-hemlighet' "${b}/compose/.env"
+
+  # ── S-13 ─────────────────────────────────────────────────────────────────────────────────
+  test_rubrik "S-13: den okrypterade körningen fungerar kvar och säger det rakt ut"
+  sleep 1; bk_backup --behall 4
+  if (( KOD == 0 )); then godkand "backup.sh utan nyckel avslutas med 0"; else underkand "kod ${KOD}"; printf '%s\n' "$UT" | tail -n 12 | sed 's/^/      | /'; fi
+  bk_om "…och sammanfattningen säger att kopian inte får lämna värden" innehaller "$UT" 'FÅR INTE lämna värden'
+  ok="$(bk_senaste)"; oknamn="${ok##*/}"
+  pastar "manifestet säger kryptering=nej" grep -qx 'kryptering=nej' "${ok}/manifest"
+  pastar_inte "…och inget arkiv skrevs" test -e "${ok}/arkiv.tar.gpg"
+
+  # ── S-14 ─────────────────────────────────────────────────────────────────────────────────
+  test_rubrik "S-14: läsgränssnittet lämnar ut arkivet och manifestet — inget annat"
+  UT="$(bash /infra/backup.sh --lista 2>&1)"; KOD=$?
+  if (( KOD == 0 )); then godkand "--lista avslutas med 0"; else underkand "--lista gav kod ${KOD}"; fi
+  if grep -qE "^${kryptnamn} [0-9a-f]{64} [0-9]+\$" <<<"$UT"; then
+    godkand "den krypterade kopian står i listan med sha256 och storlek"
+  else
+    underkand "listan saknar ${kryptnamn}:"; printf '%s\n' "$UT" | head -n 5 | sed 's/^/      | /'
+  fi
+  if grep -q "^${oknamn} " <<<"$UT"; then
+    underkand "en OKRYPTERAD kopia erbjöds för hämtning"
+  else
+    godkand "en okrypterad kopia erbjuds inte för hämtning"
+  fi
+  bash /infra/backup.sh --skicka "$kryptnamn" >/tmp/bk-hamtat.gpg 2>/dev/null; KOD=$?
+  if (( KOD == 0 )) && [[ "$(sha256sum /tmp/bk-hamtat.gpg | cut -d' ' -f1)" == "$disk_sha" ]]; then
+    godkand "--skicka ger exakt arkivets byte"
+  else
+    underkand "--skicka gav något annat (kod ${KOD})"
+  fi
+  UT="$(bash /infra/backup.sh --skicka '../../etc/shadow' 2>&1)"; KOD=$?
+  if (( KOD == 2 )); then godkand "--skicka vägrar ett namn som försöker ta sig ur backups/"; else underkand "kod ${KOD} för '../../etc/shadow'"; fi
+  UT="$(bash /infra/backup.sh --skicka "$oknamn" 2>&1)"; KOD=$?
+  if (( KOD == 2 )); then godkand "--skicka vägrar en kopia som inte har något arkiv"; else underkand "kod ${KOD} för en okrypterad kopia"; fi
+  UT="$(bash /infra/backup.sh --manifest "$kryptnamn" 2>&1)"; KOD=$?
+  if (( KOD == 0 )) && innehaller "$UT" '^kryptering=gpg$'; then godkand "--manifest ger manifestet"; else underkand "kod ${KOD} från --manifest"; fi
+  if grep -q 'inte-en-riktig-hemlighet' <<<"$UT"; then underkand "manifestet bär en hemlighet"; else godkand "…som inte innehåller några hemligheter"; fi
+
+  # ── S-15 ─────────────────────────────────────────────────────────────────────────────────
+  test_rubrik "S-15: hämtaren på NAS-sidan"
+  bk_skriv_fjarrstubb
+  export HAMTA_FJARRKOMMANDO="bash ${BK_FJARR}"
+  mkdir -p /volume1/NetBackup
+  bk_hamta --mal /volume1/NetBackup/finns-inte
+  if (( KOD == 2 )) && innehaller "$UT" 'finns inte'; then godkand "vägrar när målkatalogen inte finns"; else underkand "kod ${KOD} mot en saknad målkatalog"; fi
+  pastar_inte "…och skapar den inte åt sig själv" test -e /volume1/NetBackup/finns-inte
+
+  mkdir -p "$BK_NAS"
+  fore="$(bk_nas_bild)"
+  bk_hamta --mal "$BK_NAS" --dry-run
+  efter="$(bk_nas_bild)"
+  if (( KOD == 0 )); then godkand "--dry-run avslutas med 0"; else underkand "--dry-run gav kod ${KOD}"; printf '%s\n' "$UT" | tail -n 12 | sed 's/^/      | /'; fi
+  if [[ "$fore" == "$efter" ]]; then godkand "…och rör ingenting i målkatalogen"; else underkand "--dry-run ändrade:"; diff <(echo "$fore") <(echo "$efter") | head -n 10; fi
+  pastar_inte "…och hämtade alltså ingenting" test -e "${BK_NAS}/${kryptnamn}"
+
+  bk_hamta --mal "$BK_NAS" --behall 5
+  if (( KOD == 0 )); then godkand "hämtningen avslutas med 0"; else underkand "hämtningen gav kod ${KOD}"; printf '%s\n' "$UT" | tail -n 15 | sed 's/^/      | /'; fi
+  pastar "arkivet ligger på NAS-sidan" test -s "${BK_NAS}/${kryptnamn}/arkiv.tar.gpg"
+  pastar "manifestet följde med" test -s "${BK_NAS}/${kryptnamn}/manifest"
+  pastar "…och filen 'hamtad', som är det som gör kopian hel" test -s "${BK_NAS}/${kryptnamn}/hamtad"
+  if [[ "$(sha256sum "${BK_NAS}/${kryptnamn}/arkiv.tar.gpg" | cut -d' ' -f1)" == "$disk_sha" ]]; then
+    godkand "det hämtade är bit för bit det värden skrev"
+  else
+    underkand "det hämtade skiljer sig från originalet"
+  fi
+  pastar_inte "ingen klartext följde med till NAS:en" bash -c "find '${BK_NAS}' -name '.env' | grep -q ."
+  pastar_inte "inga databaser i klartext heller" bash -c "find '${BK_NAS}' -name '*.sqlite' | grep -q ."
+  pastar_inte "ingen .ofullstandig ligger kvar" test -e "${BK_NAS}/.ofullstandig"
+
+  bk_hamta --mal "$BK_NAS" --behall 5
+  if (( KOD == 0 )) && innehaller "$UT" 'ingenting nytt'; then godkand "en andra körning hämtar inte om det som redan finns"; else underkand "andra körningen hämtade om (kod ${KOD})"; printf '%s\n' "$UT" | tail -n 12 | sed 's/^/      | /'; fi
+
+  # ── S-16 ─────────────────────────────────────────────────────────────────────────────────
+  test_rubrik "S-16: hämtaren fångar en manipulerad kopia på sha256"
+  sleep 1; bk_backup --publik-nyckel "$BK_PUB" --behall 4
+  nytt="$(bk_senaste)"; nytt="${nytt##*/}"
+  bk_fjarrlage andrad
+  bk_hamta --mal "$BK_NAS" --behall 5
+  if (( KOD != 0 )) && innehaller "$UT" 'sha256 stämmer inte'; then
+    godkand "en enda ändrad byte fångas av sha256 (kod ${KOD})"
+  else
+    underkand "en manipulerad kopia godtogs (kod ${KOD})"; printf '%s\n' "$UT" | tail -n 12 | sed 's/^/      | /'
+  fi
+  pastar_inte "…och ingen katalog med det riktiga namnet skapades" test -e "${BK_NAS}/${nytt}"
+  pastar_inte "…och ingen .ofullstandig ligger kvar" test -e "${BK_NAS}/.ofullstandig"
+
+  # ── S-17 ─────────────────────────────────────────────────────────────────────────────────
+  test_rubrik "S-17: en avbruten hämtning lämnar aldrig något som ser helt ut"
+  bk_fjarrlage avbruten
+  bk_hamta --mal "$BK_NAS" --behall 5
+  if (( KOD != 0 )) && innehaller "$UT" 'överföringen blev avbruten'; then
+    godkand "en trunkerad ström fångas trots att fjärrsidan svarade 0 (kod ${KOD})"
+  else
+    underkand "en halv kopia godtogs (kod ${KOD})"; printf '%s\n' "$UT" | tail -n 12 | sed 's/^/      | /'
+  fi
+  pastar_inte "…ingen katalog med det riktiga namnet" test -e "${BK_NAS}/${nytt}"
+  pastar_inte "…ingen .ofullstandig kvar" test -e "${BK_NAS}/.ofullstandig"
+
+  # En körning som dödas hårt hinner inte städa. Resterna får ändå aldrig räknas som en kopia.
+  mkdir -p "${BK_NAS}/.ofullstandig"
+  printf 'halvt arkiv\n' >"${BK_NAS}/.ofullstandig/arkiv.tar.gpg"
+  bk_fjarrlage hel
+  bk_hamta --mal "$BK_NAS" --behall 5
+  if (( KOD == 0 )); then godkand "nästa körning kastar resterna och hämtar om"; else underkand "kod ${KOD}"; printf '%s\n' "$UT" | tail -n 12 | sed 's/^/      | /'; fi
+  pastar "…och kopian ligger nu hel på NAS-sidan" test -s "${BK_NAS}/${nytt}/hamtad"
+  pastar_inte "…och .ofullstandig är borta" test -e "${BK_NAS}/.ofullstandig"
+
+  # ── S-18 ─────────────────────────────────────────────────────────────────────────────────
+  test_rubrik "S-18: provet — kopian går att läsa tillbaka med den privata nyckeln"
+  bk_hamta --mal "$BK_NAS" --prov
+  if (( KOD == 2 )) && innehaller "$UT" 'privat-nyckel'; then godkand "--prov utan nyckel vägrar (kod 2)"; else underkand "kod ${KOD} utan nyckel"; fi
+  bk_hamta --mal "$BK_NAS" --prov --privat-nyckel "$BK_PUB"
+  if (( KOD == 2 )) && innehaller "$UT" 'ingen PRIVAT nyckel'; then godkand "--prov vägrar den publika halvan — den kan bara kryptera"; else underkand "kod ${KOD} för en publik nyckel"; fi
+  bk_hamta --mal "$BK_NAS" --prov --privat-nyckel "$BK_FEL_SEC"
+  if (( KOD != 0 )) && innehaller "$UT" 'dekryptera'; then godkand "--prov med FEL privat nyckel misslyckas"; else underkand "fel nyckel godtogs (kod ${KOD})"; printf '%s\n' "$UT" | tail -n 12 | sed 's/^/      | /'; fi
+
+  bk_hamta --mal "$BK_NAS" --prov --privat-nyckel "$BK_SEC"
+  if (( KOD == 0 )); then godkand "--prov med rätt privat nyckel går igenom"; else underkand "provet underkändes (kod ${KOD})"; printf '%s\n' "$UT" | tail -n 25 | sed 's/^/      | /'; fi
+  bk_om "…och säger hur många databaser som kontrollerades mot manifestets sha256" innehaller "$UT" 'databaser, alla med rätt sha256'
+  bk_om "…och att integrity_check kördes (den här maskinen har python3)" innehaller "$UT" 'integrity_check \(python3\)'
+  bk_om "…och att compose/.env följde med — stacken går att starta ur kopian" innehaller "$UT" 'compose/\.env finns i arkivet'
+  if grep -q 'inte-en-riktig-hemlighet' <<<"$UT"; then underkand "provet skrev ut en hemlighet"; else godkand "…utan att skriva ut något ur .env"; fi
+  pastar_inte "ingen uppackad klartext ligger kvar efter provet" bash -c "find '${BK_NAS}' -name '.prov-*' | grep -q ."
+  pastar_inte "…och fortfarande ingen .env i klartext under NAS-katalogen" bash -c "find '${BK_NAS}' -name '.env' | grep -q ."
+
+  unset HAMTA_FJARRKOMMANDO
 }

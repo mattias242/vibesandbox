@@ -77,7 +77,10 @@ ogonblicksbild() {
 
 forbered_vard() {
   mkdir -p "$INFRA" "$STUBBAR" "${STUBBKATALOG}/tillstand"/{maskad,aktiverad,aktiv,paket}
-  cp /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/vibesandbox-angra-uppstart.service \
+  # backup.sh och restore.sh följer med: provision.sh steg `backup` installerar dem HÄRIFRÅN, så
+  # utan dem dör varje scenario som kör hela provisioneringen på "hittar inte backup.sh".
+  cp /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/backup.sh /infra/restore.sh \
+    /infra/vibesandbox-angra-uppstart.service \
     /infra/vibesandbox-driftsatt /infra/README.md /infra/provision.env.example "$INFRA/"
   chmod +x "$INFRA"/*.sh
   local k
@@ -144,8 +147,9 @@ scenario_statisk() {
   pastar "bash -n angra.sh" bash -n /infra/angra.sh
   pastar "bash -n backup.sh" bash -n /infra/backup.sh
   pastar "bash -n restore.sh" bash -n /infra/restore.sh
+  pastar "bash -n hamta-backup.sh" bash -n /infra/hamta-backup.sh
   pastar "pty-kor.py går att kompilera" python3 -c 'import ast,sys; ast.parse(open("/infra/test/pty-kor.py").read())'
-  if LC_ALL=C.UTF-8 shellcheck -x /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/backup.sh /infra/restore.sh /infra/test/*.sh /infra/test/scenarier/*.sh /infra/test/stubbar/stubb; then
+  if LC_ALL=C.UTF-8 shellcheck -x /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/backup.sh /infra/restore.sh /infra/hamta-backup.sh /infra/test/*.sh /infra/test/scenarier/*.sh /infra/test/stubbar/stubb; then
     godkand "shellcheck utan anmärkningar ($(shellcheck --version | sed -n 's/^version: //p'))"
   else
     underkand "shellcheck har anmärkningar"
@@ -235,7 +239,7 @@ scenario_dryrun() {
   if [[ "$fore" == "$efter" ]]; then godkand "filsystemet är orört (läge, ägare, tid och innehåll)"; else underkand "dry-run ändrade filer:"; diff <(echo "$fore") <(echo "$efter") | head -n 20; fi
   local n
   n="$(grep -c '^==> Steg' <<<"$UT")"
-  if (( n == 12 )); then godkand "alla 12 steg redovisas"; else underkand "bara ${n} steg redovisades"; fi
+  if (( n == 13 )); then godkand "alla 13 steg redovisas"; else underkand "bara ${n} steg redovisades"; fi
   if grep -vE '^(systemctl (is-enabled|is-active|list-timers|list-unit-files)|dpkg-query|tailscale (ip|status)|swapon --show[^ ]*|findmnt) ' "$ANROP" | grep -q .; then
     underkand "dry-run körde ändrande kommandon:"; grep -vE '^(systemctl (is-enabled|is-active|list-timers|list-unit-files)|dpkg-query|tailscale (ip|status)|swapon --show[^ ]*|findmnt) ' "$ANROP" | head | sed 's/^/      | /'
   else
@@ -259,7 +263,7 @@ scenario_dryrun() {
   if (( KOD == 0 )); then godkand "dry-run avslutas med 0 trots att gpg saknas"; else underkand "dry-run gav kod ${KOD}"; visa_vid_fel; fi
   if innehaller "$UT" "gpg saknas"; then godkand "torrkörningen säger att fingeravtrycket inte kunde kontrolleras"; else underkand "inget besked om att gpg saknas"; fi
   n="$(grep -c '^==> Steg' <<<"$UT")"
-  if (( n == 12 )); then godkand "alla 12 steg redovisas ändå"; else underkand "bara ${n} steg redovisades"; fi
+  if (( n == 13 )); then godkand "alla 13 steg redovisas ändå"; else underkand "bara ${n} steg redovisades"; fi
   mv /tmp/gpg.undanstoppad "$gpg_sokvag"
   rm -f /usr/share/keyrings/tailscale-archive-keyring.gpg
 }

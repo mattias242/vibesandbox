@@ -41,7 +41,7 @@ Avslutar med 0 om allt stämmer, 1 vid minst en avvikelse (✗).
 EOF
 }
 
-readonly KONTROLLER=(uppdateringar anvandare tailscale brandvagg ssh portar leverantor docker gvisor system kataloger)
+readonly KONTROLLER=(uppdateringar anvandare tailscale brandvagg ssh portar leverantor docker gvisor system kataloger backup)
 # sshd lyssnar på 22 och nås bara via tailnetet. Porten är ingen inställning (en tidigare
 # SSH_PORT nådde aldrig sshd) — ett kvarglömt SSH_PORT i state-filen ignoreras.
 readonly SSHD_PORT=22
@@ -123,6 +123,12 @@ las_tillstand() {
   AUTO_REBOOT="${AUTO_REBOOT:-1}"
   AUTO_REBOOT_TIME="${AUTO_REBOOT_TIME:-04:00}"
   DEPLOY_UTAN_LOSENORD="${DEPLOY_UTAN_LOSENORD:-0}"
+  # Som DEPLOY_UTAN_LOSENORD: standard 0 här men 1 i provision.sh. En state-fil som inget säger
+  # om säkerhetskopieringen ska inte få en NOPASSWD-regel eller en timer att passera som väntad.
+  INSTALL_BACKUP="${INSTALL_BACKUP:-0}"
+  BACKUP_TID="${BACKUP_TID:-02:30}"
+  BACKUP_BEHALL="${BACKUP_BEHALL:-7}"
+  BACKUP_MAX_ALDER_TIMMAR="${BACKUP_MAX_ALDER_TIMMAR:-36}"
 }
 
 # ── Kontroller ─────────────────────────────────────────────────────────────────────────────
@@ -251,6 +257,26 @@ losenordsstatus() {
   fi
 }
 
+# bara_egna_kommandon <rad ur 'sudo -l'> <tillåtet kommando…> — sant om raden är lösenordsfri
+# JUST för de kommandon vi själva har lagt dit. sudo slår ibland ihop flera regler till en rad
+# ("(root) NOPASSWD: /a, /b"), så raden prövas kommando för kommando i stället för som exakt
+# text: annars kunde en hopslagning ge ett falskt ✗ varje timme. Ett kommando till, eller en
+# annan körsomanvändare än root, gör att raden står kvar.
+bara_egna_kommandon() {
+  local rad="$1" kmd
+  shift
+  (( $# > 0 )) || return 1
+  [[ "$rad" == "(root) NOPASSWD: "* ]] || return 1
+  rad="${rad#"(root) NOPASSWD: "}"
+  while [[ -n "$rad" ]]; do
+    kmd="${rad%%, *}"
+    [[ " $* " == *" ${kmd} "* ]] || return 1
+    [[ "$kmd" == "$rad" ]] && break
+    rad="${rad#*, }"
+  done
+  return 0
+}
+
 # Lösenordsfri sudo (NOPASSWD, eller '!authenticate') gör varje process som kör som ops till
 # root utan hinder — och tar bort lösenordet som skydd om ops nyckel läcker.
 # Två bevis: filerna, rad för rad (pekar ut VAR), och sudos egen tolkning för driftanvändaren.
@@ -270,6 +296,11 @@ kontroll_sudoers() {
       if (( DEPLOY_UTAN_LOSENORD )); then
         traffar="$(grep -vxF "${DRIFTSATT_REGELFIL}:1:${OPS_USER} ALL=(root) NOPASSWD: ${DRIFTSATT_KMD}" <<<"$traffar" || true)"
       fi
+      # Säkerhetskopieringens regel (INSTALL_BACKUP=1) — egen fil, en rad, ett kommando.
+      # Återställningen står MED FLIT inte här: den är sällsynt och förstörande.
+      if (( INSTALL_BACKUP )); then
+        traffar="$(grep -vxF "${BACKUP_REGELFIL}:1:${OPS_USER} ALL=(root) NOPASSWD: ${BACKUP_KMD}" <<<"$traffar" || true)"
+      fi
       [[ -n "$traffar" ]] || kod=1
     fi
     case "$kod" in
@@ -284,15 +315,18 @@ kontroll_sudoers() {
   elif ! fanga lista sudo -n -l -U "$OPS_USER"; then
     fel "'sudo -l -U ${OPS_USER}' misslyckades (kod ${FANGAD_KOD}) — sudos regler för ${OPS_USER} är okända"
   else
-    local losenordsfria
+    local losenordsfria rad kvar=() egna=()
+    (( DEPLOY_UTAN_LOSENORD )) && egna+=("$DRIFTSATT_KMD")
+    (( INSTALL_BACKUP )) && egna+=("$BACKUP_KMD")
     losenordsfria="$(grep -E 'NOPASSWD|!authenticate' <<<"$lista" | sed -E 's/^[[:space:]]+//' || true)"
-    if (( DEPLOY_UTAN_LOSENORD )); then
-      losenordsfria="$(grep -vxF "(root) NOPASSWD: ${DRIFTSATT_KMD}" <<<"$losenordsfria" || true)"
-    fi
-    if [[ -n "$losenordsfria" ]]; then
-      fel "sudo -l -U ${OPS_USER}: lösenordsfri sudo för ${OPS_USER}: $(tr '\n' ' ' <<<"$losenordsfria")"
-    elif (( DEPLOY_UTAN_LOSENORD )); then
-      ok "sudo -l -U ${OPS_USER}: sudo kräver lösenord utom för ${DRIFTSATT_KMD}"
+    while IFS= read -r rad; do
+      [[ -n "$rad" ]] || continue
+      bara_egna_kommandon "$rad" "${egna[@]}" || kvar+=("$rad")
+    done <<<"$losenordsfria"
+    if (( ${#kvar[@]} > 0 )); then
+      fel "sudo -l -U ${OPS_USER}: lösenordsfri sudo för ${OPS_USER}: ${kvar[*]}"
+    elif (( ${#egna[@]} > 0 )); then
+      ok "sudo -l -U ${OPS_USER}: sudo kräver lösenord utom för ${egna[*]}"
     else
       ok "sudo -l -U ${OPS_USER}: sudo kräver lösenord"
     fi
@@ -848,6 +882,124 @@ kontroll_kataloger() {
   return 0
 }
 
+# ── Säkerhetskopiering ─────────────────────────────────────────────────────────────────────
+#
+# Skripten, sudo-regeln och timern kontrolleras som allt annat. Den kontroll som gör skillnad
+# är den sista: HUR GAMMAL är den nyaste färdiga säkerhetskopian. En timer kan vara aktiv och
+# schemalagd medan varje körning misslyckas — databasen låst, disken full, plattformsbilden
+# borta — och det läget upptäcks annars först den dagen någon behöver kopian.
+BACKUP_KMD=/usr/local/sbin/vibesandbox-backup
+BACKUP_ATERSTALL_KMD=/usr/local/sbin/vibesandbox-restore
+BACKUP_REGELFIL=/etc/sudoers.d/vibesandbox-backup
+BACKUP_TJANSTFIL=/etc/systemd/system/vibesandbox-backup.service
+BACKUP_TIMERFIL=/etc/systemd/system/vibesandbox-backup.timer
+BACKUP_TIMER=vibesandbox-backup.timer
+# Samma mönster som backup.sh döper sina kataloger efter. Bara de räknas som säkerhetskopior:
+# en katalog någon lagt dit för hand, och backup.sh:s egen .ofullstandig, är inte det.
+BACKUP_NAMNMONSTER='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z(-[0-9]+)?'
+
+kontroll_backup() {
+  rubrik "Säkerhetskopiering"
+  local f lage
+  if (( ! INSTALL_BACKUP )); then
+    for f in "$BACKUP_REGELFIL" "$BACKUP_TIMERFIL" "$BACKUP_TJANSTFIL" "$BACKUP_KMD" "$BACKUP_ATERSTALL_KMD"; do
+      if [[ -e "$f" ]]; then fel "${f} finns trots INSTALL_BACKUP=0"; fi
+    done
+    obs "INSTALL_BACKUP=0 — ingen säkerhetskopiering på värden. Den måste köras ur repot för hand, och finns inte efter en flytt."
+    return 0
+  fi
+
+  # Rotägda, icke skrivbara för andra: både sudo-regeln och timern kör dem som root.
+  for f in "$BACKUP_KMD" "$BACKUP_ATERSTALL_KMD"; do
+    if ! fanga lage stat -c '%U:%G %a' "$f"; then
+      fel "${f} saknas (stat, kod ${FANGAD_KOD}) — säkerhetskopieringen finns inte på den här värden"
+    elif [[ "$lage" != "root:root 755" ]]; then
+      fel "${f} är ${lage}, ska vara root:root 755 — annars blir den som kan skriva i filen root"
+    else
+      ok "${f}: root:root 755"
+    fi
+  done
+
+  # Sudo-regeln: exakt den rad vi skrev, i vår egen fil, 440 root.
+  if fanga lage stat -c '%U %a' "$BACKUP_REGELFIL" && [[ "$lage" == "root 440" ]]; then
+    ok "${BACKUP_REGELFIL}: root 440"
+  else
+    fel "${BACKUP_REGELFIL} är '${lage:-‹saknas›}', ska vara root 440"
+  fi
+  forvanta "regeln i ${BACKUP_REGELFIL}" "$(varde cat "$BACKUP_REGELFIL")" \
+    "${OPS_USER} ALL=(root) NOPASSWD: ${BACKUP_KMD}"
+
+  # Enheterna: att de är VÅRA och inte har skrivits om (t.ex. en ExecStart utan rotation).
+  forvanta "ExecStart i ${BACKUP_TJANSTFIL}" "$(varde sed -n 's/^ExecStart=//p' "$BACKUP_TJANSTFIL")" \
+    "${BACKUP_KMD} --behall ${BACKUP_BEHALL}"
+  forvanta "OnCalendar i ${BACKUP_TIMERFIL}" "$(varde sed -n 's/^OnCalendar=//p' "$BACKUP_TIMERFIL")" \
+    "*-*-* ${BACKUP_TID}:00"
+
+  if ! lage="$(enhet_lage "$BACKUP_TIMER")"; then
+    fel "${BACKUP_TIMER}: 'systemctl is-enabled' gav inget användbart svar — läget är OKÄNT"
+  elif [[ "$lage" != enabled* ]]; then
+    fel "${BACKUP_TIMER} är '${lage}', ska vara enabled — säkerhetskopieringen startar inte efter en omstart"
+  else
+    ok "${BACKUP_TIMER} är ${lage}"
+  fi
+  local timrar
+  if ! fanga timrar systemctl list-timers --all --no-legend --no-pager "$BACKUP_TIMER"; then
+    fel "${BACKUP_TIMER}: 'systemctl list-timers' misslyckades (kod ${FANGAD_KOD}) — vet inte om den är schemalagd"
+  elif grep -qF -- "$BACKUP_TIMER" <<<"$timrar" && systemctl is-active --quiet "$BACKUP_TIMER" 2>/dev/null; then
+    ok "${BACKUP_TIMER} är schemalagd"
+  else
+    fel "${BACKUP_TIMER} finns inte bland aktiva timrar (systemctl list-timers) — ingen säkerhetskopia tas"
+  fi
+
+  kontroll_backup_alder
+  return 0
+}
+
+# Hur gammal är den nyaste FÄRDIGA säkerhetskopian? Finns ingen alls räknas tiden från när
+# backup.sh lades på värden: annars larmade en nyss förberedd värd (där timern inte hunnit köra
+# än), medan en värd där varje körning misslyckats sedan dag ett aldrig larmade — precis tvärtom
+# mot vad man vill veta.
+kontroll_backup_alder() {
+  local nu kataloger nyast namn tidpunkt alder
+  if ! fanga nu date +%s; then
+    fel "'date +%s' misslyckades (kod ${FANGAD_KOD}) — kan inte avgöra hur gammal säkerhetskopian är"
+    return 0
+  fi
+  if ! fanga kataloger find "${PLATFORM_ROOT}/backups" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %P\n'; then
+    fel "${PLATFORM_ROOT}/backups gick inte att läsa ('find', kod ${FANGAD_KOD}) — vet inte om det finns någon säkerhetskopia"
+    return 0
+  fi
+  nyast="$(grep -E "^[0-9.]+ ${BACKUP_NAMNMONSTER}\$" <<<"$kataloger" | LC_ALL=C sort -n | tail -n1)"
+  if [[ -n "$nyast" ]]; then
+    namn="${nyast#* }"
+    tidpunkt="${nyast%% *}"; tidpunkt="${tidpunkt%%.*}"
+    # Katalogen får sitt namn först när manifestet ligger där (backup.sh byter namn sist av
+    # allt). Saknas det är det ingen säkerhetskopia — restore.sh vägrar den.
+    if [[ ! -f "${PLATFORM_ROOT}/backups/${namn}/manifest" ]]; then
+      fel "den nyaste säkerhetskopian (${namn}) saknar manifest — den är inte färdigskriven och går inte att återställa"
+    fi
+  else
+    namn=""
+    if ! fanga tidpunkt stat -c '%Y' "$BACKUP_KMD"; then
+      fel "hittar ingen säkerhetskopia, och ${BACKUP_KMD} gick inte att läsa (stat, kod ${FANGAD_KOD})"
+      return 0
+    fi
+  fi
+  alder=$(( (nu - tidpunkt) / 3600 ))
+  if (( alder > BACKUP_MAX_ALDER_TIMMAR )); then
+    if [[ -z "$namn" ]]; then
+      fel "INGEN säkerhetskopia finns, och backup.sh lades på värden för ${alder} h sedan (gränsen är ${BACKUP_MAX_ALDER_TIMMAR} h). Timern kan vara aktiv och ändå misslyckas varje gång: journalctl -u vibesandbox-backup"
+    else
+      fel "den nyaste säkerhetskopian är ${alder} h gammal (gränsen är ${BACKUP_MAX_ALDER_TIMMAR} h): ${namn}. Timern ser aktiv ut men körningarna ger inget resultat: journalctl -u vibesandbox-backup"
+    fi
+  elif [[ -z "$namn" ]]; then
+    obs "ingen säkerhetskopia än (backup.sh lades på värden för ${alder} h sedan; timern kör ${BACKUP_TID}). Larmar efter ${BACKUP_MAX_ALDER_TIMMAR} h."
+  else
+    ok "nyaste säkerhetskopian är ${alder} h gammal (gränsen är ${BACKUP_MAX_ALDER_TIMMAR} h): ${namn}"
+  fi
+  return 0
+}
+
 # ── Huvudprogram ───────────────────────────────────────────────────────────────────────────
 
 main() {
@@ -890,6 +1042,7 @@ main() {
       gvisor) kontroll_gvisor ;;
       system) kontroll_system ;;
       kataloger) kontroll_kataloger ;;
+      backup) kontroll_backup ;;
     esac
   done
 
