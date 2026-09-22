@@ -55,9 +55,8 @@ async function byggKlart(varld: Varld, publicera: boolean): Promise<void> {
   varld.sattModellsvar([appMedRubrik(FORSTA_VERSIONEN)]);
   const jobb = await varld.bestall('Anna', 'En lista där vi bokar mötesrum');
   assert.equal(jobb.status, 'done', 'Förberedelsen misslyckades: appen byggdes inte.');
-  if (publicera) {
-    await varld.byggApi('Anna', 'POST', `/apps/${await varld.byggapp('Anna')}/publish`, 200);
-  }
+  // Publicering går via granskningen: Anna begär, en granskare godkänner. Ingen genväg förbi den.
+  if (publicera) await varld.publiceraViaGranskning('Anna');
   varld.modellanrop.length = 0;
 }
 
@@ -79,8 +78,9 @@ When(/^(Anna) ber om "([^"]+)"$/, async function (this: Varld, person: string, t
   await this.bestall(person, text);
 });
 
-When(/^Anna publicerar$/, async function (this: Varld) {
-  await this.byggApi('Anna', 'POST', `/apps/${await this.byggapp('Anna')}/publish`, 200);
+/** Hela vägen ut: Anna begär, en granskare läser koden och släpper ut den. */
+When(/^Annas nya version granskas och godkänns$/, async function (this: Varld) {
+  await this.publiceraViaGranskning('Anna');
 });
 
 When(/^(Bertil) försöker öppna (Anna)s app i byggverktyget$/, async function (this: Varld, person: string, agare: string) {

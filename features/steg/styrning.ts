@@ -83,7 +83,7 @@ Given(/^att (Anna|Bertil) har byggt en app i byggverktyget$/, async function (th
 });
 
 Given(/^att (Anna|Bertil) har publicerat sin app$/, async function (this: Varld, namn: string) {
-  await this.byggApi(namn, 'POST', `/apps/${await this.byggapp(namn)}/publish`, 200);
+  await this.publiceraViaGranskning(namn);
 });
 
 Given(/^att (Erik) har sett (Anna)s app i kontrollrummet$/, async function (this: Varld, admin: string, agare: string) {

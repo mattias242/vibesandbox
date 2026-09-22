@@ -6,7 +6,12 @@ import type { ApiErrorCode } from '@vibesandbox/contracts';
 
 export interface VantatFelsvar {
   readonly status: number;
-  readonly kod: ApiErrorCode;
+  /**
+   * Kontraktets koder plus byggverktygets egen `conflict` (se `BuilderErrorCode` i
+   * packages/builder/src/svar.ts): "det går inte just nu" — ett jobb pågår, inget utkast finns,
+   * ett ärende väntar redan. Den finns bara i byggverktyget och därför inte i kontraktet.
+   */
+  readonly kod: ApiErrorCode | 'conflict';
 }
 
 const SVARSFRASER: ReadonlyMap<string, VantatFelsvar> = new Map([
@@ -17,6 +22,7 @@ const SVARSFRASER: ReadonlyMap<string, VantatFelsvar> = new Map([
   ['för stort', { status: 413, kod: 'too_large' }],
   ['lagringsutrymmet är slut', { status: 507, kod: 'quota_exceeded' }],
   ['kollektionen har en annan synlighet', { status: 409, kod: 'scope_mismatch' }],
+  ['konflikt', { status: 409, kod: 'conflict' }],
 ]);
 
 export function vantatFelsvar(fras: string): VantatFelsvar {

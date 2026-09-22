@@ -53,12 +53,12 @@ Egenskap: Bygga en app genom att beskriva den
     När Bertil försöker öppna Annas app i byggverktyget
     Så får han svaret "finns inte"
 
-  Scenario: Utkastet ändrar inte den publicerade appen förrän Anna publicerar
+  Scenario: Utkastet ändrar inte den publicerade appen förrän den nya versionen granskats
     Givet att Anna har en app som byggts klart och publicerats
     Och att språkmodellen svarar med en ändrad app
     När Anna ber om "Byt rubrik"
     Så visar den publicerade appen fortfarande den gamla versionen
-    När Anna publicerar
+    När Annas nya version granskas och godkänns
     Så visar den publicerade appen den nya versionen
 
   Scenario: Byggverktyget går inte att lura att skriva åt Anna från en annan app

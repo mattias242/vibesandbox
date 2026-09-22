@@ -419,6 +419,27 @@ export class Varld extends World {
     this.#klassningssvar = svar;
   }
 
+  /**
+   * Publicerar appen HELA vägen: ägaren begär granskning, och en granskare läser kön och godkänner.
+   *
+   * Sedan granskningsskivan är det den enda vägen ut — ägaren publicerar inte själv. Granskaren
+   * loggas in vid behov och är aldrig ägaren: en granskare får inte avgöra sin egen app.
+   */
+  async publiceraViaGranskning(person: string, granskare = 'Erik'): Promise<void> {
+    const appId = await this.byggapp(person);
+    await this.byggApi(person, 'POST', `/apps/${appId}/publish`, 202);
+    if (!this.personer.has(granskare)) this.loggaIn(granskare, undefined, ['admin']);
+    const { reviews } = await this.byggApi<{ reviews: { reviewId: string; appIdPrefix: string }[] }>(
+      granskare,
+      'GET',
+      '/admin/granskning',
+      200,
+    );
+    const arende = reviews.find((r) => appId.startsWith(r.appIdPrefix));
+    if (arende === undefined) throw new Error(`${person}s app syns inte i granskningskön.`);
+    await this.byggApi(granskare, 'POST', `/admin/granskning/${arende.reviewId}`, 200, { decision: 'godkand' });
+  }
+
   loggaInSomByggare(namn: string): Person {
     const identitet: Identity = { userId: this.anvandarId(namn), email: this.epost(namn), roles: ['builder'] };
     const person: Person = { namn, identitet, inloggning: signTestIdentity(identitet, TESTHEMLIGHET) };
