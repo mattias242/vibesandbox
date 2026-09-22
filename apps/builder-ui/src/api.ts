@@ -13,6 +13,7 @@ import {
   REDLINE_CATEGORIES,
   REVIEW_STATES,
   asClassification,
+  isAppId,
   type AdminApp,
   type AdminOverview,
   type AdminRegisterEntry,
@@ -323,21 +324,33 @@ function checkEvidence(value: unknown): DecommissionEvidence {
 }
 
 /**
- * Kontrollrummets applista. Hela app-id:t är appens hemliga adress, så en rad som bär mer än de
- * första `ADMIN_APP_ID_PREFIX_LENGTH` tecknen avvisas här — innan den nått en vy som kunde visa
- * den. Radens fält plockas ett och ett: bara kontraktets fält går vidare.
+ * Kontrollrummets applista. Radens fält plockas ett och ett: bara kontraktets fält går vidare, och
+ * varje fält prövas mot sin egen form.
+ *
+ * `appId` och `appUrl` är vägarna in i appen, och därför de två som måste prövas hårdast. Id:t
+ * ska vara ett app-id — inte vilket id som helst — för att aldrig kunna bli en annan sökväg när
+ * det sätts in i en fragmentadress. Adressen går genom `checkHttpUrl`, som bara släpper igenom
+ * http(s): en `javascript:`-adress i ett `href` vore körbar kod från servern.
+ *
+ * Fälten här och `AdminApp` i kontraktet måste följas åt. Ett fält som saknas här blir `undefined`
+ * i vyn utan att något går sönder högljutt — det var precis så `#/app/undefined` uppstod.
  */
 function checkAdminApps(value: unknown): readonly AdminApp[] {
   if (!Array.isArray(value)) throw new ApiError(500, GENERIC_ERROR_MESSAGE);
   return value.map((item: unknown) => {
     const row = fields(item);
-    const { appIdPrefix, name, ownerEmail, updatedAt, hasDraft, published } = row;
+    const { appId, appIdPrefix, appUrl, name, ownerEmail, updatedAt, hasDraft, published } = row;
     const tokens = fields(row['tokens']);
     if (
+      typeof appId !== 'string' ||
+      !isAppId(appId) ||
       typeof appIdPrefix !== 'string' ||
       appIdPrefix.length === 0 ||
       appIdPrefix.length > ADMIN_APP_ID_PREFIX_LENGTH ||
       !ID_PATTERN.test(appIdPrefix) ||
+      // Prefixet ska vara början av id:t. En rad där de två inte hör ihop är obegriplig, och att
+      // visa den hade satt ett igenkänningsbart prefix bredvid en länk till en annan app.
+      !appId.startsWith(appIdPrefix) ||
       typeof name !== 'string' ||
       name === '' ||
       name.length > 200 ||
@@ -349,7 +362,11 @@ function checkAdminApps(value: unknown): readonly AdminApp[] {
       throw new ApiError(500, GENERIC_ERROR_MESSAGE);
     }
     return {
+      appId,
       appIdPrefix,
+      // `null` betyder att appen aldrig byggts och alltså inte har någon adress som svarar. Allt
+      // annat ska vara en riktig http(s)-adress.
+      appUrl: appUrl === null ? null : checkHttpUrl(appUrl),
       name,
       ownerEmail,
       updatedAt,

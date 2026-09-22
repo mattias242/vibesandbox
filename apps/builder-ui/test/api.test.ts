@@ -337,8 +337,8 @@ describe('åtkomstlistan', () => {
 
 /**
  * Kontrollrummet. Två läsande anrop, och hårdare kontroll än någon annan rutt: en app-rad som
- * bär mer än de första `ADMIN_APP_ID_PREFIX_LENGTH` tecknen av app-id:t avvisas, för hela id:t
- * är appens hemliga adress och ska aldrig nå webbläsaren.
+ * Applistan bär hela app-id:t och adressen till appen — det är dem länkarna i kontrollrummet
+ * byggs av — och just därför prövas de hårdast: id:t mot app-id:ts form, adressen mot http(s).
  */
 describe('kontrollrummet', () => {
   const OVERVIEW = {
@@ -350,8 +350,11 @@ describe('kontrollrummet', () => {
     failedJobs: 1,
   };
 
+  const APP_ID = '01jabcdefghjkmnpqrstvwxyz0';
   const ROW = {
+    appId: APP_ID,
     appIdPrefix: '01jabcde',
+    appUrl: `https://${APP_ID}.example.se/`,
     name: 'Bokning',
     ownerEmail: 'anna@example.se',
     updatedAt: '2026-09-19T10:00:00Z',
@@ -416,8 +419,42 @@ describe('kontrollrummet', () => {
     expect(error.message).toMatch(/Något gick fel/);
   });
 
-  it('en rad med mer än förkortningen av app-id:t avvisas — hela id:t är appens hemliga adress', async () => {
-    const { api } = client(() => json(200, { apps: [{ ...ROW, appIdPrefix: '01jabcdefghjkmnpqrstvwxyz0' }] }));
+  /**
+   * Vägarna in i appen. De föll bort ur den här funktionen en gång, och då blev länken i
+   * kontrollrummet `#/app/undefined` — ett fel som inte syntes förrän någon klickade, eftersom ett
+   * fält som saknas bara blir `undefined` och inget går sönder högljutt.
+   */
+  it('app-id:t och adressen till appen följer med — det är dem länkarna byggs av', async () => {
+    const { api } = client(() => json(200, { apps: [ROW] }));
+    const rad = (await api.adminApps())[0];
+    expect(rad?.appId).toBe(APP_ID);
+    expect(rad?.appUrl).toBe(`https://${APP_ID}.example.se/`);
+  });
+
+  it('en app som aldrig byggts har ingen adress, och null är ett svar — inte ett fel', async () => {
+    const { api } = client(() => json(200, { apps: [{ ...ROW, appUrl: null }] }));
+    expect((await api.adminApps())[0]?.appUrl).toBeNull();
+  });
+
+  it.each([
+    ['ett app-id som inte är ett app-id', { ...ROW, appId: '../../admin' }],
+    ['ett app-id med fel längd', { ...ROW, appId: '01jabcde' }],
+    ['ett app-id som saknas', { ...ROW, appId: undefined }],
+    // Prefixet står bredvid länken. Hör de inte ihop pekar raden ut en annan app än den visar.
+    ['ett prefix som inte hör till id:t', { ...ROW, appIdPrefix: 'zzzzzzzz' }],
+  ])('%s avvisas — id:t blir en fragmentadress och får aldrig kunna bli en annan sökväg', async (_name, rad) => {
+    const { api } = client(() => json(200, { apps: [rad] }));
+    await expect(api.adminApps()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  /** Adressen hamnar i ett `href`. En `javascript:`-adress därifrån vore körbar kod från servern. */
+  it.each([
+    ['javascript:', { ...ROW, appUrl: 'javascript:alert(1)' }],
+    ['data:', { ...ROW, appUrl: 'data:text/html,<script>alert(1)</script>' }],
+    ['ingen adress alls', { ...ROW, appUrl: 'inte-en-adress' }],
+    ['ett tal', { ...ROW, appUrl: 7 }],
+  ])('en adress som är %s avvisas', async (_name, rad) => {
+    const { api } = client(() => json(200, { apps: [rad] }));
     await expect(api.adminApps()).rejects.toBeInstanceOf(ApiError);
   });
 
