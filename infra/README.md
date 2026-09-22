@@ -451,6 +451,22 @@ plus det krypterade arkivet för NAS:en. `--behall` styr båda.
 Innan hämtningen kan köras skarpt: NAS:ens publika SSH-nyckel måste in i `ops` `authorized_keys`
 på värden, och `gpg` måste finnas på DSM för `--prov` (`opkg install gnupg` via Entware).
 
+**Synology når inte tailnetet direkt.** Tailscale kör där i userspace-networking-läge: NAS:en har
+en tailnet-adress men ingen rutt till `100.64/10` i kärnan, så en vanlig SSH-anslutning tajmar ut.
+Trafiken måste gå genom `tailscaled` själv:
+
+```sh
+./hamta-backup.sh \
+  --vard 100.x.y.z \
+  --ssh-nyckel ~/.ssh/vibesandbox-backup \
+  --ssh-proxy '/var/packages/Tailscale/target/bin/tailscale nc %h %p' \
+  --puls 'http://<nas>:<port>/api/push/<token>'
+```
+
+Det här hittades genom att faktiskt prova: direkt anslutning gav `Connection timed out`, via
+`tailscale nc` fungerade den på första försöket. Värdnamnet går inte heller att slå upp från
+NAS:ens skal — MagicDNS finns inte i userspace-läget — så adressen får anges som tailnet-IP.
+
 ### Larmet: tystnad, inte ett meddelande
 
 `verify.sh` hittar avdrift varje timme och skriver den i journalen — där ingen läser den. Larmet

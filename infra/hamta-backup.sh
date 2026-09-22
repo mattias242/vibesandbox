@@ -67,6 +67,10 @@ LAGE=hamta
 # därför pulsar vi bara när hämtningen HELT gick igenom. Tystnad är signalen, och tystnad är det
 # enda som också fungerar när värden är helt borta eller när den här maskinen inte kör.
 PULS="${VIBESANDBOX_PULS:-}"
+# ProxyCommand och nyckel. Båda finns för Synology: tailnetet nås bara genom tailscaled
+# (userspace-networking), och hämtningen ska ha en EGEN nyckel, inte kontots vanliga.
+SSHPROXY="${VIBESANDBOX_SSHPROXY:-}"
+SSHNYCKEL="${VIBESANDBOX_SSHNYCKEL:-}"
 KOPIA=""
 
 # ── Utskrift ───────────────────────────────────────────────────────────────────────────────
@@ -105,6 +109,15 @@ Användning: hamta-backup.sh [flaggor]
                        själv när dess tidsgräns löper ut — vilket också täcker att den här
                        maskinen inte kört alls. Går också att sätta med VIBESANDBOX_PULS.
 
+  --ssh-proxy <kmd>    ProxyCommand till ssh. På Synology kör Tailscale i
+                       userspace-networking-läge — NAS:en har en tailnet-adress men ingen rutt
+                       till 100.64/10, så en direkt anslutning tajmar ut. Använd då:
+                         --ssh-proxy '/var/packages/Tailscale/target/bin/tailscale nc %h %p'
+                       Går också att sätta med VIBESANDBOX_SSHPROXY.
+
+  --ssh-nyckel <fil>   Privat SSH-nyckel för hämtningen. En egen nyckel, inte kontots vanliga.
+                       Går också att sätta med VIBESANDBOX_SSHNYCKEL.
+
   --hjalp              Den här texten.
 
 Körs PÅ NAS:EN. Säkerhetskopiorna skapas av backup.sh på driftvärden.
@@ -123,6 +136,8 @@ while (( $# > 0 )); do
     --privat-nyckel) shift; PRIVNYCKEL="${1:-}" ;;
     --passfras-fil) shift; PASSFRASFIL="${1:-}" ;;
     --puls) shift; PULS="${1:-}" ;;
+    --ssh-proxy) shift; SSHPROXY="${1:-}" ;;
+    --ssh-nyckel) shift; SSHNYCKEL="${1:-}" ;;
     --hjalp | -h) anvandning; exit 0 ;;
     *) printf 'okänd flagga: %s\n\n' "$1" >&2; anvandning >&2; exit 2 ;;
   esac
@@ -160,7 +175,18 @@ else
   [[ -n "$VARD" ]] || vagra "--vard får inte vara tom."
   [[ -n "$ANVANDARE" ]] || vagra "--anvandare får inte vara tom."
   har_kommando ssh || vagra "ssh saknas — utan den går det inte att hämta något."
+  # Synologys Tailscale kör i userspace-networking-läge: NAS:en har en tailnet-adress men ingen
+  # rutt till 100.64/10 i kärnan, så en vanlig anslutning tajmar ut. Trafiken måste gå genom
+  # tailscaled själv, och `tailscale nc` är den vägen. Upptäckt genom att faktiskt prova — direkt
+  # anslutning gav "Connection timed out", via nc fungerade det direkt.
+  #
+  # --ssh-proxy tar hela ProxyCommand-strängen; %h och %p fylls i av ssh.
+  proxy=()
+  [[ -n "$SSHPROXY" ]] && proxy=(-o "ProxyCommand=${SSHPROXY}")
+  nyckel=()
+  [[ -n "$SSHNYCKEL" ]] && nyckel=(-i "$SSHNYCKEL" -o IdentitiesOnly=yes)
   FJARR=(ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=20
+         ${proxy[@]+"${proxy[@]}"} ${nyckel[@]+"${nyckel[@]}"}
          -- "${ANVANDARE}@${VARD}" sudo -n "$FJARRSKRIPT")
 fi
 fjarr() { "${FJARR[@]}" "$@"; }
