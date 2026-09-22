@@ -728,6 +728,7 @@ det behöver inte finnas på din dator.
 | `verify` | **B7:** varje kontroll med sitt kommando i tre fellägen — tyst, saknas, och *rätt utdata men felkod* — ger aldrig `✓`; provinloggning mot en riktig sshd (en demon som startats med annan konfiguration än filerna fångas); sshd bland lyssnarna; `AuthorizedKeysCommand`; NOPASSWD; 20 körningar i rad med `pipefail` |
 | `fas2` | riktigt laddade nft-regler, riktig `sshd -T` med leverantörens dropins, riktig cloud-init-sammanslagning; **hela körningen två gånger**; `verify.sh` fångar 14 sorters avdrift |
 | `backupinstall` | **I1–I7:** `provision.sh` installerar backup.sh, restore.sh, sudo-regeln, den publika nyckeln och timern; ops kör säkerhetskopian genom sudo utan lösenord men inte återställningen; två körningar ändrar ingenting; `--dry-run` ändrar ingenting ens när inställningarna säger att filerna skulle skrivas om; sudo-regeln prövas med `visudo` FÖRE bytet och en underkänd kandidat rör aldrig den regel som gäller; driftsättningens regel orörd; `INSTALL_BACKUP=0` städar undan; `verify.sh` fångar saknad fil, fel läge, ändrad regel, omskriven enhet, stoppad och avaktiverad timer — och en säkerhetskopia som blivit för gammal; ett kommando som ljuger (rätt utdata, fel felkod) ger aldrig ✓ |
+| `flytt` | **F1–F9:** hela flyttkedjan i ordning, i en container men som två värdar. **A:** `provision.sh` hela vägen + riktig data + en säkerhetskopia tagen av timerns egen `ExecStart`-rad. **Flytten:** kopian bärs ut, allt annat rivs — `data/`, `compose/`, tillståndsfilen, de installerade skripten, sudo-regeln, enheterna, den publika nyckeln. **Ordningen:** `restore.sh` FÖRE `provision.sh` vägrar med kod 2 och lämnar inget halvt läge — inte ens `--kontrollera` går att köra. **B:** `provision.sh` bygger värden igen och ger ingen data; `restore.sh` vägrar mot en B som någon hunnit starta plattformen på; `--dry-run` i båda skripten mitt i flytten ändrar ingenting. **Efteråt:** B är A rad för rad (fingeravtryck per databas, `integrity_check`, invarianten, uppladdningarna, `compose/.env` 0600 root med samma innehåll, allt under `data/` ägt av 110001), en NY kopia på B är lika hel som A:s — och en **krypterad** kopia flyttar likadant: bara `arkiv.tar.gpg` och den privata nyckeln räcker |
 | `flaggor` | `HARDEN_GUEST_AGENT`, `DOCKER_XFS_LOOP` (riktig `mkfs.xfs`), extra/tomma portlistor, gVisor |
 | `backup` | **S1–S7:** en LEVANDE WAL-databas (en skrivare håller anslutningen öppen med `wal_autocheckpoint=0` och skriver under tiden) — en rå `cp` av huvudfilen missar WAL:en, vår kopia gör det inte; integrity_check och en invariant över två tabeller; en databas som inte går att kopiera ⇒ INGEN säkerhetskopia alls; `restore.sh` underkänner en ändrad kopia på sha256 **och** en rätt summerad men trasig kopia på `integrity_check`, samt smuggelgods och saknat manifest; rotationen (`--behall`) rör bara sina egna kataloger; `--dry-run` i båda skripten ändrar ingenting; 0700/0600 `root` genomgående, också på `.env`; återställning på en tom värd ger tillbaka rader, ägare och lägen; `shellcheck` på båda skripten |
 | `tung-docker.sh` (docker) | Docker installerat av skriptet; `dockerd` med vår `daemon.json`; paket genom reglerna från ett låtsat internet och tailnet, IPv4 **och IPv6**, TCP och **UDP/443**, **169.254.169.254**, **hairpin mot :443** — med kontrollkörning utan tabellen |
@@ -775,6 +776,21 @@ körordningen ovan (ögonblicksbild först):
 - **Stora datamängder och full disk.** `VACUUM INTO` läser hela databasen och kräver plats för en
   hel kopia. Testets databaser är tiotals kilobyte; tid, utrymme och beteendet mot en disk som tar
   slut är omätt.
+
+**Flyttbarhetskravet — vad `flytt` inte når fram till**
+
+- **Den andra värden.** Scenariot `flytt` kör hela kedjan i ordning (provision → backup → riv →
+  provision → restore), men i EN container: "värd A" och "värd B" är samma maskin. Härdningen från
+  A (`ops`, sshd-dropinen, nftables-tabellen, bekräftelsemarkörerna under `/etc/vibesandbox`)
+  ligger kvar när B provisioneras. B är tom på allt flytten hänger på — data, compose,
+  tillståndsfilen, de installerade skripten — men den är inte nyfödd. Att en verkligen orörd VPS
+  beter sig likadant visar först den första skarpa flytten.
+- **Nätet och DNS-bytet.** Punkt 5 och 6 i *Flytt till en ny värd* — peka om de två DNS-posterna,
+  ta bort den gamla noden ur tailnetet — rör scenariot inte alls, och det är där en flytt syns för
+  omvärlden.
+- Samma gränser som för sviten i övrigt gäller inuti scenariot: ingen kärna, ingen cloud-init,
+  ingen riktig systemd och ingen Docker ⇒ `python3`-grenen för SQLite, och `restore.sh`:s steg
+  "stoppa stacken före, starta efter" prövas bara i grenen *ingen stack kör här*.
 - **Journalbeviset** (`Accepted publickey for ops …` för just den sessionen) är bara prövat mot en
   efterbildning av journalen — därför kontrollen i körordningens steg 3.4.
 - **SSH-ångrandet via timern med riktig `systemctl reload`**: med riktig systemd prövas bara
