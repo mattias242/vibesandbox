@@ -142,8 +142,10 @@ scenario_statisk() {
   pastar "bash -n provision.sh" bash -n /infra/provision.sh
   pastar "bash -n verify.sh" bash -n /infra/verify.sh
   pastar "bash -n angra.sh" bash -n /infra/angra.sh
+  pastar "bash -n backup.sh" bash -n /infra/backup.sh
+  pastar "bash -n restore.sh" bash -n /infra/restore.sh
   pastar "pty-kor.py går att kompilera" python3 -c 'import ast,sys; ast.parse(open("/infra/test/pty-kor.py").read())'
-  if LC_ALL=C.UTF-8 shellcheck -x /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/test/*.sh /infra/test/scenarier/*.sh /infra/test/stubbar/stubb; then
+  if LC_ALL=C.UTF-8 shellcheck -x /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/backup.sh /infra/restore.sh /infra/test/*.sh /infra/test/scenarier/*.sh /infra/test/stubbar/stubb; then
     godkand "shellcheck utan anmärkningar ($(shellcheck --version | sed -n 's/^version: //p'))"
   else
     underkand "shellcheck har anmärkningar"

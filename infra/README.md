@@ -11,8 +11,8 @@ för hand på servern — det som inte står i ett skript finns inte efter en fl
 | `provision.env.example` | Mall för konfigurationen. Kopian `provision.env` är gitignorerad. |
 | `test/` | Tester i lokala engångscontainrar. Rör aldrig en server. |
 | `compose.yml` | *Kommer i skiva 6* — se [kraven nedan](#kommer-i-skiva-6). |
-| `backup.sh` | *Kommer i skiva 6.* |
-| `restore.sh` | *Kommer i skiva 6.* |
+| `backup.sh` | Säkerhetskopierar `data/` och `compose/`. Konsekvent SQLite-kopia, verifierad, roterad. `--dry-run`. Se [Säkerhetskopiering](#säkerhetskopiering). |
+| `restore.sh` | Lägger tillbaka `data/` och `compose/` på en provisionerad värd. Kontrollerar allt före, skriver aldrig över i tysthet. `--dry-run`. |
 
 Stöds: Debian 13 (målet), Debian 12, Ubuntu 24.04. Allt annat vägras.
 
@@ -328,7 +328,9 @@ nycklar. Då är `ops`-lösenordet den enda nödvägen före leverantörens räd
    på disk (100000 + 10001 = 110001), och det är därför en säkerhetskopia går att lägga
    tillbaka utan `chown`.
 3. Fas 1 → verifiera SSH över tailnet → fas 2 → `vibesandbox-verify`.
-4. `restore.sh` (skiva 6) lägger tillbaka `data/` och `compose/`.
+4. `restore.sh <backupkatalog>` lägger tillbaka `data/` och `compose/`. Den vägrar mot en värd
+   som redan har data (`--skriv-over` om du verkligen menar det), och den kontrollerar hela
+   säkerhetskopian — manifest, sha256 och `PRAGMA integrity_check` — **innan** den skriver något.
 5. Peka om de två DNS-posterna. Sänk TTL dagen före.
 6. När den nya värden har tagit över: ta bort den gamla noden ur tailnetet och säg upp den gamla värden.
 
@@ -336,6 +338,78 @@ Ingenting annat ska behövas. Behövs något annat är det en bugg i `provision.
 
 **Ubuntu:** molnavbilder har en standardanvändare `ubuntu` med lösenordsfri sudo.
 `verify.sh` flaggar den som avvikelse; ta bort den (`userdel -r ubuntu`) när `ops` fungerar.
+
+---
+
+## Säkerhetskopiering
+
+```sh
+sudo ./backup.sh --dry-run              # vad skulle säkras?
+sudo ./backup.sh --behall 14            # ta en kopia, behåll de 14 nyaste (standard 7)
+sudo ./restore.sh --kontrollera /srv/vibesandbox/backups/2026-01-31T030000Z
+sudo ./restore.sh /srv/vibesandbox/backups/2026-01-31T030000Z
+```
+
+Resultatet är en katalog per körning under `/srv/vibesandbox/backups/` (0700 `root:root`,
+allt i den 0600/0700 `root`):
+
+| I kopian | Vad |
+|---|---|
+| `databaser/…` | en konsekvent kopia av varje `*.sqlite` under `data/`, med sökvägen bevarad |
+| `filer/` | uppladdningarna och allt annat under `data/` som inte är en databas |
+| `compose/` | compose-filerna och `.env` — **alltså driftens hemligheter** |
+| `manifest` | version, tidpunkt, värd, körtid, och en rad per databas med sha256 och integritetsresultat |
+
+**Aldrig `cp` av en levande databas.** Plattformen kör SQLite i WAL-läge: de senaste
+transaktionerna ligger i `<db>-wal`, inte i huvudfilen. En rå kopia blir i bästa fall gammal
+och i värsta fall oläsbar, och det syns först den dag någon försöker återställa. Kopian görs
+därför av SQLite självt med `VACUUM INTO`, som tar en läslåsning och skriver en
+färdigcheckpointad fil medan plattformen fortsätter arbeta. **Varje kopia prövas sedan med
+`PRAGMA integrity_check`**, och en enda underkänd kopia gör att *ingen* säkerhetskopia skrivs
+— en halv backup är en fälla. Katalogen byter dessutom namn från `.ofullstandig` först när
+manifestet ligger på plats, så en avbruten körning kan aldrig lämna något som ser färdigt ut.
+
+Uppladdningarna kopieras däremot vanligt, och det är ett val: en fil får sitt namn under
+`blobs/` först när hela innehållet ligger på disk (atomiskt namnbyte från `tmp/`), så det
+finns ingen halv fil att fånga. Halvskrivna `*.tmp` utesluts av samma skäl.
+
+Körtiden för SQLite väljs efter vad värden faktiskt har: `sqlite3` om någon har installerat
+den, annars plattformsbilden (`vibesandbox-platform:lokal`, Node 24 med `node:sqlite` — samma
+SQLite som skrev filerna), annars `python3`. Vilken som användes står i manifestet.
+
+### Hemligheter — `compose/.env` följer med
+
+Det är ett medvetet beslut. Skälet är kravet den här katalogen finns för: *`provision.sh` på
+en ny värd + `restore.sh` ska räcka*. Utan `.env` går stacken inte att starta efter en flytt,
+och en säkerhetskopia som kräver att någon minns var resten låg är ingen säkerhetskopia.
+Priset är betalbart **på värden**: `backups/` är 0700 `root` och `compose/.env` 0600 `root`,
+så den som kan läsa kopian kunde redan läsa originalet.
+
+Priset som **inte** är betalt: i samma stund som en säkerhetskopia lämnar värden bär den
+driftens samtliga hemligheter. **Kryptera den innan den kopieras någon annanstans.** Den
+kopieringen gör `backup.sh` inte, och ska inte göra.
+
+### Vad som krävs för att köra den utan lösenord (inte gjort)
+
+`provision.sh` installerar varken `backup.sh` eller en timer för den — det hör till skiva 6.
+Tills det är gjort får det göras för hand, och då ska det göras så här (samma mönster som
+driftsättningens rotsteg, se steget `kataloger`):
+
+```sh
+install -m 0755 -o root -g root backup.sh  /usr/local/sbin/vibesandbox-backup
+install -m 0755 -o root -g root restore.sh /usr/local/sbin/vibesandbox-restore
+```
+
+- **Lösenordsfri körning** kräver en egen sudo-regel, prövad med `visudo` före bytet:
+  `ops ALL=(root) NOPASSWD: /usr/local/sbin/vibesandbox-backup`. Lägg den i en **egen** fil i
+  `sudoers.d` — regeln för `vibesandbox-driftsatt` ska inte röras. Observera att `verify.sh`
+  redovisar NOPASSWD-regler som avdrift; en ny regel ska vara ett medvetet beslut, inte en
+  överraskning vid nästa timkörning.
+- **Regelbunden körning** hör hemma i en systemd-timer (`OnCalendar=daily`,
+  `RandomizedDelaySec`), inte i cron — samma mönster som `vibesandbox-verify.timer`.
+- **Kopian ut ur värden** finns inte än. Så länge den inte finns överlever ingen
+  säkerhetskopia att värden går förlorad, och det är hela poängen med att ha en. Se
+  [Kommer i skiva 6](#kommer-i-skiva-6).
 
 ---
 
@@ -498,8 +572,11 @@ Tailscale är undantaget som inte går via en proxy (UDP, STUN, DERP) — det f�
 
 ## Kommer i skiva 6
 
-`compose.yml`, `backup.sh`, `restore.sh`, egress-proxyn och larm ut ur värden. Krav som redan
-är kända och inte får tappas bort:
+`compose.yml`, egress-proxyn och larm ut ur värden. `backup.sh` och `restore.sh` finns
+([Säkerhetskopiering](#säkerhetskopiering)) men installeras inte av `provision.sh` — det som
+återstår för dem är en sudo-regel, en timer, och **en kopia ut ur värden**: en säkerhetskopia
+som bara ligger kvar på maskinen överlever inte att maskinen gör det. Krav som redan är kända
+och inte får tappas bort:
 
 **Reverse-proxyn framför plattformen** (gatewayn avgör vilken app en förfrågan hör till enbart
 ur `Host`, så proxyn får inte ge den något annat att gå på):
@@ -528,6 +605,7 @@ interna nätet.
 infra/test/kor-tester.sh                    # alla scenarier, Debian 13, ~15 min
 BAS=debian:12 infra/test/kor-tester.sh      # även ubuntu:24.04
 infra/test/kor-tester.sh avbrott verify     # enskilda scenarier
+infra/test/kor-tester.sh statisk backup     # bara säkerhetskopieringen
 infra/test/tung-docker.sh                   # riktig Docker/brandvägg + riktig systemd, ~10 min, kräver nät
 infra/test/tung-docker.sh systemd           # bara ångra-mekanismen med systemd som PID 1
 ```
@@ -551,6 +629,7 @@ det behöver inte finnas på din dator.
 | `verify` | **B7:** varje kontroll med sitt kommando i tre fellägen — tyst, saknas, och *rätt utdata men felkod* — ger aldrig `✓`; provinloggning mot en riktig sshd (en demon som startats med annan konfiguration än filerna fångas); sshd bland lyssnarna; `AuthorizedKeysCommand`; NOPASSWD; 20 körningar i rad med `pipefail` |
 | `fas2` | riktigt laddade nft-regler, riktig `sshd -T` med leverantörens dropins, riktig cloud-init-sammanslagning; **hela körningen två gånger**; `verify.sh` fångar 14 sorters avdrift |
 | `flaggor` | `HARDEN_GUEST_AGENT`, `DOCKER_XFS_LOOP` (riktig `mkfs.xfs`), extra/tomma portlistor, gVisor |
+| `backup` | **S1–S7:** en LEVANDE WAL-databas (en skrivare håller anslutningen öppen med `wal_autocheckpoint=0` och skriver under tiden) — en rå `cp` av huvudfilen missar WAL:en, vår kopia gör det inte; integrity_check och en invariant över två tabeller; en databas som inte går att kopiera ⇒ INGEN säkerhetskopia alls; `restore.sh` underkänner en ändrad kopia på sha256 **och** en rätt summerad men trasig kopia på `integrity_check`, samt smuggelgods och saknat manifest; rotationen (`--behall`) rör bara sina egna kataloger; `--dry-run` i båda skripten ändrar ingenting; 0700/0600 `root` genomgående, också på `.env`; återställning på en tom värd ger tillbaka rader, ägare och lägen; `shellcheck` på båda skripten |
 | `tung-docker.sh` (docker) | Docker installerat av skriptet; `dockerd` med vår `daemon.json`; paket genom reglerna från ett låtsat internet och tailnet, IPv4 **och IPv6**, TCP och **UDP/443**, **169.254.169.254**, **hairpin mot :443** — med kontrollkörning utan tabellen |
 | `tung-docker.sh` (systemd) | systemd som PID 1: den transienta timern armeras och stoppas vid JA; efter `kill -9` löper den ut och ångrar; **omstart** med två obekräftade ändringar ⇒ uppstartsenheten ångrar båda, kör `sshd -t` och är klar före `nftables.service` och `ssh.service`; tidsgränsen 120 s |
 
@@ -582,6 +661,24 @@ körordningen ovan (ögonblicksbild först):
 - `sysctl`, swap, `mount` av XFS-avbilden, cgroup-drivrutinen `systemd`, AppArmor, en riktig
   `qemu-guest-agent`, och en verklig leverantörs filer (testerna använder neutrala efterbildningar
   under `test/fixturer/`).
+- **Säkerhetskopieringens Docker-väg.** `backup.sh` och `restore.sh` väljer körtid för SQLite i
+  ordningen `sqlite3` → plattformsbilden via Docker → `python3`. Testcontainern har varken
+  `sqlite3`, Node eller Docker, så **det är `python3`-vägen som körs i testerna** — samma
+  SQLite-bibliotek och samma `VACUUM INTO`, men inte samma process. Att `docker run … node -e`
+  startar, att containern kör som rätt uid under `userns-remap` och att den kommer åt både
+  `data/` och den utlånade målkatalogen är prövat i läsning, inte i körning. Det är den första
+  skarpa körningen på värden som visar det — kör `backup.sh --dry-run` först och läs vilken
+  körtid den väljer.
+- **Att stoppa och starta stacken vid en återställning.** `restore.sh` talar med
+  `docker compose` med samma projektnamn och samma filer som driftsättningens rotsteg. I
+  testet finns ingen Docker, så bara grenen "ingen stack kör här" är prövad. Att `down`
+  verkligen stoppar en körande plattform, och att `up --wait` får igång den efteråt, är inte det.
+- **Ett fullt filsystem mitt i en säkerhetskopia.** Att arbetet sker i `.ofullstandig` och byter
+  namn först när manifestet är skrivet är prövat som ordning (en trasig databas avbryter, och
+  ingen katalog lämnas kvar) — inte med en disk som tar slut mitt i en `VACUUM INTO`.
+- **En riktigt stor datamängd.** Testets databaser är några tiotal kilobyte. `VACUUM INTO` läser
+  hela databasen och kräver plats för en hel kopia; på en värd med många hyresgäster är det både
+  tid och diskutrymme som ingen har mätt än.
 - **Hairpin mot :443** är prövad och *stoppas* — en container når inte plattformen via värdens
   publika adress. Det är en följd av att input-kedjan släpper in ingenting från `docker0`/`br-*`;
   plattformen ska nås via det interna nätet (krav till skiva 6).
