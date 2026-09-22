@@ -37,6 +37,7 @@ import { RECOMMENDED_SERVER_OPTIONS, createGateway, handleClientError } from '@v
 import type { RequestHandler } from '@vibesandbox/gateway';
 import type { AddedUser } from '@vibesandbox/identity';
 import { createMaskingProvider, createOpenAiCompatibleProvider } from '@vibesandbox/llm';
+import { checkRedlines } from '@vibesandbox/policy';
 import { ConfigError, platformAddresses } from './config.ts';
 import type { BuilderConfig, PlatformConfig } from './config.ts';
 import { createPlatformIdentity, platformFeedback, platformMailer } from './identitet.ts';
@@ -204,6 +205,9 @@ export function createPlatform(config: PlatformConfig, deps: PlatformDependencie
         urls: { preview: addresses.preview, published: addresses.published },
         openUrl: identity.openUrl,
         services: config.appServices?.enabled ?? [],
+        // Röda linjer: önskemålet prövas före agenten, så att ett förbjudet bygge aldrig når
+        // modellen. Prövningen är mönsterbaserad och är försvar på djupet, inte en garanti.
+        checkRedlines,
         ...(config.version === undefined ? {} : { version: config.version }),
         logger: (entry) => log({ source: 'builder', ...entry }),
       });

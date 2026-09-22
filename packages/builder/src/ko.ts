@@ -8,7 +8,7 @@
  * körs en gång till utan att någon väntar på det.
  */
 import { MAX_EVENT_DIAGNOSTICS, MAX_EVENT_DIAGNOSTIC_CHARS } from '@vibesandbox/contracts';
-import type { AgentEvent, AgentTurnResult, BuildResult, Diagnostic, SourceFiles, Agent } from '@vibesandbox/contracts';
+import type { AgentEvent, AgentTurnResult, BuildResult, Diagnostic, RedlineCategory, SourceFiles, Agent } from '@vibesandbox/contracts';
 import { storedAppId } from './control.ts';
 import type { BuilderControl } from './control.ts';
 import type { JobOutcome, Storage } from './lagring.ts';
@@ -20,6 +20,16 @@ const TIMEOUT_MESSAGE = 'Arbetet tog för lång tid och avbröts. Försök igen,
 const UNEXPECTED_MESSAGE = 'Något gick fel hos plattformen medan appen byggdes. Försök igen om en stund.';
 const SAVE_FAILED_MESSAGE = 'Appen byggdes, men plattformen kunde inte spara den som utkast. Försök igen.';
 const NO_SUMMARY_MESSAGE = 'Det gick inte att bygga appen den här gången. Försök igen, gärna med andra ord.';
+
+/**
+ * Beskedet när ett önskemål stoppas av en röd linje. Det ska läsas som ett BESLUT, inte som en
+ * krasch: inget "försök igen om en stund", ingen felkod, ingen antydan om att plattformen gick
+ * sönder. Kategorin står inte här — den är vårt eget ordval och hör hemma i kontrollrummet.
+ */
+const REDLINE_MESSAGE =
+  'Det här bygger vi inte. Beskrivningen rör en användning av AI som lagen och plattformens ' +
+  'regler inte tillåter, och då blir det ingen app. Det är inget som gick sönder — beskriv vad ' +
+  'appen ska göra på ett annat sätt, så provar vi igen.';
 
 /** Längsta sammanfattning från agenten som sparas i samtalet. */
 const MAX_SUMMARY_CHARS = 8000;
@@ -61,6 +71,11 @@ export interface JobRunnerOptions {
   readonly log: BuilderLogger;
   readonly now: () => Date;
   readonly jobTimeoutMs: number;
+  /**
+   * Prövar önskemålet mot de röda linjerna. Saknas den prövas ingenting — byggverktyget ska gå
+   * att köra utan policy-paketet, precis som utan bryggan till användarregistret.
+   */
+  readonly checkRedlines?: ((request: string) => RedlineCategory | null) | undefined;
 }
 
 export interface JobRunner {
@@ -225,6 +240,18 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     const fail = (message: string, outcome: JobOutcome, withDoneEvent: boolean): void => {
       storage.failJob(appId, jobId, message, outcome, iso(), withDoneEvent ? { type: 'done', ok: false, message } : null);
     };
+
+    // De röda linjerna prövas HÄR: efter att jobbet markerats igång, men före agenten. Spärren
+    // måste sitta före modellen — prövas texten efteråt har den redan lämnat servern, och då är
+    // steget en efterhandskontroll i stället för ett skydd. Inget utkast rörs, ingen tur startas.
+    const category = options.checkRedlines?.(request) ?? null;
+    if (category !== null) {
+      storage.stopJob(appId, jobId, REDLINE_MESSAGE, category, iso(), { type: 'done', ok: false, message: REDLINE_MESSAGE });
+      // Kategorin är fast text ur vår egen kod och får loggas. Önskemålet får aldrig loggas.
+      log({ level: 'info', event: 'request_stopped', ...base, category });
+      finish({ status: 'failed' }, { reason: 'redline' });
+      return;
+    }
 
     let result: AgentTurnResult;
     try {

@@ -4,7 +4,7 @@
   "private": true,
   "license": "EUPL-1.2",
   "type": "module",
-  "description": "Den körbara plattformen: sätter ihop lagring, appregister, inloggning, byggverktyg och gateway till en server.",
+  "description": "Den k\u00f6rbara plattformen: s\u00e4tter ihop lagring, appregister, inloggning, byggverktyg och gateway till en server.",
   "exports": {
     ".": "./src/index.ts"
   },
@@ -22,6 +22,7 @@
     "@vibesandbox/gateway": "*",
     "@vibesandbox/identity": "*",
     "@vibesandbox/llm": "*",
+    "@vibesandbox/policy": "*",
     "@vibesandbox/tjanst-extract": "*",
     "@vibesandbox/tjanst-files": "*",
     "@vibesandbox/tjanst-history": "*",

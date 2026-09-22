@@ -156,6 +156,7 @@ type Route =
   | { readonly kind: 'job'; readonly jobId: string }
   | { readonly kind: 'adminOverview' }
   | { readonly kind: 'adminApps' }
+  | { readonly kind: 'adminStops' }
   | { readonly kind: 'adminUsers' }
   | { readonly kind: 'adminUser'; readonly userId: string };
 
@@ -175,6 +176,7 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   // sätt än 405. Användarhanteringen skriver — men bara med POST: en roll sätts, tas aldrig bort.
   adminOverview: ['GET'],
   adminApps: ['GET'],
+  adminStops: ['GET'],
   adminUsers: ['GET', 'POST'],
   adminUser: ['POST'],
 };
@@ -211,6 +213,7 @@ function matchRoute(path: string): Route | null {
   if (first === 'admin') {
     if (second === 'oversikt' && third === undefined) return { kind: 'adminOverview' };
     if (second === 'appar' && third === undefined) return { kind: 'adminApps' };
+    if (second === 'stopp' && third === undefined) return { kind: 'adminStops' };
     if (second === 'anvandare') {
       if (third === undefined) return { kind: 'adminUsers' };
       if (third.length > 0) return { kind: 'adminUser', userId: third };
@@ -533,13 +536,21 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
     // Kontrollrummet har sin egen grind, och den prövas före byggrätten: den som är admin får
     // förstås också bygga, men den som bara är byggare ska få veta att det är adminrollen som
     // saknas — inte ett besked om att hen inte får bygga appar.
-    if (route.kind === 'adminOverview' || route.kind === 'adminApps' || route.kind === 'adminUsers' || route.kind === 'adminUser') {
+    if (
+      route.kind === 'adminOverview' ||
+      route.kind === 'adminApps' ||
+      route.kind === 'adminStops' ||
+      route.kind === 'adminUsers' ||
+      route.kind === 'adminUser'
+    ) {
       requireAdmin(identity);
       switch (route.kind) {
         case 'adminOverview':
           return admin.overview();
         case 'adminApps':
           return admin.apps();
+        case 'adminStops':
+          return admin.stops();
         case 'adminUsers':
           return request.method === 'GET' ? admin.users(identity) : admin.invite(identity, parseBody(request));
         case 'adminUser':

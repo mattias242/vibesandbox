@@ -8,7 +8,7 @@
  */
 
 /** Höjs vid varje schemaändring, tillsammans med ett nytt steg i `MIGRATIONS`. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * Steg N tar databasen från schemaversion N till N+1. Nya steg läggs SIST; ett steg som har körts
@@ -113,6 +113,14 @@ export const MIGRATIONS: readonly string[] = [
   ) STRICT;
 
   CREATE INDEX feedback_by_user ON feedback (user_id, created_at);
+  `,
+  // 3: ett stoppat önskemål är inte ett byggfel. Utan en egen kolumn hade stoppen legat bland de
+  // misslyckade jobb som ska felsökas, och kontrollrummets felbild blivit obrukbar. NULL = vanligt
+  // jobb; befintliga rader är därför redan rätt.
+  `
+  ALTER TABLE jobs ADD COLUMN stop_reason TEXT;
+
+  CREATE INDEX jobs_by_stop ON jobs (stop_reason, created_at);
   `,
 ];
 
@@ -237,6 +245,13 @@ export const MARK_JOB_RUNNING = `
  * Bara ett jobb som fortfarande är aktivt kan avslutas. Två processer mot samma katalog (en
  * kraschad som lever kvar och en ny) kan då inte skriva över varandras slutbesked.
  */
+/** Ett stopp avslutar jobbet utan att någon tur körts: ingen modell, inga tokens. */
+export const STOP_JOB = `
+  UPDATE jobs
+  SET status = 'failed', finished_at = :now, stop_reason = :reason
+  WHERE job_id = :jobId AND status IN ('queued', 'running')
+`;
+
 export const FINISH_JOB = `
   UPDATE jobs
   SET status = :status, finished_at = :now, model = :model, input_tokens = :inputTokens, output_tokens = :outputTokens

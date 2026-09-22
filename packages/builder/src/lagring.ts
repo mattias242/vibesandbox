@@ -52,6 +52,13 @@ export interface AdminJobTotals {
  * hämtas ur control — den finns inte i byggverktygets databas. Hela `appId` stannar i det här
  * lagret: anroparen kapar det innan det når svaret.
  */
+/** Ett stoppat önskemål. Texten som stoppades finns INTE här — se sql-admin.ts om varför. */
+export interface StoredStop {
+  readonly appId: string;
+  readonly reason: string;
+  readonly at: string;
+}
+
 export interface StoredAdminApp {
   readonly appId: string;
   readonly ownerUserId: string;
@@ -247,6 +254,24 @@ export function createStorage(db: BuilderDatabase) {
     },
 
     /** Avslutar ett jobb som inte blev grönt, med ett besked i samtalet. */
+    /**
+     * Som `failJob`, men för ett önskemål som stoppats av en röd linje. Skälet skrivs i
+     * `stop_reason`, så att stoppet aldrig räknas som ett byggfel: ingen tur kördes, ingen modell
+     * anropades, och det finns ingenting att felsöka. Meddelandet till den som bad om appen är
+     * detsamma som vid ett fel — hen ska få ett svar i samtalet.
+     */
+    stopJob(appId: string, jobId: string, message: string, reason: string, now: string, doneEvent: AgentEvent): boolean {
+      return db.transaction(() => {
+        const stopped = db.run(sql.STOP_JOB, { jobId, reason, now }).changes > 0;
+        if (!stopped) return false;
+        appendEvent(jobId, doneEvent);
+        const next = integer(db.get(sql.NEXT_MESSAGE_SEQ, { appId }) ?? {}, 'next');
+        db.run(sql.INSERT_MESSAGE, { appId, seq: next, role: 'assistant', text: message, now });
+        db.run(sql.TOUCH_APP, { appId, now });
+        return true;
+      });
+    },
+
     failJob(appId: string, jobId: string, message: string, outcome: JobOutcome, now: string, doneEvent: AgentEvent | null): boolean {
       return db.transaction(() => {
         const finished = finishJob(jobId, outcome, now);
@@ -330,6 +355,14 @@ export function createStorage(db: BuilderDatabase) {
         published: typeof row['published_version'] === 'string',
         inputTokens: integer(row, 'input_tokens'),
         outputTokens: integer(row, 'output_tokens'),
+      }));
+    },
+
+    listStops(limit: number): StoredStop[] {
+      return db.all(adminSql.LIST_STOPS, { limit }).map((row) => ({
+        appId: text(row, 'app_id'),
+        reason: text(row, 'stop_reason'),
+        at: text(row, 'created_at'),
       }));
     },
   };

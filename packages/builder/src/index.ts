@@ -13,7 +13,7 @@
  */
 import { resolve } from 'node:path';
 import { API_PREFIX, APP_SERVICE_NAMES } from '@vibesandbox/contracts';
-import type { Agent, AppServiceName, BuilderHandler, Identity, InvitationService, PlatformRequest, SourceFiles } from '@vibesandbox/contracts';
+import type { Agent, AppServiceName, BuilderHandler, Identity, InvitationService, PlatformRequest, RedlineCategory, SourceFiles } from '@vibesandbox/contracts';
 import { createApi } from './api.ts';
 import type { BuilderUserDirectory } from './anvandare.ts';
 import type { FeedbackMailer } from './aterkoppling.ts';
@@ -67,6 +67,12 @@ export interface BuilderOptions {
   /** Hur länge en tur får pågå innan den avbryts och kön går vidare. Standard 20 minuter. */
   readonly jobTimeoutMs?: number;
   /**
+   * Prövar ett önskemål mot de röda linjerna INNAN språkmodellen får se det
+   * (`checkRedlines` i @vibesandbox/policy). Saknas den prövas ingenting: byggverktyget ska gå
+   * att köra utan policy-paketet, på samma sätt som utan bryggan till användarregistret.
+   */
+  readonly checkRedlines?: (request: string) => RedlineCategory | null;
+  /**
    * Plattformstjänsterna som är påslagna (`APP_SERVICES`). Byggverktyget skapar dem inte — det
    * berättar bara om dem i `/me`, så att guiden bara lovar det som finns. Standard: inga.
    */
@@ -109,6 +115,7 @@ export function createBuilder(options: BuilderOptions): Builder {
     log,
     now,
     jobTimeoutMs,
+    ...(options.checkRedlines === undefined ? {} : { checkRedlines: options.checkRedlines }),
   });
   const api = createApi({
     storage,

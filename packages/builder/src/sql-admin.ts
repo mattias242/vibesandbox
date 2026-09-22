@@ -52,8 +52,25 @@ export const SUM_JOB_TOKENS_SINCE = `
 `;
 
 /** Byggverktygets egen felbild: jobb inom samma fönster som slutade som misslyckade. */
+/**
+ * Misslyckade BYGGEN. Ett stoppat önskemål är `failed` i tabellen men hör inte hit: det var ett
+ * beslut, inte en krasch, och ska inte blandas in i felbilden som någon ska felsöka.
+ */
 export const COUNT_FAILED_JOBS_SINCE = `
-  SELECT count(*) AS failed FROM jobs WHERE created_at > :since AND status = 'failed'
+  SELECT count(*) AS failed FROM jobs
+  WHERE created_at > :since AND status = 'failed' AND stop_reason IS NULL
+`;
+
+/**
+ * Stoppade önskemål, senast först. Önskemålets TEXT finns inte här och ska inte finnas: den kan
+ * bära personuppgifter, och ett stopp får inte bli vägen som arkiverar just det någon inte borde
+ * ha skrivit. App-id:t förkortas av anroparen — hela id:t är appens hemliga adress.
+ */
+export const LIST_STOPS = `
+  SELECT app_id, stop_reason, created_at FROM jobs
+  WHERE stop_reason IS NOT NULL
+  ORDER BY created_at DESC, rowid DESC
+  LIMIT :limit
 `;
 
 /**

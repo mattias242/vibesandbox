@@ -21,8 +21,14 @@
  * (anvandare.ts) och den är valfri: utan den blir `users` nollor och användarrutterna svarar
  * `unavailable`, i stället för att byggverktyget gissar.
  */
-import { ADMIN_APP_ID_PREFIX_LENGTH, ADMIN_TOKEN_WINDOW_DAYS, DataApiError } from '@vibesandbox/contracts';
-import type { AdminApp, AdminOverview, AdminUser, Identity, PlatformResponse, Role } from '@vibesandbox/contracts';
+import { ADMIN_APP_ID_PREFIX_LENGTH, ADMIN_TOKEN_WINDOW_DAYS, DataApiError, REDLINE_CATEGORIES } from '@vibesandbox/contracts';
+import type { AdminApp, AdminOverview, AdminStop, AdminUser, Identity, PlatformResponse, RedlineCategory, Role } from '@vibesandbox/contracts';
+
+/**
+ * Tak för hur många stopp kontrollrummet hämtar. Listan finns för att upptäcka en för bred regel,
+ * inte för att vara ett arkiv — och ett svar utan tak växer med hur mycket någon råkat prova.
+ */
+const MAX_STOPS = 200;
 import type { BuilderUser, BuilderUserDirectory } from './anvandare.ts';
 import { controlErrorCode, storedAppId } from './control.ts';
 import type { BuilderAccessEntry, BuilderControl } from './control.ts';
@@ -58,6 +64,7 @@ const NO_USERS: Readonly<Record<Role, number>> = { admin: 0, builder: 0, viewer:
 export function createAdmin(deps: AdminDependencies): {
   overview(): PlatformResponse;
   apps(): Promise<PlatformResponse>;
+  stops(): PlatformResponse;
   users(identity: Identity): PlatformResponse;
   invite(identity: Identity, body: Record<string, unknown>): Promise<PlatformResponse>;
   setRole(identity: Identity, userId: string, body: Record<string, unknown>): PlatformResponse;
@@ -135,6 +142,26 @@ export function createAdmin(deps: AdminDependencies): {
         failedJobs: storage.failedJobsSince(since),
       };
       return json(200, body);
+    },
+
+    /**
+     * Stoppade önskemål. Texten som stoppades finns inte i lagret och byggs inte heller ihop
+     * här: kategorin och tidpunkten räcker för att se om en regel är för bred, och önskemålet
+     * kan bära personuppgifter.
+     */
+    stops(): PlatformResponse {
+      const stops: AdminStop[] = [];
+      for (const row of storage.listStops(MAX_STOPS)) {
+        // En kategori som inte finns i kontraktet kommer från en äldre version av vår egen kod.
+        // Den utelämnas hellre än renderas: kontrollrummet ska inte visa ord ingen kan förklara.
+        if (!REDLINE_CATEGORIES.includes(row.reason as RedlineCategory)) continue;
+        stops.push({
+          appIdPrefix: row.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+          category: row.reason as RedlineCategory,
+          at: row.at,
+        });
+      }
+      return json(200, { stops });
     },
 
     async apps(): Promise<PlatformResponse> {

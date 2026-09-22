@@ -13,6 +13,8 @@ export type BuilderLogEvent =
   | 'job_started'
   | 'job_finished'
   | 'job_timed_out'
+  /** Ett önskemål stoppades av en röd linje: ingen tur startades, ingen modell anropades. */
+  | 'request_stopped'
   | 'jobs_failed_on_startup'
   | 'app_published'
   | 'publish_failed'
@@ -45,6 +47,11 @@ export interface BuilderLogEntry {
   readonly count?: number;
   /** Varför något hoppades över — en fast kod, aldrig en sökväg eller ett meddelande. */
   readonly reason?: string;
+  /**
+   * Vilken röd linje ett önskemål stoppades av. Fast text ur vår egen kod — ALDRIG något som
+   * kommit in med önskemålet, som kan bära personuppgifter.
+   */
+  readonly category?: string;
   /** Felets klassnamn och anropsstack UTAN felmeddelandet — meddelanden kan innehålla data. */
   readonly errorName?: string;
   readonly stackFrames?: readonly string[];
