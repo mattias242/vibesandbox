@@ -13,6 +13,9 @@ import {
   type SourceFiles,
 } from '@vibesandbox/contracts';
 import {
+  ADMIN_APP_EDIT_LINK,
+  ADMIN_APP_NOTHING_TO_OPEN,
+  ADMIN_APP_OPEN_LINK,
   ADMIN_APPS_HEADING,
   ADMIN_DATE_UNKNOWN,
   ADMIN_EMPTY,
@@ -92,14 +95,17 @@ import {
 } from './admin.ts';
 import { api } from './client.ts';
 import { formatCount, formatUpdated } from './format.ts';
+import { appHash } from './route.ts';
 
 /**
  * Kontrollrummet: plattformens administratör ser alla appar utan att gå in på servern, och
  * bestämmer vilka adresser som får logga in.
  *
- * Applistan är ren läsning — där finns inte en enda knapp, och inte en enda länk in i någon annans
- * app. Appens fulla id är dess hemliga adress; listan visar bara början av den, och gör aldrig en
- * länk av den.
+ * Applistan är ren läsning: den ändrar ingenting i någon app. Varje rad har två länkar — till
+ * arbetsytan och till appen som den körs — och båda är genvägar, inte nycklar: den som varken
+ * äger appen eller fått den delad möts av samma "finns inte" som en gissad adress ger. Det är
+ * också vad `ADMIN_ID_NOTE` säger vid listan, så att ingen tror sig ha fått en behörighet hen
+ * inte har.
  *
  * Adresslistan ändrar. Den ändrar först när servern har svarat: knapparna skickar, och det är
  * SERVERNS rad som läggs in i listan. Ett misslyckat anrop lämnar därför vyn precis som den var,
@@ -808,11 +814,23 @@ function AppTable({ apps }: { apps: readonly AdminApp[] }) {
           {apps.map((app, index) => {
             const status = statusOf(app);
             return (
-              <tr key={`${app.appIdPrefix}-${index}`}>
+              <tr key={`${app.appId}-${index}`}>
                 <th scope="row" className="admin-app">
                   <span className="admin-app-name">{app.name}</span>
-                  {/* Bara början av adressen — och som text, aldrig som länk. */}
                   <span className="admin-prefix">Börjar med {app.appIdPrefix}</span>
+                  {/* Två vägar in, och båda är genvägar: den som inte äger eller fått appen delad
+                      möts av samma "finns inte" som förut. Appens adress öppnas i en egen flik —
+                      den ligger på en annan värd, och kontrollrummet ska stå kvar bakom. */}
+                  <span className="admin-app-links">
+                    <a href={appHash(app.appId)}>{ADMIN_APP_EDIT_LINK}</a>
+                    {app.appUrl === null ? (
+                      <span className="muted">{ADMIN_APP_NOTHING_TO_OPEN}</span>
+                    ) : (
+                      <a href={app.appUrl} target="_blank" rel="noreferrer">
+                        {ADMIN_APP_OPEN_LINK}
+                      </a>
+                    )}
+                  </span>
                 </th>
                 <td>{app.ownerEmail ?? <span className="muted">{ADMIN_OWNER_MISSING}</span>}</td>
                 <td>

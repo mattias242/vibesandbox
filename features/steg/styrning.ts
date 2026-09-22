@@ -7,8 +7,9 @@
  *   - Apparna byggs av Anna och Bertil med den inspelade språkmodellen, som här också rapporterar
  *     vad svaret kostade (`KOSTNAD`). Utan den rapporten vore varje app noll tokens, och
  *     scenariot om kostnaden skulle inte pröva någonting.
- *   - "Ser han appen" avgörs på appens FÖRKORTADE id, för det är det enda kontrollrummet ger ut.
- *     Hela id:t jämförs bara för att slå fast att det INTE står någonstans i svaret.
+ *   - "Ser han appen" avgörs på appens FÖRKORTADE id. Applistan bär numera också hela id:t och
+ *     adressen till appen, men prefixet är det som går att matcha mot en loggrad, och det som
+ *     står i de övriga adminvyerna.
  */
 import assert from 'node:assert/strict';
 import { DataTable, Given, Then, When } from '@cucumber/cucumber';
@@ -140,26 +141,24 @@ Then(/^finns det inga andra appar i listan$/, function (this: Varld) {
   assert.equal(apparna(this).length, this.byggappar.size, 'Kontrollrummet visar ett annat antal appar än de som byggts.');
 });
 
-Then(/^visas bara början av varje app-id$/, function (this: Varld) {
+/**
+ * Två vägar per app: arbetsytan i byggverktyget (som `appId` pekar ut — resten är en rutt i
+ * gränssnittet) och appen som den körs. Prefixet står kvar bredvid det hela id:t: det är det man
+ * läser för att känna igen en app, och det enda som står i en loggrad.
+ *
+ * Att vägarna finns säger ingenting om att de leder någonstans för den som klickar. Det prövar
+ * scenariot "Länken i kontrollrummet är ingen nyckel", och det gör det på appens riktiga adress.
+ */
+Then(/^står det för varje app en väg till arbetsytan och en till appen som den körs$/, function (this: Varld) {
   const appar = apparna(this);
   assert.ok(appar.length > 0, 'Kontrollrummet är tomt — scenariot prövar då ingenting.');
   for (const app of appar) {
-    assert.equal(
-      [...app.appIdPrefix].length,
-      ADMIN_APP_ID_PREFIX_LENGTH,
-      `Kontrollrummet visar ${[...app.appIdPrefix].length} tecken av app-id:t, inte ${ADMIN_APP_ID_PREFIX_LENGTH}.`,
-    );
+    assert.ok(isAppId(app.appId), `Kontrollrummet ger inget app-id att öppna arbetsytan med: ${app.appId}`);
+    assert.equal(app.appIdPrefix, forkortat(app.appId), 'Det förkortade id:t hör inte ihop med det hela.');
+    assert.ok(app.appUrl !== null, 'Kontrollrummet ger ingen adress till appen som den körs.');
+    assert.ok(app.appUrl.includes(DOMAN), `Adressen till appen pekar någon annanstans än på plattformen: ${app.appUrl}`);
+    assert.ok(app.appUrl.includes(app.appId), 'Adressen till appen pekar inte på den app raden gäller.');
   }
-});
-
-Then(/^innehåller kontrollrummet varken något helt app-id eller någon delningslänk$/, function (this: Varld) {
-  const kroppar = this.svar.map((svar) => svar.kropp).join('\n');
-  assert.ok(kroppar.length > 0, 'Kontrollrummet svarade utan innehåll.');
-  for (const [namn, appId] of this.byggappar) {
-    assert.ok(!kroppar.includes(appId), `Kontrollrummet lämnar ut hela app-id:t för ${namn}s app.`);
-  }
-  assert.ok(!kroppar.includes(DOMAN), 'Kontrollrummet lämnar ut appens adress.');
-  assert.doesNotMatch(kroppar, /https?:\/\//, 'Kontrollrummet innehåller en länk till en app.');
 });
 
 Then(/^visar översikten:$/, function (this: Varld, tabell: DataTable) {

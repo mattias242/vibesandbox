@@ -928,8 +928,16 @@ export type BuilderJobStatus = 'queued' | 'running' | 'done' | 'failed';
 //   GET /_api/builder/admin/oversikt → AdminOverview
 //   GET /_api/builder/admin/appar    → { apps: AdminApp[] }   (senast ändrad först)
 //
-// Hela app-id:t ÄR den hemliga delen av appens adress. Kontrollrummet visar därför bara ett
-// förkortat id, aldrig en delningslänk — samma regel som driftloggarna följer.
+// Applistan bär hela app-id:t och vägarna in i appen. Det är en uppmjukning av en tidigare regel
+// och ska läsas rätt: länkarna är genvägar, inte nycklar. Den som förvaltar plattformen bygger
+// också själv och får appar delade med sig, och för dem är en lista utan vägar in bara en lista
+// att skriva av för hand. För övriga appar leder länken till samma "finns inte" som en gissad
+// adress hade gett — åtkomsten avgörs i varje förfrågan, av åtkomstlistan, aldrig av att någon
+// känner ett id. Driftloggarna följer fortfarande den strängare regeln: där står bara prefixet,
+// för en logg läses av fler och sparas längre än ett svar.
+//
+// De ÖVRIGA adminvyerna (stopplistan, registret, granskningskön) visar fortfarande bara prefixet.
+// De svarar på hur plattformen mår, inte på vilken app någon vill öppna.
 
 /** Så många tecken av app-id:t kontrollrummet visar. Samma längd som i driftloggarna. */
 export const ADMIN_APP_ID_PREFIX_LENGTH = 8;
@@ -1260,10 +1268,23 @@ export interface AdminUser {
   readonly self: boolean;
 }
 
-/** En rad i kontrollrummets applista. Aldrig hela app-id:t, aldrig en länk till appen. */
+/** En rad i kontrollrummets applista. */
 export interface AdminApp {
+  /**
+   * Hela app-id:t — vägen till arbetsytan i byggverktyget, och det som skiljer två appar med
+   * samma namn åt. Att känna det ger ingen åtkomst: arbetsytan finns bara för ägaren, och appen
+   * bara för den som fått den delad.
+   */
+  readonly appId: string;
   /** De första `ADMIN_APP_ID_PREFIX_LENGTH` tecknen av app-id:t. Räcker för att känna igen en app. */
   readonly appIdPrefix: string;
+  /**
+   * Adressen till appen som den körs. Den publicerade när den är publicerad, annars ägarens
+   * förhandsvisning — så att raden alltid pekar på det som faktiskt går att öppna. `null` när
+   * appen aldrig byggts: en app utan både utkast och publicerad version har ingen adress som
+   * svarar, och raden ska inte påstå att den har det.
+   */
+  readonly appUrl: string | null;
   readonly name: string;
   /** Ägarens adress. Bara kontrollrummet ser den; den loggas aldrig. */
   readonly ownerEmail: string | null;

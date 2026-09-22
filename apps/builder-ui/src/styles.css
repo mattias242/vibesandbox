@@ -1193,11 +1193,21 @@ body:has(.page-admin) .topbar-inner {
   font-weight: 600;
 }
 
-/* Början av appens adress. Bara text — aldrig en länk: hela adressen är nyckeln till appen. */
+/* Början av appens adress, som text. Det är den som går att känna igen i en loggrad. */
 .admin-prefix {
   display: block;
   margin-top: 0.15rem;
   color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 400;
+}
+
+/* De två vägarna in i appen. Egen rad under namnet, så att de inte tas för en del av det. */
+.admin-app-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.75rem;
+  margin-top: 0.35rem;
   font-size: 0.9rem;
   font-weight: 400;
 }

@@ -2,8 +2,13 @@
  * Kontrollrummet (adminvyn): `GET /_api/builder/admin/oversikt` och `GET /_api/builder/admin/appar`.
  *
  * Den här skivan är ren läsning. Det som prövas här är inte främst siffrorna utan grinden och
- * tystnaden: bara plattformsrollen `admin` kommer in, svaret röjer aldrig ett helt app-id eller en
- * väg in i någon app, och ägarnas adresser finns i svaret men aldrig i en loggrad.
+ * tystnaden: bara plattformsrollen `admin` kommer in, ägarnas adresser finns i svaret men aldrig i
+ * en loggrad, och önskemålens text följer aldrig med som appnamn.
+ *
+ * APPLISTAN bär hela app-id:t och adressen till appen — en genväg för den som förvaltar
+ * plattformen och också bygger själv. Att den gör det säger ingenting om åtkomst: den prövas i
+ * gatewayn, vid varje förfrågan, mot åtkomstlistan. Övriga adminvyer lämnar bara ut prefixet, och
+ * det finns ett test som håller fast vid det.
  */
 import { ADMIN_APP_ID_PREFIX_LENGTH, ADMIN_TOKEN_WINDOW_DAYS } from '@vibesandbox/contracts';
 import type { Identity } from '@vibesandbox/contracts';
@@ -102,17 +107,47 @@ describe('rutterna är exakta', () => {
 });
 
 describe('GET /admin/appar', () => {
-  it('administratören ser appar hen inte äger — och aldrig hela app-id:t eller en väg in', async () => {
+  it('administratören ser appar hen inte äger, med hela id:t och vägen till appen', async () => {
     const annas = await byggdApp(ANNA);
     const svar = await anropa(m.builder, ADAM, 'GET', APPAR);
 
     expect(svar.status).toBe(200);
     expect(svar.json.apps).toHaveLength(1);
+    expect(svar.json.apps[0].appId).toBe(annas);
+    // Prefixet står kvar bredvid hela id:t: det är det man läser, och det loggraderna bär.
     expect(svar.json.apps[0].appIdPrefix).toBe(annas.slice(0, ADMIN_APP_ID_PREFIX_LENGTH));
-    expect(svar.text).not.toContain(annas);
-    // Ingen länk: kontrollrummet ger insyn i att appar finns, aldrig en väg in i dem.
-    expect(svar.text).not.toContain('https://');
     expect(svar.headers['Cache-Control']).toBe('no-store');
+  });
+
+  it('adressen pekar på förhandsvisningen för ett utkast och på den publicerade när den finns', async () => {
+    const appId = await byggdApp(ANNA);
+    const utkast = await anropa(m.builder, ADAM, 'GET', APPAR);
+    expect(utkast.json.apps[0].appUrl).toBe(`https://p-${appId}.example.org/`);
+
+    await publicera(appId);
+    const publicerad = await anropa(m.builder, ADAM, 'GET', APPAR);
+    expect(publicerad.json.apps[0].appUrl).toBe(`https://${appId}.example.org/`);
+  });
+
+  it('en app som aldrig byggts har ingen adress — och raden hittar inte på en', async () => {
+    await nyApp(m.builder, ANNA);
+    const svar = await anropa(m.builder, ADAM, 'GET', APPAR);
+    expect(svar.json.apps[0].hasDraft).toBe(false);
+    expect(svar.json.apps[0].published).toBe(false);
+    expect(svar.json.apps[0].appUrl).toBeNull();
+  });
+
+  /**
+   * Uppmjukningen gäller applistan och ingenting annat. De vyer som svarar på hur plattformen mår
+   * har ingen anledning att peka ut en app att öppna, och ska därför inte börja göra det heller.
+   */
+  it('övriga adminvyer lämnar fortfarande bara ut prefixet', async () => {
+    const appId = await byggdApp(ANNA);
+    for (const vag of ['/admin/register', '/admin/stopp', '/admin/granskning']) {
+      const svar = await anropa(m.builder, ADAM, 'GET', api(vag));
+      expect(svar.status, vag).toBe(200);
+      expect(svar.text, vag).not.toContain(appId);
+    }
   });
 
   it('byggaren ser ingenting alls — inte ens sina egna appar den här vägen', async () => {
@@ -130,7 +165,9 @@ describe('GET /admin/appar', () => {
 
     const svar = await anropa(m.builder, ADAM, 'GET', APPAR);
     expect(svar.json.apps[0]).toEqual({
+      appId,
       appIdPrefix: appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+      appUrl: `https://${appId}.example.org/`,
       // Önskemålets text, inte ägarens namnval — kontrollrummet visar den inte. Se `visatNamn`.
       name: 'Namnlös app',
       ownerEmail: ANNA.email,

@@ -1,9 +1,10 @@
 /**
  * Kontrollrummets texter och de små beslut som går att pröva utan webbläsare.
  *
- * Applistan är ren läsning. Den ger plattformens administratör insyn i ATT appar finns — aldrig
- * en väg in i dem. Därför står det ingenstans här en app-adress, och ingen text lovar något som
- * plattformen inte gör.
+ * Applistan är ren läsning: den ÄNDRAR ingenting i någon app. Den ger två vägar in — till
+ * arbetsytan och till appen som den körs — och båda är genvägar, inte nycklar. Vem som kommer in
+ * avgörs av ägarskap och delning, inte av att en länk finns, och texten vid listan säger det rakt
+ * ut så att ingen tror sig ha fått en behörighet hen inte har.
  *
  * Adresslistan är vyns enda del som ändrar något. Den ändrar först när servern svarat: varje
  * funktion här tar emot SERVERNS rad och bygger besked eller ny lista av den, aldrig av det
@@ -50,9 +51,16 @@ export const ADMIN_FIGURES_HEADING = 'Så ser plattformen ut just nu';
 
 export const ADMIN_APPS_HEADING = 'Alla appar';
 
-/** Sagt en gång, vid listan: varför appens namn inte går att klicka på. */
+/** Sagt en gång, vid listan: vad länkarna är, och vad de inte är. */
 export const ADMIN_ID_NOTE =
-  'Av varje app visas bara början av dess adress, och det finns ingen väg härifrån in i appen. Hela adressen är nyckeln till appen, och den har bara de som äger eller delar den.';
+  'Varje app har två länkar: en till arbetsytan där den byggs, och en till appen som den körs. De är genvägar, inte nycklar — arbetsytan är bara ägarens, och appen öppnas bara av den som äger eller har fått den delad. Andras appar möts av samma besked som en app som inte finns, precis som förut.';
+
+/** Länkarna i applistan. Två ord var: de står i en tabellcell, inte i en mening. */
+export const ADMIN_APP_EDIT_LINK = 'Öppna arbetsytan';
+export const ADMIN_APP_OPEN_LINK = 'Öppna appen';
+
+/** Sagt om den app som ännu inte har något att öppna — i stället för en länk som inte leder någonstans. */
+export const ADMIN_APP_NOTHING_TO_OPEN = 'Inget byggt ännu';
 
 /** "Tokens" är modellens mått. Sagt en gång, i vanliga ord, så att siffrorna betyder något. */
 export const ADMIN_TOKENS_NOTE = `Tokens är måttet på hur mycket text modellen läst och skrivit. Siffrorna för plattformen gäller de senaste ${ADMIN_TOKEN_WINDOW_DAYS} dygnen; siffrorna i listan gäller varje app sedan den skapades.`;

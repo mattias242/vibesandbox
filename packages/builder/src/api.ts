@@ -344,7 +344,7 @@ function summary(app: StoredApp): BuilderAppSummary {
 export function createApi(deps: ApiDependencies): { handle(request: PlatformRequest): Promise<PlatformResponse> } {
   const { storage, runner, control, invitations, feedback, urls, log } = deps;
   const iso = (): string => deps.now().toISOString();
-  const admin = createAdmin({ storage, control, ...(deps.users === undefined ? {} : { users: deps.users }), log, now: deps.now });
+  const admin = createAdmin({ storage, control, urls, ...(deps.users === undefined ? {} : { users: deps.users }), log, now: deps.now });
 
   /** Delningar som har börjat men inte sparats än, per ägare — så att samtidiga anrop inte slinker förbi taket. */
   const pendingShares = new Map<string, number>();

@@ -11,9 +11,17 @@ Egenskap: Kontrollrummet — insyn i plattformen utan att logga in på servern
   en app finns är något helt annat än att komma åt vad någon har skrivit i den.
 
   Därför gäller två gränser samtidigt. Kontrollrummet kräver mer än att få bygga: bara den som
-  förvaltar plattformen kommer in. Och det öppnar ingen dörr in i apparna. Hela app-id:t ÄR den
-  hemliga delen av appens adress, så kontrollrummet visar bara början av det och aldrig någon
-  delningslänk. Den som förvaltar plattformen får se att appen finns — inte se in i den.
+  förvaltar plattformen kommer in. Och det öppnar ingen dörr in i apparna: åtkomsten till en app
+  avgörs av ägarskap och delning, aldrig av en plattformsroll. Den som förvaltar plattformen får
+  se att appen finns — inte se in i den.
+
+  Listan bär numera hela app-id:t och två länkar per app: en till arbetsytan där appen byggs, och
+  en till appen som den körs. Det är en medveten uppmjukning av en tidigare regel, och den ska
+  läsas rätt. Länkarna är genvägar, inte nycklar. Den som förvaltar plattformen bygger också själv
+  och får appar delade med sig, och för dem är en lista utan vägar in bara en lista att skriva av
+  för hand. För alla andra appar leder länken till samma "finns inte" som en gissad adress hade
+  gett. Att känna ett app-id har aldrig varit det som ger åtkomst — det avgörs i varje förfrågan,
+  av åtkomstlistan.
 
   Bakgrund:
     Givet att Anna har byggt en app i byggverktyget
@@ -38,11 +46,11 @@ Egenskap: Kontrollrummet — insyn i plattformen utan att logga in på servern
     När någon som inte är inloggad öppnar kontrollrummet
     Så får anroparen svaret "inte inloggad"
 
-  Scenario: Kontrollrummet röjer inte appens hemliga adress
-    Givet att Erik är administratör för plattformen
+  Scenario: Kontrollrummet leder till varje app, både till arbetsytan och till appen som körs
+    Givet att Anna har publicerat sin app
+    Och att Erik är administratör för plattformen
     När Erik öppnar kontrollrummet
-    Så visas bara början av varje app-id
-    Och innehåller kontrollrummet varken något helt app-id eller någon delningslänk
+    Så står det för varje app en väg till arbetsytan och en till appen som den körs
 
   Scenario: Översikten räknar appar, publicerade och utkast
     Givet att Anna har publicerat sin app
@@ -65,7 +73,7 @@ Egenskap: Kontrollrummet — insyn i plattformen utan att logga in på servern
     Så är Eriks egen applista i byggverktyget tom
     Och ser han ändå både Annas och Bertils app, var och en med sin ägare
 
-  Scenario: Kontrollrummet leder inte in i någon app
+  Scenario: Länken i kontrollrummet är ingen nyckel
     Givet att Anna har publicerat sin app
     Och att Erik är administratör för plattformen
     Och att Erik har sett Annas app i kontrollrummet

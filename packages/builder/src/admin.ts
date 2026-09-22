@@ -8,9 +8,13 @@
  *
  * Tre saker svaren aldrig får bära, och som är skälet till att formen ser ut som den gör:
  *
- *  - Hela app-id:t ÄR appens hemliga adress. Kontrollrummet lämnar bara ut de första
- *    `ADMIN_APP_ID_PREFIX_LENGTH` tecknen, och aldrig en länk. Rollen `admin` ger enligt kontraktet
- *    ingen åtkomst till någon apps data; insyn i ATT appar finns är inte en väg IN i dem.
+ *  - APPLISTAN bär hela app-id:t och adressen till appen, så att den som förvaltar plattformen
+ *    kommer åt sina egna och sina delade appar utan att skriva av ett id för hand. Det ändrar
+ *    ingenting om åtkomst: rollen `admin` ger enligt kontraktet ingen väg in i någon apps data,
+ *    och länken till en app man inte äger eller fått delad leder till samma "finns inte" som en
+ *    gissad adress. Övriga vyer — stopplistan, registret, granskningskön — visar fortfarande bara
+ *    prefixet: de svarar på hur plattformen mår, inte på vilken app någon vill öppna. Och i
+ *    driftloggen står bara prefixet, alltid: en logg läses av fler och sparas längre än ett svar.
  *  - Ägarens adress går i svaret men aldrig i en loggrad. Därför loggar den här modulen nästan
  *    inget: inte användarlistan, inte en inbjudan, inte ens en misslyckad. UNDANTAGET är
  *    granskningsbeslutet. Ett beslut om att släppa ut en app måste gå att följa i efterhand —
@@ -57,6 +61,7 @@ import type {
  */
 const MAX_STOPS = 200;
 import type { BuilderUser, BuilderUserDirectory } from './anvandare.ts';
+import type { BuilderUrls } from './api.ts';
 import { controlErrorCode, storedAppId } from './control.ts';
 import type { BuilderAccessEntry, BuilderControl } from './control.ts';
 import type { Storage, StoredReview } from './lagring.ts';
@@ -67,6 +72,8 @@ import { ApiProblem, invalid, json, notFound } from './svar.ts';
 export interface AdminDependencies {
   readonly storage: Storage;
   readonly control: BuilderControl;
+  /** Appens adresser. Samma som ägaren ser i sin egen vy — kontrollrummet räknar inte ut egna. */
+  readonly urls: BuilderUrls;
   /** Vägen till identiteten. Saknas den är användarhanteringen inte inkopplad. */
   readonly users?: BuilderUserDirectory;
   /** Bara granskningsbesluten loggas härifrån — se filhuvudet om varför just de. */
@@ -312,8 +319,13 @@ export function createAdmin(deps: AdminDependencies): {
 
     async apps(): Promise<PlatformResponse> {
       const apps: AdminApp[] = (await withOwners(storage.listAllApps())).map(({ row, access, ownerEmail }) => ({
-        // Bara prefixet. Resten av id:t lämnar aldrig det här lagret.
+        appId: row.appId,
+        // Prefixet står kvar bredvid hela id:t: det är det man läser för att känna igen en app,
+        // och det som en loggrad går att matcha mot.
         appIdPrefix: row.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+        // Den publicerade adressen när den finns, annars ägarens förhandsvisning. En app som
+        // aldrig byggts har ingen adress som svarar, och raden hittar inte på en.
+        appUrl: row.published ? deps.urls.published(row.appId) : row.hasDraft ? deps.urls.preview(row.appId) : null,
         name: visatNamn(row),
         ownerEmail,
         updatedAt: row.updatedAt,

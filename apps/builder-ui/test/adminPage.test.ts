@@ -24,7 +24,9 @@ import {
   type AdminUser,
 } from '@vibesandbox/contracts';
 import {
+  ADMIN_APP_NOTHING_TO_OPEN,
   ADMIN_FORBIDDEN,
+  ADMIN_ID_NOTE,
   ADMIN_OWNER_MISSING,
   ADMIN_REVIEWS_EMPTY,
   ADMIN_REVIEWS_LEAD,
@@ -57,7 +59,11 @@ import {
 } from '../src/admin.ts';
 import { AdminView, ReviewCase } from '../src/AdminPage.tsx';
 
-/** Ett riktigt app-id. Bara de första tecknen får nå märkspråket. */
+/**
+ * Två riktiga app-id. Applistan får visa dem hela och länka till dem; de ÖVRIGA adminvyerna
+ * (stopplistan, registret, granskningskön) får bara visa prefixet, och testerna för dem håller
+ * fast vid det.
+ */
 const FULL_ID = '01jabcdefghjkmnpqrstvwxyz0';
 const OTHER_ID = '01kzyxwvutsrqponmlkjihgfe1';
 
@@ -72,7 +78,9 @@ const OVERVIEW: AdminOverview = {
 
 const APPS: readonly AdminApp[] = [
   {
+    appId: FULL_ID,
     appIdPrefix: FULL_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    appUrl: `https://${FULL_ID}.example.se/`,
     name: 'Bokning av mötesrum',
     ownerEmail: 'anna@example.se',
     updatedAt: '2026-09-19T10:00:00Z',
@@ -82,7 +90,10 @@ const APPS: readonly AdminApp[] = [
     tokens: { input: 12_000, output: 3_400 },
   },
   {
+    // Aldrig byggd: varken utkast eller publicerad version, och därmed ingen adress som svarar.
+    appId: OTHER_ID,
     appIdPrefix: OTHER_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    appUrl: null,
     name: 'Enkät om fikat',
     ownerEmail: null,
     updatedAt: '2026-09-17T08:30:00Z',
@@ -288,15 +299,34 @@ describe('kontrollrummet', () => {
     expect(html).toMatch(/<th scope="col"[^>]*>Ägare</);
   });
 
-  it('visar aldrig ett helt app-id och bygger aldrig en länk av det', () => {
+  it('ger varje app en väg till arbetsytan och, när det finns något byggt, till appen', () => {
+    const apps = part(render(loaded), 'apps');
+    // Arbetsytan är en rutt i gränssnittet — samma som från "Mina appar".
+    expect(apps).toContain(`href="#/app/${FULL_ID}"`);
+    expect(apps).toContain(`href="#/app/${OTHER_ID}"`);
+    // Appen ligger på en egen värd och öppnas i en ny flik; kontrollrummet ska stå kvar bakom.
+    expect(apps).toContain(`href="https://${FULL_ID}.example.se/"`);
+    expect(apps).toContain('target="_blank"');
+    expect(apps).toContain('rel="noreferrer"');
+  });
+
+  it('en app som aldrig byggts får ett besked i stället för en länk som inte leder någonstans', () => {
+    const apps = part(render(loaded), 'apps');
+    expect(apps).toContain(ADMIN_APP_NOTHING_TO_OPEN);
+    // Bara EN adress till en app som körs — den andra appen har ingen.
+    expect(apps.match(/href="https:/g) ?? []).toHaveLength(1);
+  });
+
+  it('prefixet står kvar bredvid det hela id:t — det är det man känner igen i en loggrad', () => {
+    const apps = part(render(loaded), 'apps');
+    expect(apps).toContain(FULL_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH));
+    expect(apps).toMatch(/Börjar med/);
+  });
+
+  it('säger vid listan vad länkarna är, och vad de inte är', () => {
     const html = render(loaded);
-    for (const id of [FULL_ID, OTHER_ID]) {
-      expect(html, 'hela id:t är appens hemliga adress').not.toContain(id);
-      // Inte ens ett tecken mer än förkortningen: då hade servern kunnat läcka resten bit för bit.
-      expect(html).not.toContain(id.slice(0, ADMIN_APP_ID_PREFIX_LENGTH + 1));
-    }
-    expect(html, 'ingen väg in i någon annans app').not.toContain('href');
-    expect(html).not.toContain('#/app/');
+    expect(html).toContain(ADMIN_ID_NOTE);
+    expect(ADMIN_ID_NOTE, 'texten ska inte lova en behörighet länken inte ger').toMatch(/genväg|inte nycklar/i);
   });
 
   it('säger vem som äger appen, och säger rakt ut när adressen inte är känd', () => {
@@ -340,12 +370,11 @@ describe('kontrollrummet', () => {
     expect(html, 'inget går att ändra förrän vyn vet hur det ser ut').not.toContain('<button');
   });
 
-  it('applistan är fortfarande ren läsning, medan adressdelen är det som ändrar', () => {
+  it('applistan ändrar ingenting — den har länkar, men ingen knapp och inget formulär', () => {
     const html = render(loaded);
     const apps = part(html, 'apps');
     expect(apps, 'ingen knapp rör någon annans app').not.toContain('<button');
     expect(apps).not.toContain('<form');
-    expect(apps).not.toContain('href');
 
     const users = part(html, 'users');
     expect(users).toContain('<form');
