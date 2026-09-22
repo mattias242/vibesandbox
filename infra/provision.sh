@@ -2206,6 +2206,10 @@ steg_backup() {
 
   local kmd=/usr/local/sbin/vibesandbox-backup
   local aterstall_kmd=/usr/local/sbin/vibesandbox-restore
+  # Grinden för NAS:ens hämtningsnyckel. Den binder nyckeln till säkerhetskopians läsgränssnitt
+  # så att den inte kan ge ett skal. Själva raden i authorized_keys läggs för hand — ett skript
+  # som skriver där kan låsa ute den enda vägen in, och det priset är inte värt automatiken.
+  local grind_kmd=/usr/local/sbin/vibesandbox-backup-grind
   local regelfil=/etc/sudoers.d/vibesandbox-backup
   local tjanstfil=/etc/systemd/system/vibesandbox-backup.service
   local timerfil=/etc/systemd/system/vibesandbox-backup.timer
@@ -2219,7 +2223,7 @@ steg_backup() {
       gor "stoppar och avaktiverar vibesandbox-backup.timer (INSTALL_BACKUP=0)"
       kor systemctl disable --now vibesandbox-backup.timer
     fi
-    for f in "$regelfil" "$timerfil" "$tjanstfil" "$kmd" "$aterstall_kmd"; do
+    for f in "$regelfil" "$timerfil" "$tjanstfil" "$kmd" "$aterstall_kmd" "$grind_kmd"; do
       if [[ -e "$f" ]]; then
         fanns=1
         gor "tar bort ${f} (INSTALL_BACKUP=0)"
@@ -2238,6 +2242,7 @@ steg_backup() {
   # Läget är 0755 root:root — kan någon annan skriva i filen blir hen root via sudo-regeln.
   skriv_fil "$kmd" 0755 <"${SKRIPTKATALOG}/backup.sh"
   skriv_fil "$aterstall_kmd" 0755 <"${SKRIPTKATALOG}/restore.sh"
+  skriv_fil "$grind_kmd" 0755 <"${SKRIPTKATALOG}/backup-grind.sh"
 
   # EGEN fil i sudoers.d: regeln för driftsättningen rörs inte. En trasig fil i sudoers.d
   # stänger av ALL sudo ⇒ kandidaten prövas med visudo FÖRE bytet, precis som där.

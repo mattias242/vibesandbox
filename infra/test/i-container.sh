@@ -79,7 +79,7 @@ forbered_vard() {
   mkdir -p "$INFRA" "$STUBBAR" "${STUBBKATALOG}/tillstand"/{maskad,aktiverad,aktiv,paket}
   # backup.sh och restore.sh följer med: provision.sh steg `backup` installerar dem HÄRIFRÅN, så
   # utan dem dör varje scenario som kör hela provisioneringen på "hittar inte backup.sh".
-  cp /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/backup.sh /infra/restore.sh \
+  cp /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/backup.sh /infra/restore.sh /infra/backup-grind.sh \
     /infra/vibesandbox-angra-uppstart.service \
     /infra/vibesandbox-driftsatt /infra/README.md /infra/provision.env.example "$INFRA/"
   chmod +x "$INFRA"/*.sh
@@ -148,8 +148,9 @@ scenario_statisk() {
   pastar "bash -n backup.sh" bash -n /infra/backup.sh
   pastar "bash -n restore.sh" bash -n /infra/restore.sh
   pastar "bash -n hamta-backup.sh" bash -n /infra/hamta-backup.sh
+  pastar "bash -n backup-grind.sh" bash -n /infra/backup-grind.sh
   pastar "pty-kor.py går att kompilera" python3 -c 'import ast,sys; ast.parse(open("/infra/test/pty-kor.py").read())'
-  if LC_ALL=C.UTF-8 shellcheck -x /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/backup.sh /infra/restore.sh /infra/hamta-backup.sh /infra/test/*.sh /infra/test/scenarier/*.sh /infra/test/stubbar/stubb; then
+  if LC_ALL=C.UTF-8 shellcheck -x /infra/provision.sh /infra/verify.sh /infra/angra.sh /infra/backup.sh /infra/restore.sh /infra/hamta-backup.sh /infra/backup-grind.sh /infra/test/*.sh /infra/test/scenarier/*.sh /infra/test/stubbar/stubb; then
     godkand "shellcheck utan anmärkningar ($(shellcheck --version | sed -n 's/^version: //p'))"
   else
     underkand "shellcheck har anmärkningar"

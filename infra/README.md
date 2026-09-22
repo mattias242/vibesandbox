@@ -399,6 +399,7 @@ Steget `backup` lägger säkerhetskopieringen på värden — samma krav som hel
 | `/usr/local/sbin/vibesandbox-backup` | `backup.sh`, root 0755 |
 | `/usr/local/sbin/vibesandbox-restore` | `restore.sh`, root 0755 |
 | `/etc/sudoers.d/vibesandbox-backup` | `ops ALL=(root) NOPASSWD: /usr/local/sbin/vibesandbox-backup` (root 0440) |
+| `/usr/local/sbin/vibesandbox-backup-grind` | grinden för NAS:ens hämtningsnyckel, root 0755 |
 | `/etc/vibesandbox/backup-pub.asc` | den **publika** krypteringsnyckeln (root 0644 — den är publik) |
 | `vibesandbox-backup.timer` | `OnCalendar=*-*-* <BACKUP_TID>:00`, `RandomizedDelaySec=30m`, `Persistent=true` |
 | `vibesandbox-backup.service` | `ExecStart=… --behall <BACKUP_BEHALL> --publik-nyckel …` |
@@ -450,6 +451,20 @@ plus det krypterade arkivet för NAS:en. `--behall` styr båda.
 
 Innan hämtningen kan köras skarpt: NAS:ens publika SSH-nyckel måste in i `ops` `authorized_keys`
 på värden, och `gpg` måste finnas på DSM för `--prov` (`opkg install gnupg` via Entware).
+
+**Hämtningsnyckeln får inget skal.** Utan grinden ger nyckeln full `ops`-shell på driftvärden.
+Det är inget nytt förtroende — det är en av ägarens egna maskiner, och tailnet-ACL:en släpper
+redan in ägarens enheter — men hela plattformen är byggd på att varje väg är så smal som den kan
+vara. Raden i `ops` `authorized_keys` binder därför nyckeln till grinden:
+
+```
+restrict,command="/usr/local/sbin/vibesandbox-backup-grind" ssh-ed25519 AAAA… nas-hämtning
+```
+
+Grinden prövar `SSH_ORIGINAL_COMMAND` mot en **allowlist** — `--lista`, `--manifest <namn>`,
+`--skicka <namn>`, och namnet måste se ut som en säkerhetskopias katalognamn. Allt annat nekas och
+loggas till syslog. Raden läggs **för hand**: ett skript som skriver i `authorized_keys` kan låsa
+ute den enda vägen in, och det priset är inte värt automatiken.
 
 **Synology når inte tailnetet direkt.** Tailscale kör där i userspace-networking-läge: NAS:en har
 en tailnet-adress men ingen rutt till `100.64/10` i kärnan, så en vanlig SSH-anslutning tajmar ut.
