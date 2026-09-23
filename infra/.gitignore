@@ -1,4 +1,7 @@
 # Lokal konfiguration med riktiga värden (nycklar, lösenordshash, värdnamn) — får ALDRIG checkas in.
 # Rotens .gitignore täcker bara .env och .env.*, inte provision.env.
 provision.env
+# Den publika backupnyckeln genereras per värd (se provision.env.example) och pekas ut av
+# provision.env. En incheckad nyckel ger klonaren en kryptering hen inte kan läsa tillbaka.
+backup-pub.asc
 *.log

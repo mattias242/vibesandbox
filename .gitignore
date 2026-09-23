@@ -27,6 +27,11 @@ test-results/
 .idea/
 .vscode/
 
-# Agenternas arbetskataloger och uppdrag
-.claude/worktrees/
-.claude/uppdrag/
+# Marknadsföringsmaterial som genereras lokalt. Renderade filer hör inte i repot, och ett
+# utkast kan råka bära namn som inte får publiceras.
+brag-output/
+brag-output-*/
+
+# Agenternas verktyg, arbetskataloger och uppdrag. Uppsättningen är lokal och generisk —
+# den hör till datorn, inte till projektet — och hooks/ kör kod hos var och en som klonar.
+.claude/
