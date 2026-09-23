@@ -141,3 +141,22 @@ export const LIST_PENDING_REVIEWS = `
   ORDER BY r.requested_at, r.rowid
   LIMIT :limit
 `;
+
+/**
+ * Bygg som gick fel, senast först. `stop_reason IS NULL` skiljer dem från stoppade önskemål:
+ * ett stopp är ett BESLUT och har sin egen lista, ett byggfel är något som inte gick. Att blanda
+ * ihop dem vore att läsa en röd linje som en driftstörning.
+ *
+ * Avvecklade appar utelämnas av samma skäl som i granskningskön: kontrollrummet ska inte visa en
+ * app som inte finns. Önskemålets text finns inte här och ska inte finnas.
+ */
+export const LIST_FAILED_JOBS_SINCE = `
+  SELECT j.job_id AS job_id, j.app_id AS app_id,
+         coalesce(j.finished_at, j.created_at) AS failed_at,
+         a.name AS name, a.name_is_default AS name_is_default, a.owner_user_id AS owner_user_id
+  FROM jobs j JOIN apps a ON a.app_id = j.app_id
+  WHERE j.created_at > :since AND j.status = 'failed' AND j.stop_reason IS NULL
+    AND a.decommissioned_at IS NULL
+  ORDER BY failed_at DESC, j.rowid DESC
+  LIMIT :limit
+`;

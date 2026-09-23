@@ -1427,3 +1427,85 @@ body:has(.page-admin) .topbar-inner {
   text-decoration: line-through;
   text-decoration-thickness: 1px;
 }
+
+/* ── Bygg som gick fel ─────────────────────────────────────────────────────────
+   En lista, inte en tabell: raderna är olika höga — ett bygge kan ha ett fel
+   eller tio — och en tabell med en cell som växer läses sämre än ett stycke. */
+
+.admin-failed {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-failed-job {
+  padding: 0.9rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.admin-failed-job:first-child {
+  border-top: 0;
+}
+
+/* Vilken app, vems, och när. Radbryts på smal skärm i stället för att klämmas ihop. */
+.admin-failed-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.15rem 0.75rem;
+}
+
+.admin-failed-owner,
+.admin-failed-when {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.admin-failed-when {
+  margin-left: auto;
+}
+
+.admin-failed-count {
+  margin: 0.5rem 0 0.35rem;
+  font-weight: 600;
+}
+
+.admin-failed-none {
+  margin: 0.5rem 0 0;
+}
+
+.admin-failed-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Ett fel: vem som hittade det, vad det var, och var. Meddelandet är maskinens
+   text och står i monospace — den bryts på tecken, inte på ord. */
+.admin-failed-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.4rem 0 0.4rem 0.75rem;
+  border-left: 2px solid var(--line);
+}
+
+.admin-failed-item + .admin-failed-item {
+  margin-top: 0.35rem;
+}
+
+.admin-failed-source {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.admin-failed-message {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.admin-failed-where {
+  color: var(--muted);
+  font-size: 0.9rem;
+}

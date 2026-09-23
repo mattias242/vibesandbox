@@ -33,6 +33,7 @@ import {
   BUILDER_API_PREFIX,
   CSRF_HEADER,
   type AdminApp,
+  type AdminFailedJob,
   type AdminOverview,
   type AgentEvent,
   type AppServiceName,
@@ -197,6 +198,38 @@ const adminUsers: MockUser[] = [
  *
  * Ingen rad bär önskemålets text — den finns inte i kontraktet och ska inte finnas här heller.
  */
+/**
+ * Bygg som gick fel. Ett med kontrollens fel — det support läser — och ett som dog innan någon
+ * kontroll hann köra. Båda lägena behövs för att se att vyn skiljer dem åt. Tomt läge är den
+ * goda nyheten och värt att se: starta om med ADMIN_INGA_BYGGFEL=1.
+ */
+const adminFailedJobs: AdminFailedJob[] = [
+  {
+    appIdPrefix: ADMIN_DEMO_APPS[0]?.appIdPrefix ?? '01jabcde',
+    name: 'Bokning av mötesrum',
+    ownerEmail: 'anna@example.se',
+    failedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    problems: 2,
+    diagnostics: [
+      { source: 'typecheck', file: 'src/App.tsx', line: 12, message: "Property 'rum' does not exist on type 'Booking'." },
+      {
+        source: 'policy',
+        rule: 'external-url',
+        file: 'src/App.tsx',
+        message: 'Appen får inte hämta något från en adress utanför plattformen.',
+      },
+    ],
+  },
+  {
+    appIdPrefix: ADMIN_DEMO_APPS[1]?.appIdPrefix ?? '01kzyxwv',
+    name: 'Enkät om fikat',
+    ownerEmail: null,
+    failedAt: new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(),
+    problems: 0,
+    diagnostics: [],
+  },
+];
+
 const adminStops: { appIdPrefix: string; category: RedlineCategory; at: string }[] = [
   { appIdPrefix: 'a01f3c7d', category: 'biometri', at: '2026-09-20T14:05:00Z' },
   { appIdPrefix: 'c93be220', category: 'biometri', at: '2026-09-19T09:40:00Z' },
@@ -463,6 +496,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       // Tomt läge är den goda nyheten och värt att se: starta om med ADMIN_INGA_STOPP=1.
       if (path === '/admin/stopp') {
         return send(res, 200, { stops: process.env['ADMIN_INGA_STOPP'] === '1' ? [] : adminStops });
+      }
+      if (path === '/admin/byggfel') {
+        return send(res, 200, { jobs: process.env['ADMIN_INGA_BYGGFEL'] === '1' ? [] : adminFailedJobs });
       }
       if (path === '/admin/register') return send(res, 200, { entries: adminRegister() });
       if (path === '/admin/granskning') return send(res, 200, { reviews: adminReviews() });

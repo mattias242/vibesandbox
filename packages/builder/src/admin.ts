@@ -32,6 +32,7 @@
  */
 import {
   ADMIN_APP_ID_PREFIX_LENGTH,
+  ADMIN_FAILED_JOBS_LIMIT,
   ADMIN_TOKEN_WINDOW_DAYS,
   asClassification,
   CLASSIFICATION_SOURCES,
@@ -43,6 +44,7 @@ import {
 } from '@vibesandbox/contracts';
 import type {
   AdminApp,
+  AdminFailedJob,
   AdminOverview,
   AdminRegisterEntry,
   AdminStop,
@@ -118,6 +120,7 @@ export function createAdmin(deps: AdminDependencies): {
   overview(): PlatformResponse;
   apps(): Promise<PlatformResponse>;
   stops(): PlatformResponse;
+  failedJobs(): Promise<PlatformResponse>;
   register(): Promise<PlatformResponse>;
   reviews(): Promise<PlatformResponse>;
   review(reviewId: string): Promise<PlatformResponse>;
@@ -334,6 +337,28 @@ export function createAdmin(deps: AdminDependencies): {
         });
       }
       return json(200, { stops });
+    },
+
+    /**
+     * Bygg som gick fel, med felen kontrollen gav. Kontrollrummets enda fönster in i hur en app
+     * BYGGDES — och skälet är support: "det gick inte att bygga" är det vanligaste ärendet, och
+     * det går att svara på utan att någon ser in i appen.
+     *
+     * Gränsen ligger vid vem som skrivit texten. `Diagnostic` kommer från kompilatorn och
+     * policyn; agentens `status`- och `done`-meddelanden är skrivna ur önskemålet och följer
+     * aldrig med. Önskemålets text finns inte här, av samma skäl som den inte finns i stopplistan.
+     */
+    async failedJobs(): Promise<PlatformResponse> {
+      const rows = storage.listFailedJobsSince(windowStart(), ADMIN_FAILED_JOBS_LIMIT);
+      const jobs: AdminFailedJob[] = (await withOwners(rows)).map(({ row, ownerEmail }) => ({
+        appIdPrefix: row.appId.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+        name: visatNamn(row),
+        ownerEmail,
+        failedAt: row.failedAt,
+        problems: row.problems,
+        diagnostics: row.diagnostics,
+      }));
+      return json(200, { jobs });
     },
 
     async apps(): Promise<PlatformResponse> {

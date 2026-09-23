@@ -81,3 +81,32 @@ Egenskap: Kontrollrummet — insyn i plattformen utan att logga in på servern
     Så får han samma svar som för en app som inte finns
     Och kommer Erik inte in i Annas app i byggverktyget heller
     Och står Annas app kvar i Eriks kontrollrum
+
+  # Bygg som gick fel. Support är skälet: "det gick inte att bygga" är det vanligaste ärendet,
+  # och det går att svara på utan att någon ser in i appen. Kontrollen är maskinens utdata om
+  # koden — inte appens data, och inte agentens egna ord, som är skrivna ur önskemålet och kan
+  # bära vad som helst någon råkat skriva.
+  Scenario: Administratören ser vilka bygg som gick fel, och vad kontrollen sa
+    Givet att Anna bad om något som inte gick att bygga
+    Och att Erik är administratör för plattformen
+    När Erik öppnar kontrollrummet
+    Så ser han Annas misslyckade bygge med felet kontrollen gav
+
+  Scenario: Listan bär varken önskemålet eller agentens ord
+    Givet att Anna bad om något som inte gick att bygga
+    Och att Erik är administratör för plattformen
+    När Erik öppnar kontrollrummet
+    Så står Annas önskemål ingenstans i kontrollrummet
+    Och står agentens egna ord ingenstans i kontrollrummet
+
+  Scenario: Ett bygge som gick bra står inte bland felen
+    Givet att Erik är administratör för plattformen
+    När Erik öppnar kontrollrummet
+    Så finns det inga misslyckade bygg i listan
+
+  Scenario: Ett stoppat önskemål är inget misslyckat bygge
+    Givet att Anna bad om något som en röd linje stoppade
+    Och att Erik är administratör för plattformen
+    När Erik öppnar kontrollrummet
+    Så finns det inga misslyckade bygg i listan
+    Och ser han stoppet i listan över stoppade önskemål

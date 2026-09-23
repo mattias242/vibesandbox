@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { DataTable, Given, Then, When } from '@cucumber/cucumber';
 import { ADMIN_APP_ID_PREFIX_LENGTH, BUILDER_API_PREFIX, isAppId } from '@vibesandbox/contracts';
-import type { AdminApp, AdminOverview, ApiErrorBody } from '@vibesandbox/contracts';
+import type { AdminApp, AdminFailedJob, AdminOverview, AdminStop, ApiErrorBody } from '@vibesandbox/contracts';
 import { FORSTA_VERSIONEN, appMedRubrik } from './stod/byggkedja.ts';
 import { jsonKropp } from './stod/http.ts';
 import { DOMAN, dokumentlista } from './stod/varld.ts';
@@ -23,6 +23,7 @@ import type { AnropTillApp, Varld } from './stod/varld.ts';
 /** Kontrollrummets två rutter, i den ordning När-steget hämtar dem. */
 const OVERSIKT = `${BUILDER_API_PREFIX}/admin/oversikt`;
 const APPAR = `${BUILDER_API_PREFIX}/admin/appar`;
+const BYGGFEL = `${BUILDER_API_PREFIX}/admin/byggfel`;
 
 /** Annas app, så att den kan anropas på sin egen adress som vilken app som helst. */
 const ANNAS_APP = 'Annas app';
@@ -97,6 +98,7 @@ When(/^(Anna|Bertil|Cecilia|Erik) öppnar kontrollrummet$/, async function (this
   this.svar = [
     await this.anropaByggverktyget({ person, sokvag: OVERSIKT }),
     await this.anropaByggverktyget({ person, sokvag: APPAR }),
+    await this.anropaByggverktyget({ person, sokvag: BYGGFEL }),
   ];
   this.appanrop = [];
   this.svarFranByggverktyget = true;
@@ -222,4 +224,82 @@ Then(/^kommer (Erik) inte in i (Anna)s app i byggverktyget heller$/, async funct
 
 Then(/^står (Anna)s app kvar i (Erik)s kontrollrum$/, async function (this: Varld, agare: string, admin: string) {
   await raden(this, await hamtaAppar(this, admin), agare);
+});
+
+// ── Bygg som gick fel ────────────────────────────────────────────────────────────
+
+/** Det Anna bad om när bygget inte gick. Står här så att Så-stegen kan leta efter texten. */
+const OMOJLIGT_ONSKEMAL = 'En sida som räknar ut lönen för varje anställd';
+
+function byggfelen(varld: Varld): readonly AdminFailedJob[] {
+  const svar = varld.svar[2];
+  assert.ok(svar !== undefined, 'Kontrollrummets byggfel har inte hämtats i scenariot.');
+  assert.equal(svar.status, 200, `Byggfelen svarade ${svar.status}: ${svar.kropp.slice(0, 200)}`);
+  const { jobs } = jsonKropp(svar) as { jobs: AdminFailedJob[] };
+  assert.ok(Array.isArray(jobs), 'Svaret innehåller ingen lista över byggfel.');
+  return jobs;
+}
+
+Given(/^att (Anna) bad om något som inte gick att bygga$/, async function (this: Varld, namn: string) {
+  if (!this.personer.has(namn)) this.loggaInSomByggare(namn);
+  // `BYGGFEL` i koden gör att den fejkade byggkedjan underkänner den, med ett riktigt diagnosfel.
+  this.sattModellsvar([appMedRubrik('BYGGFEL')]);
+  const jobb = await this.bestall(namn, OMOJLIGT_ONSKEMAL);
+  assert.equal(jobb.status, 'failed', 'Förberedelsen prövar ingenting: bygget gick igenom.');
+});
+
+Given(/^att (Anna) bad om något som en röd linje stoppade$/, async function (this: Varld, namn: string) {
+  if (!this.personer.has(namn)) this.loggaInSomByggare(namn);
+  const jobb = await this.bestall(namn, 'Poängsätt alla elever efter hur de beter sig');
+  assert.equal(jobb.status, 'failed', 'Förberedelsen prövar ingenting: önskemålet stoppades inte.');
+});
+
+Then(/^ser han (Anna)s misslyckade bygge med felet kontrollen gav$/, async function (this: Varld, agare: string) {
+  const prefix = forkortat(await this.byggapp(agare));
+  const rad = byggfelen(this).find((jobb) => jobb.appIdPrefix === prefix);
+  assert.ok(rad !== undefined, `${agare}s misslyckade bygge syns inte i kontrollrummet.`);
+  assert.equal(rad.ownerEmail, this.epost(agare), 'Raden pekar ut fel ägare.');
+  assert.ok(rad.problems > 0, 'Raden säger att noll saker gick fel.');
+  // Det support faktiskt behöver: vad kontrollen sa, med fil och rad.
+  const fel = rad.diagnostics[0];
+  assert.ok(fel !== undefined, 'Raden bär inga fel från kontrollen.');
+  assert.equal(fel.source, 'typecheck');
+  assert.equal(fel.file, 'src/App.tsx');
+  assert.ok(fel.message.includes('BYGGFEL'), `Felet säger inte vad som var fel: ${fel.message}`);
+});
+
+Then(/^står (Anna)s önskemål ingenstans i kontrollrummet$/, function (this: Varld, _agare: string) {
+  for (const svar of this.svar) {
+    assert.ok(!svar.kropp.includes(OMOJLIGT_ONSKEMAL), 'Önskemålets text finns i kontrollrummet.');
+    // Också de enskilda orden: en sammanfattning kunde bära dem utan att vara ordagrann.
+    assert.ok(!svar.kropp.includes('anställd'), 'Ord ur önskemålet finns i kontrollrummet.');
+  }
+});
+
+/**
+ * Jämförelsen görs mot det agenten FAKTISKT skrev i det här jobbet, inte mot en sträng testet
+ * hittat på. Ett påhittat ord kunde aldrig läcka, och steget skulle bli grönt utan att pröva
+ * något; jobbets egna `status`- och `done`-meddelanden kan läcka, och är det som ska stoppas.
+ */
+Then(/^står agentens egna ord ingenstans i kontrollrummet$/, function (this: Varld) {
+  const jobb = this.jobb;
+  assert.ok(jobb !== undefined, 'Inget jobb i scenariot att jämföra med.');
+  const orden = jobb.events
+    .flatMap((h) => (h.type === 'status' || h.type === 'done' ? [h.message] : []))
+    .filter((text) => text.length > 0);
+  assert.ok(orden.length > 0, 'Agenten skrev inga egna ord — steget prövar ingenting.');
+  for (const svar of this.svar) {
+    for (const text of orden) {
+      assert.ok(!svar.kropp.includes(text), `Agentens ord "${text.slice(0, 40)}" finns i kontrollrummet.`);
+    }
+  }
+});
+
+Then(/^finns det inga misslyckade bygg i listan$/, function (this: Varld) {
+  assert.deepEqual(byggfelen(this), [], 'Kontrollrummet visar ett misslyckat bygge som inte borde stå där.');
+});
+
+Then(/^ser han stoppet i listan över stoppade önskemål$/, async function (this: Varld) {
+  const { stops } = await this.byggApi<{ stops: AdminStop[] }>('Erik', 'GET', '/admin/stopp', 200);
+  assert.ok(stops.length > 0, 'Stoppet syns inte i listan över stoppade önskemål.');
 });

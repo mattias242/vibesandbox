@@ -17,6 +17,7 @@ import {
   CLASSIFICATION_SOURCES,
   REDLINE_CATEGORIES,
   type AdminApp,
+  type AdminFailedJob,
   type AdminOverview,
   type AdminRegisterEntry,
   type AdminReview,
@@ -46,7 +47,13 @@ import {
   ADMIN_REGISTER_NEVER_CLASSIFIED_NOTE,
   ADMIN_REGISTER_PUBLISHED,
   ADMIN_REGISTER_UNPUBLISHED,
+  ADMIN_FAILED_EMPTY,
+  ADMIN_FAILED_HEADING,
+  ADMIN_FAILED_NO_CHECK,
+  ADMIN_FAILED_PRIVACY_NOTE,
   ADMIN_SELF_NOTE,
+  DIAGNOSTIC_SOURCE_TEXTS,
+  failedProblemsText,
   ADMIN_STOPS_EMPTY,
   ADMIN_STOPS_PATTERN_NOTE,
   ADMIN_STOPS_PRIVACY_NOTE,
@@ -233,40 +240,70 @@ function render(props: Parameters<typeof AdminView>[0]): string {
   return renderToStaticMarkup(createElement(AdminView, props));
 }
 
+/**
+ * Bygg som gick fel: ett med kontrollens fel (det support faktiskt läser), och ett som dog innan
+ * någon kontroll hann köra — raden finns, men har inget fel att visa, och det ska synas som
+ * något annat än "inga fel".
+ */
+const FAILED: readonly AdminFailedJob[] = [
+  {
+    appIdPrefix: FULL_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: 'Bokning av mötesrum',
+    ownerEmail: 'anna@example.se',
+    failedAt: '2026-09-20T14:05:00Z',
+    problems: 2,
+    diagnostics: [
+      { source: 'typecheck', file: 'src/App.tsx', line: 12, message: "Property 'rum' does not exist on type 'Booking'." },
+      { source: 'policy', rule: 'external-url', file: 'src/App.tsx', message: 'Appen får inte hämta något från en adress utanför plattformen.' },
+    ],
+  },
+  {
+    appIdPrefix: OTHER_ID.slice(0, ADMIN_APP_ID_PREFIX_LENGTH),
+    name: 'Enkät om fikat',
+    ownerEmail: null,
+    failedAt: '2026-09-19T09:40:00Z',
+    problems: 0,
+    diagnostics: [],
+  },
+];
+
 const loaded = {
   overview: OVERVIEW,
   apps: APPS,
   users: USERS,
   stops: STOPS,
+  failedJobs: FAILED,
   register: REGISTER,
   reviews: REVIEWS,
   error: null,
   ...CALLBACKS,
 };
 
-/** Vyn innan den vet något: alla sex hämtningarna är obesvarade. */
+/** Vyn innan den vet något: alla sju hämtningarna är obesvarade. */
 const pending = {
   ...CALLBACKS,
   overview: null,
   apps: null,
   users: null,
   stops: null,
+  failedJobs: null,
   register: null,
   reviews: null,
   error: null,
 };
 
-/** Märkspråket för en av vyns sex delar, så att en del går att pröva utan de andra. */
-function part(html: string, name: 'figures' | 'apps' | 'users' | 'stops' | 'register' | 'granskning'): string {
+/** Märkspråket för en av vyns sju delar, så att en del går att pröva utan de andra. */
+function part(html: string, name: 'figures' | 'apps' | 'users' | 'stops' | 'failed' | 'register' | 'granskning'): string {
   const starts = {
     figures: 'admin-figures-heading',
     apps: 'admin-apps-heading',
     users: 'admin-users-heading',
     stops: 'admin-stops-heading',
+    failed: 'admin-failed-heading',
     register: 'admin-register-heading',
     granskning: 'admin-reviews-heading',
   };
-  const order: Array<keyof typeof starts> = ['figures', 'apps', 'users', 'stops', 'register', 'granskning'];
+  const order: Array<keyof typeof starts> = ['figures', 'apps', 'users', 'stops', 'failed', 'register', 'granskning'];
   const from = html.indexOf(starts[name]);
   expect(from, `delen ${name} ska finnas`).toBeGreaterThan(0);
   const next = order[order.indexOf(name) + 1];
@@ -964,5 +1001,70 @@ describe('avvecklade appar i AI-registret', () => {
     expect(html).not.toContain('<button');
     expect(html).not.toContain('<form');
     expect(html).not.toContain('href');
+  });
+});
+
+/**
+ * Bygg som gick fel — kontrollrummets svar på det vanligaste supportärendet.
+ *
+ * Tre saker låses. Felet syns med fil och rad, för det är det som gör att någon kan svara utan
+ * att öppna appen. Ett jobb som dog innan kontrollen hann köra säger det, i stället för att se ut
+ * som ett bygge utan fel. Och vyn ritar bara de fält kontraktet har — den lägger inte till något
+ * om VEM som bad om vad.
+ */
+describe('bygg som gick fel', () => {
+  it('felet syns med källa, meddelande, fil och rad', () => {
+    const del = part(render(loaded), 'failed');
+
+    expect(del).toContain(ADMIN_FAILED_HEADING);
+    expect(del).toContain('Bokning av mötesrum');
+    expect(del).toContain('anna@example.se');
+    expect(del).toContain("Property &#x27;rum&#x27; does not exist on type &#x27;Booking&#x27;.");
+    expect(del).toContain('src/App.tsx, rad 12');
+    expect(del).toContain(DIAGNOSTIC_SOURCE_TEXTS.typecheck);
+    expect(del).toContain(DIAGNOSTIC_SOURCE_TEXTS.policy);
+    expect(del).toContain(failedProblemsText(2));
+  });
+
+  it('en policyregel utan rad visar bara filen, inte "rad undefined"', () => {
+    const del = part(render(loaded), 'failed');
+
+    expect(del).toContain('Appen får inte hämta något från en adress utanför plattformen.');
+    expect(del).not.toContain('rad undefined');
+    expect(del).not.toContain('undefined');
+  });
+
+  it('ett bygge som dog före kontrollen säger det, i stället för noll fel', () => {
+    const del = part(render(loaded), 'failed');
+
+    expect(del).toContain(ADMIN_FAILED_NO_CHECK);
+    // "0 saker att rätta" vore osant: ingen har räknat.
+    expect(del).not.toContain(failedProblemsText(0));
+  });
+
+  it('en app utan känd ägare säger det i stället för att lämna tomt', () => {
+    const del = part(render(loaded), 'failed');
+
+    expect(del).toContain('Enkät om fikat');
+    expect(del).toContain('Adressen är inte känd');
+  });
+
+  it('inga fel alls ger ett lugnt besked, inte en tom tabell', () => {
+    const del = part(render({ ...loaded, failedJobs: [] }), 'failed');
+
+    expect(del).toContain(ADMIN_FAILED_EMPTY);
+    expect(del).not.toContain('admin-failed-job');
+  });
+
+  it('sidan säger att önskemålet och byggverktygets egna ord inte står här', () => {
+    const del = part(render(loaded), 'failed');
+
+    expect(del).toContain(ADMIN_FAILED_PRIVACY_NOTE);
+  });
+
+  it('väntar man på svaret ritas ingen halv sida', () => {
+    const html = render(pending);
+
+    expect(html).not.toContain('admin-failed-heading');
   });
 });

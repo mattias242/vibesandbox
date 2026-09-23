@@ -1249,6 +1249,41 @@ export interface AdminStop {
   readonly at: string;
 }
 
+// ── Kontrollrummet: bygg som gick fel ───────────────────────────────────────────
+//
+//   GET /_api/builder/admin/byggfel → { jobs: AdminFailedJob[] }
+//
+// Skälet är support. "Det gick inte att bygga" är det vanligaste ärendet, och det går att
+// svara på utan att någon ser in i appen: kontrollen är maskinens utdata OM koden, inte
+// appens data. Listan är därmed ett medvetet — och smalt — undantag från regeln att
+// kontrollrummet svarar på att appar finns, aldrig på vad som står i dem.
+//
+// Vad som INTE får följa med, och varför: agentens `status`- och `done`-meddelanden är
+// skrivna ur önskemålet och kan bära vad som helst någon råkat skriva om en människa.
+// Önskemålets text finns inte i svaret av samma skäl som den inte finns i stopplistan.
+// Kvar blir `Diagnostic`, som kompilatorn och policyn skrivit.
+
+/** Ett bygge som gick fel, som kontrollrummet visar det. */
+export interface AdminFailedJob {
+  /** De första `ADMIN_APP_ID_PREFIX_LENGTH` tecknen. Hela id:t är appens hemliga adress. */
+  readonly appIdPrefix: string;
+  readonly name: string;
+  /** Ägarens adress — samma regel som `AdminApp.ownerEmail`: visas här, loggas aldrig. */
+  readonly ownerEmail: string | null;
+  readonly failedAt: string;
+  /** Antalet fel den sista kontrollen gav. `0` när jobbet dog utan att någon kontroll hann köra. */
+  readonly problems: number;
+  /**
+   * Felen från den sista underkända kontrollen — högst `MAX_EVENT_DIAGNOSTICS`, redan kapade
+   * när de sparades. Tom lista betyder att jobbet gick fel utan en kontroll att visa, inte att
+   * felen dolts.
+   */
+  readonly diagnostics: readonly Diagnostic[];
+}
+
+/** Så många misslyckade bygg listan hämtar. Den ska gå att beta av, inte vara ett arkiv. */
+export const ADMIN_FAILED_JOBS_LIMIT = 20;
+
 // ── Kontrollrummet: adresser och roller ─────────────────────────────────────────
 //
 //   GET  /_api/builder/admin/anvandare              → { users: AdminUser[] }

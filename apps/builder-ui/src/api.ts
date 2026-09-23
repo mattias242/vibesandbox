@@ -15,6 +15,7 @@ import {
   asClassification,
   isAppId,
   type AdminApp,
+  type AdminFailedJob,
   type AdminOverview,
   type AdminRegisterEntry,
   type AdminReview,
@@ -108,6 +109,11 @@ export interface ApiClient {
   adminApps(): Promise<readonly AdminApp[]>;
   /** Kontrollrummet: önskemål som stoppats av en röd linje. Aldrig med texten som stoppades. */
   adminStops(): Promise<readonly AdminStop[]>;
+  /**
+   * Kontrollrummet: bygg som gick fel, med kontrollens egna fel. Aldrig önskemålet, och aldrig
+   * det byggverktyget skrev om det — båda är formulerade ur någons text.
+   */
+  adminFailedJobs(): Promise<readonly AdminFailedJob[]>;
   /** Kontrollrummet: AI-registret — varje app med sin känslighetsnivå och hur nivån sattes. */
   adminRegister(): Promise<readonly AdminRegisterEntry[]>;
   /** Kontrollrummet: granskningskön, äldst först. Aldrig med koden — den hämtas ett ärende i taget. */
@@ -242,6 +248,56 @@ function checkAdminStops(value: unknown): readonly AdminStop[] {
       throw new ApiError(500, GENERIC_ERROR_MESSAGE);
     }
     return { appIdPrefix, category: category as RedlineCategory, at };
+  });
+}
+
+/**
+ * Bygg som gick fel. Fälten plockas ett och ett, som i de övriga adminvyerna — och här är det
+ * viktigare än någon annanstans: servern får inte kunna råka skicka med agentens ord eller
+ * önskemålets text och få dem ritade. Det som inte står i listan nedan når aldrig vyn.
+ *
+ * Diagnosens `source` prövas mot kontraktets tre värden. Ett okänt värde fäller inte raden —
+ * felet är fortfarande sant och användbart — men källan ritas då som okänd hellre än med ett ord
+ * ingen kan förklara. `rule`, `file` och `line` är frivilliga hos kontraktet och kan alltså saknas.
+ */
+function checkAdminFailedJobs(value: unknown): readonly AdminFailedJob[] {
+  if (!Array.isArray(value)) throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+  return value.map((item: unknown) => {
+    const { appIdPrefix, name, ownerEmail, failedAt, problems, diagnostics } = fields(item);
+    if (
+      typeof appIdPrefix !== 'string' ||
+      appIdPrefix.length === 0 ||
+      appIdPrefix.length > ADMIN_APP_ID_PREFIX_LENGTH ||
+      !ID_PATTERN.test(appIdPrefix) ||
+      typeof name !== 'string' ||
+      (ownerEmail !== null && typeof ownerEmail !== 'string') ||
+      typeof failedAt !== 'string' ||
+      failedAt === '' ||
+      typeof problems !== 'number' ||
+      !Number.isInteger(problems) ||
+      problems < 0 ||
+      !Array.isArray(diagnostics)
+    ) {
+      throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+    }
+    return {
+      appIdPrefix,
+      name,
+      ownerEmail,
+      failedAt,
+      problems,
+      diagnostics: diagnostics.map((rad: unknown) => {
+        const { source, rule, file, line, message } = fields(rad);
+        if (typeof message !== 'string' || message === '') throw new ApiError(500, GENERIC_ERROR_MESSAGE);
+        return {
+          source: source === 'policy' || source === 'typecheck' || source === 'build' ? source : 'build',
+          ...(typeof rule === 'string' ? { rule } : {}),
+          ...(typeof file === 'string' ? { file } : {}),
+          ...(typeof line === 'number' && Number.isInteger(line) ? { line } : {}),
+          message,
+        };
+      }),
+    };
   });
 }
 
@@ -627,6 +683,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
     adminApps: async () => checkAdminApps((await request<{ apps?: unknown }>('GET', '/admin/appar')).apps),
     adminStops: async () => checkAdminStops((await request<{ stops?: unknown }>('GET', '/admin/stopp')).stops),
+
+    adminFailedJobs: async () =>
+      checkAdminFailedJobs((await request<{ jobs?: unknown }>('GET', '/admin/byggfel')).jobs),
 
     adminRegister: async () =>
       checkAdminRegister((await request<{ entries?: unknown }>('GET', '/admin/register')).entries),

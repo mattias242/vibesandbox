@@ -306,6 +306,41 @@ export const ADMIN_STOPS_PATTERN_NOTE =
 /** Tomt läge. Ingenting är trasigt och ingenting saknas — det här är den goda nyheten. */
 export const ADMIN_STOPS_EMPTY = 'Ingen har bett om något som de röda linjerna stoppar.';
 
+// ── Bygg som gick fel ──────────────────────────────────────────────────────────
+
+export const ADMIN_FAILED_HEADING = 'Bygg som gick fel';
+
+export const ADMIN_FAILED_LEAD =
+  'När någon hör av sig om att appen inte gick att bygga står svaret här: vad kontrollen sa, i ' +
+  'vilken fil och på vilken rad. Det är maskinens besked om koden — inte något ur appen, och ' +
+  'inte vad personen bad om.';
+
+export const ADMIN_FAILED_PRIVACY_NOTE =
+  'Önskemålets text står inte här, och inte heller det byggverktyget självt skrev om det. Båda ' +
+  'är formulerade ur det någon skrivit och kan bära vad som helst om en människa.';
+
+export const ADMIN_FAILED_EMPTY = 'Inget bygge har gått fel den senaste månaden.';
+
+/** Ett jobb som dog utan att någon kontroll hann köra. Raden finns, men har inget fel att visa. */
+export const ADMIN_FAILED_NO_CHECK = 'Bygget avbröts innan kontrollen hann köra.';
+
+export function failedProblemsText(problems: number): string {
+  return problems === 1 ? '1 sak att rätta' : `${problems} saker att rätta`;
+}
+
+/** Var felet satt. Raden utelämnas när kontrollen inte angav någon. */
+export function diagnosticWhere(file: string | undefined, line: number | undefined): string {
+  if (file === undefined) return '';
+  return line === undefined ? file : `${file}, rad ${line}`;
+}
+
+/** Vem som hittade felet, i klarspråk. */
+export const DIAGNOSTIC_SOURCE_TEXTS: Readonly<Record<'policy' | 'typecheck' | 'build', string>> = {
+  policy: 'Regel för vad appar får göra',
+  typecheck: 'Kontroll av koden',
+  build: 'Bygget',
+};
+
 /**
  * Hur ofta varje gräns träffats, den vanligaste först. Kategorier utan träffar tas inte med: en
  * rad med noll säger ingenting, och sex nollor döljer den enda siffra som betyder något.

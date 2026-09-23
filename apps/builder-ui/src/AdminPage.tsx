@@ -4,6 +4,7 @@ import {
   CLASSIFICATIONS,
   CLASSIFICATION_SOURCES,
   type AdminApp,
+  type AdminFailedJob,
   type AdminOverview,
   type AdminRegisterEntry,
   type AdminReview,
@@ -61,6 +62,11 @@ import {
   ADMIN_ROLE_SAVING,
   ADMIN_ROLE_SELECT_LABEL,
   ADMIN_SELF_NOTE,
+  ADMIN_FAILED_EMPTY,
+  ADMIN_FAILED_HEADING,
+  ADMIN_FAILED_LEAD,
+  ADMIN_FAILED_NO_CHECK,
+  ADMIN_FAILED_PRIVACY_NOTE,
   ADMIN_STOPS_EMPTY,
   ADMIN_STOPS_HEADING,
   ADMIN_STOPS_PATTERN_NOTE,
@@ -72,6 +78,9 @@ import {
   ADMIN_USERS_LEAD,
   CLASSIFICATION_SOURCE_TEXTS,
   CLASSIFICATION_TEXTS,
+  DIAGNOSTIC_SOURCE_TEXTS,
+  diagnosticWhere,
+  failedProblemsText,
   REDLINE_TEXTS,
   ROLES,
   ROLE_TEXTS,
@@ -119,13 +128,14 @@ export function AdminPage() {
   const [apps, setApps] = useState<readonly AdminApp[] | null>(null);
   const [users, setUsers] = useState<readonly AdminUser[] | null>(null);
   const [stops, setStops] = useState<readonly AdminStop[] | null>(null);
+  const [failedJobs, setFailedJobs] = useState<readonly AdminFailedJob[] | null>(null);
   const [register, setRegister] = useState<readonly AdminRegisterEntry[] | null>(null);
   const [reviews, setReviews] = useState<readonly AdminReview[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    // Alla sex anropen tillsammans: vyn visar ingenting förrän den har hela bilden, och ett nekat
+    // Alla sju anropen tillsammans: vyn visar ingenting förrän den har hela bilden, och ett nekat
     // anrop ska ge ett besked — inte en halv sida. Kön följer med här, men KODEN gör det inte:
     // den hämtas för ett ärende i taget, när någon ber om att få läsa det.
     Promise.all([
@@ -135,8 +145,9 @@ export function AdminPage() {
       api.adminStops(),
       api.adminRegister(),
       api.adminReviews(),
+      api.adminFailedJobs(),
     ]).then(
-      ([nextOverview, nextApps, nextUsers, nextStops, nextRegister, nextReviews]) => {
+      ([nextOverview, nextApps, nextUsers, nextStops, nextRegister, nextReviews, nextFailedJobs]) => {
         if (cancelled) return;
         setOverview(nextOverview);
         setApps(nextApps);
@@ -144,6 +155,7 @@ export function AdminPage() {
         setStops(nextStops);
         setRegister(nextRegister);
         setReviews(nextReviews);
+        setFailedJobs(nextFailedJobs);
       },
       (caught: unknown) => {
         if (!cancelled) setError(adminErrorMessage(caught));
@@ -196,6 +208,7 @@ export function AdminPage() {
       apps={apps}
       users={users}
       stops={stops}
+      failedJobs={failedJobs}
       register={register}
       reviews={reviews}
       error={error}
@@ -212,6 +225,7 @@ export interface AdminViewProps {
   readonly apps: readonly AdminApp[] | null;
   readonly users: readonly AdminUser[] | null;
   readonly stops: readonly AdminStop[] | null;
+  readonly failedJobs: readonly AdminFailedJob[] | null;
   readonly register: readonly AdminRegisterEntry[] | null;
   readonly reviews: readonly AdminReview[] | null;
   readonly error: string | null;
@@ -229,6 +243,7 @@ export function AdminView({
   apps,
   users,
   stops,
+  failedJobs,
   register,
   reviews,
   error,
@@ -250,6 +265,7 @@ export function AdminView({
         apps === null ||
         users === null ||
         stops === null ||
+        failedJobs === null ||
         register === null ||
         reviews === null ? (
         <p className="muted" aria-live="polite">
@@ -285,6 +301,8 @@ export function AdminView({
           <UsersSection users={users} onInvite={onInvite} onSetRole={onSetRole} />
 
           <StopsSection stops={stops} />
+
+          <FailedJobsSection jobs={failedJobs} />
 
           <RegisterSection register={register} />
 
@@ -343,6 +361,57 @@ function StopsSection({ stops }: { stops: readonly AdminStop[] }) {
  * ett okänt värde som den strängaste nivån respektive "det gick inte att avgöra". Vyn faller alltså
  * inte på en rad från en annan version av vår egen kod — den ritar det strängaste svaret.
  */
+/**
+ * Bygg som gick fel. Raden bär kontrollens egna fel — det support behöver för att svara på
+ * "det gick inte att bygga" utan att någon öppnar appen. Agentens ord och önskemålets text
+ * finns inte i svaret och ska inte ritas här om de någon gång skulle dyka upp i det.
+ */
+function FailedJobsSection({ jobs }: { jobs: readonly AdminFailedJob[] }) {
+  return (
+    <section className="admin-block" aria-labelledby="admin-failed-heading">
+      <h2 id="admin-failed-heading">{ADMIN_FAILED_HEADING}</h2>
+      <p className="hint">{ADMIN_FAILED_LEAD}</p>
+      <p className="hint">{ADMIN_FAILED_PRIVACY_NOTE}</p>
+      {jobs.length === 0 ? (
+        <p className="muted">{ADMIN_FAILED_EMPTY}</p>
+      ) : (
+        <ol className="admin-failed">
+          {jobs.map((job) => (
+            <li key={`${job.appIdPrefix}-${job.failedAt}`} className="admin-failed-job">
+              <div className="admin-failed-head">
+                <span className="admin-app-name">{job.name}</span>
+                <span className="admin-prefix">Börjar med {job.appIdPrefix}</span>
+                <span className="admin-failed-owner">
+                  {job.ownerEmail ?? <span className="muted">Adressen är inte känd</span>}
+                </span>
+                <span className="admin-failed-when">{formatUpdated(job.failedAt)}</span>
+              </div>
+              {job.diagnostics.length === 0 ? (
+                <p className="muted admin-failed-none">{ADMIN_FAILED_NO_CHECK}</p>
+              ) : (
+                <>
+                  <p className="admin-failed-count">{failedProblemsText(job.problems)}</p>
+                  <ul className="admin-failed-list">
+                    {job.diagnostics.map((fel, index) => (
+                      <li key={index} className="admin-failed-item">
+                        <span className="admin-failed-source">{DIAGNOSTIC_SOURCE_TEXTS[fel.source]}</span>
+                        <code className="admin-failed-message">{fel.message}</code>
+                        {diagnosticWhere(fel.file, fel.line) !== '' && (
+                          <span className="admin-failed-where">{diagnosticWhere(fel.file, fel.line)}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 function RegisterSection({ register }: { register: readonly AdminRegisterEntry[] }) {
   return (
     <section className="admin-block" aria-labelledby="admin-register-heading">

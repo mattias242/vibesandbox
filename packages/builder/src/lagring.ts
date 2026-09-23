@@ -7,7 +7,7 @@
  */
 import { createHmac, randomBytes } from 'node:crypto';
 import { asClassification, classificationRank, CLASSIFICATION_SOURCES } from '@vibesandbox/contracts';
-import type { AgentEvent, BuilderJobStatus, BuilderMessage, Classification, ClassificationSource, ConversationEntry, SourceFiles } from '@vibesandbox/contracts';
+import type { AgentEvent, BuilderJobStatus, BuilderMessage, Classification, ClassificationSource, ConversationEntry, Diagnostic, SourceFiles } from '@vibesandbox/contracts';
 import type { BuilderDatabase, Row } from './databas.ts';
 import * as adminSql from './sql-admin.ts';
 import * as sql from './sql.ts';
@@ -58,6 +58,20 @@ export interface StoredStop {
   readonly appId: string;
   readonly reason: string;
   readonly at: string;
+}
+
+/**
+ * Ett misslyckat bygge som kontrollrummet läser det. `diagnostics` kommer ur jobbets sista
+ * UNDERKÄNDA kontroll — inte ur agentens meddelanden, som är skrivna ur önskemålet.
+ */
+export interface StoredFailedJob {
+  readonly appId: string;
+  readonly ownerUserId: string;
+  readonly name: string;
+  readonly nameIsDefault: boolean;
+  readonly failedAt: string;
+  readonly problems: number;
+  readonly diagnostics: readonly Diagnostic[];
 }
 
 export interface StoredAdminApp {
@@ -424,6 +438,35 @@ export function createStorage(db: BuilderDatabase) {
 
     failedJobsSince(since: string): number {
       return integer(db.get(adminSql.COUNT_FAILED_JOBS_SINCE, { since }) ?? {}, 'failed');
+    },
+
+    /**
+     * De misslyckade byggena med sina kontrollfel. Händelserna läses per jobb — listan är kapad
+     * till `limit` rader, så det är ett fåtal läsningar, och alternativet vore att bära med sig
+     * varje jobbs alla händelser genom en join bara för att kasta nästan alla.
+     *
+     * Bara `check`-händelser läses. `status` och `done` bär agentens egna ord och stannar här.
+     */
+    listFailedJobsSince(since: string, limit: number): StoredFailedJob[] {
+      return db.all(adminSql.LIST_FAILED_JOBS_SINCE, { since, limit }).map((row) => {
+        const jobId = text(row, 'job_id');
+        const events = db
+          .all(sql.LIST_JOB_EVENTS_AFTER, { jobId, after: 0 })
+          .map((e) => JSON.parse(text(e, 'event')) as AgentEvent);
+        // Den SISTA underkända kontrollen: agenten får försöka igen, och det är felen som stod
+        // kvar när jobbet gav upp som säger varför det inte gick.
+        const sista = events.filter((e) => e.type === 'check' && !e.ok).at(-1);
+        const check = sista?.type === 'check' ? sista : undefined;
+        return {
+          appId: text(row, 'app_id'),
+          ownerUserId: text(row, 'owner_user_id'),
+          name: text(row, 'name'),
+          nameIsDefault: integer(row, 'name_is_default') === 1,
+          failedAt: text(row, 'failed_at'),
+          problems: check?.problems ?? 0,
+          diagnostics: check?.diagnostics ?? [],
+        };
+      });
     },
 
     listAllApps(): StoredAdminApp[] {

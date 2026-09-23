@@ -985,3 +985,82 @@ describe('export och avveckling', () => {
     await expect(broken.adminRegister()).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+/**
+ * Bygg som gick fel. Det som prövas hårdast är att INGET utöver de fält vyn ska rita kommer
+ * igenom — servern skickar inte önskemålet eller agentens ord i dag, och om den någon gång
+ * skulle göra det ska de stanna här. Det är samma sorts fel som en gång gjorde applistans
+ * länkar döda, fast åt andra hållet: där föll fält bort, här ska de inte slinka in.
+ */
+describe('kontrollrummets misslyckade bygg', () => {
+  const JOB = {
+    appIdPrefix: '01jabcde',
+    name: 'Bokning av mötesrum',
+    ownerEmail: 'anna@example.se',
+    failedAt: '2026-09-20T14:05:00Z',
+    problems: 1,
+    diagnostics: [{ source: 'typecheck', file: 'src/App.tsx', line: 12, message: "Cannot find name 'X'." }],
+  };
+
+  it('GET till rätt relativa adress', async () => {
+    const { api, calls } = client(() => json(200, { jobs: [JOB] }));
+    await expect(api.adminFailedJobs()).resolves.toEqual([JOB]);
+    expect(`${calls[0]?.method} ${calls[0]?.url}`).toBe(`GET ${BUILDER_API_PREFIX}/admin/byggfel`);
+    expect(calls[0]?.credentials).toBe('same-origin');
+  });
+
+  it('en tom lista är ett giltigt svar — inget bygge har gått fel', async () => {
+    const { api } = client(() => json(200, { jobs: [] }));
+    await expect(api.adminFailedJobs()).resolves.toEqual([]);
+  });
+
+  it('önskemålet och agentens ord slinker inte igenom, ens om servern skickar dem', async () => {
+    const skickat = { ...JOB, request: 'Räkna ut lönen för varje anställd', summary: 'Jag fick inte ihop det.' };
+    const { api } = client(() => json(200, { jobs: [skickat] }));
+
+    const rad = (await api.adminFailedJobs())[0];
+
+    expect(rad).toEqual(JOB);
+    expect(JSON.stringify(rad)).not.toContain('anställd');
+    expect(JSON.stringify(rad)).not.toContain('Jag fick inte ihop det.');
+  });
+
+  it('ett extrafält i en diagnos stannar också här', async () => {
+    const smuggel = { ...JOB, diagnostics: [{ ...JOB.diagnostics[0], snippet: 'const lön = 42;' }] };
+    const { api } = client(() => json(200, { jobs: [smuggel] }));
+
+    expect(JSON.stringify((await api.adminFailedJobs())[0])).not.toContain('lön');
+  });
+
+  it('en okänd källa fäller inte raden — felet är sant ändå, men källan ritas inte som okänt ord', async () => {
+    const { api } = client(() => json(200, { jobs: [{ ...JOB, diagnostics: [{ source: 'nagot-nytt', message: 'Fel.' }] }] }));
+
+    const rad = (await api.adminFailedJobs())[0];
+
+    expect(rad?.diagnostics[0]?.source).toBe('build');
+    expect(rad?.diagnostics[0]?.message).toBe('Fel.');
+  });
+
+  it('frivilliga fält får saknas: en diagnos utan fil och rad är giltig', async () => {
+    const { api } = client(() => json(200, { jobs: [{ ...JOB, diagnostics: [{ source: 'policy', message: 'Nej.' }] }] }));
+
+    const rad = (await api.adminFailedJobs())[0];
+
+    expect(rad?.diagnostics[0]).toEqual({ source: 'policy', message: 'Nej.' });
+  });
+
+  it.each([
+    ['saknar listan', {}],
+    ['listan är inget fält', { jobs: 'nej' }],
+    ['raden saknar app-id', { jobs: [{ ...JOB, appIdPrefix: undefined }] }],
+    ['app-id har fel form', { jobs: [{ ...JOB, appIdPrefix: 'inte ett id!' }] }],
+    ['antalet fel är negativt', { jobs: [{ ...JOB, problems: -1 }] }],
+    ['antalet fel är inget heltal', { jobs: [{ ...JOB, problems: 1.5 }] }],
+    ['tidpunkten är tom', { jobs: [{ ...JOB, failedAt: '' }] }],
+    ['diagnoserna är ingen lista', { jobs: [{ ...JOB, diagnostics: {} }] }],
+    ['en diagnos saknar meddelande', { jobs: [{ ...JOB, diagnostics: [{ source: 'build' }] }] }],
+  ])('%s ⇒ fel i stället för en halv lista', async (_namn, kropp) => {
+    const { api } = client(() => json(200, kropp));
+    await expect(api.adminFailedJobs()).rejects.toBeInstanceOf(ApiError);
+  });
+});

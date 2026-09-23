@@ -228,6 +228,7 @@ type Route =
   | { readonly kind: 'adminOverview' }
   | { readonly kind: 'adminApps' }
   | { readonly kind: 'adminStops' }
+  | { readonly kind: 'adminFailedJobs' }
   | { readonly kind: 'adminRegister' }
   | { readonly kind: 'adminReviews' }
   | { readonly kind: 'adminReview'; readonly reviewId: string }
@@ -254,6 +255,7 @@ const METHODS: Readonly<Record<Route['kind'], readonly string[]>> = {
   adminOverview: ['GET'],
   adminApps: ['GET'],
   adminStops: ['GET'],
+  adminFailedJobs: ['GET'],
   adminRegister: ['GET'],
   adminReviews: ['GET'],
   adminReview: ['GET', 'POST'],
@@ -294,6 +296,7 @@ function matchRoute(path: string): Route | null {
     if (second === 'oversikt' && third === undefined) return { kind: 'adminOverview' };
     if (second === 'appar' && third === undefined) return { kind: 'adminApps' };
     if (second === 'stopp' && third === undefined) return { kind: 'adminStops' };
+    if (second === 'byggfel' && third === undefined) return { kind: 'adminFailedJobs' };
     if (second === 'register' && third === undefined) return { kind: 'adminRegister' };
     if (second === 'granskning') {
       if (third === undefined) return { kind: 'adminReviews' };
@@ -777,6 +780,7 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
       route.kind === 'adminStops' ||
       route.kind === 'adminRegister' ||
       route.kind === 'adminReviews' ||
+      route.kind === 'adminFailedJobs' ||
       route.kind === 'adminReview' ||
       route.kind === 'adminUsers' ||
       route.kind === 'adminUser'
@@ -789,6 +793,8 @@ export function createApi(deps: ApiDependencies): { handle(request: PlatformRequ
           return admin.apps();
         case 'adminStops':
           return admin.stops();
+        case 'adminFailedJobs':
+          return admin.failedJobs();
         case 'adminRegister':
           return admin.register();
         case 'adminReviews':
