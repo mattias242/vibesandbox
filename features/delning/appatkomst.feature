@@ -5,6 +5,11 @@ Egenskap: Bara de som fått appen delad med sig kommer åt den
   på plattformen räcker inte, och att känna till appens adress räcker inte.
   Utkastet är ägarens arbetsmaterial och visas bara för ägaren.
 
+  Nekandet möter två olika sorters besökare. Appens egen kod anropar med fetch
+  och ska ha ett API-svar att hantera. En människa har klickat på en länk någon
+  skickat, och ska få en sida hon kan läsa — inte en klump JSON. Båda får veta
+  exakt lika lite: vilken av orsakerna det var syns aldrig, i någon av formerna.
+
   Bakgrund:
     Givet att Anna har en app som byggts klart och publicerats
 
@@ -66,3 +71,29 @@ Egenskap: Bara de som fått appen delad med sig kommer åt den
     När Anna försöker ta bort sin egen åtkomst till appen
     Så får hon svaret "ogiltig begäran"
     Och Anna kan fortfarande öppna Annas publicerade app
+
+  Scenario: Den som klickar på länken i sin webbläsare får en läsbar sida
+    Givet att Cecilia är inloggad på plattformen
+    När Cecilia klickar sig till Annas publicerade app
+    Så får hon en läsbar sida i stället för ett API-svar
+    Och sidan nämner varken appens id eller vem som äger den
+
+  Scenario: Sidan är densamma vare sig appen är någon annans eller inte finns alls
+    Givet att Cecilia är inloggad på plattformen
+    När Cecilia klickar sig till Annas publicerade app
+    Och Cecilia klickar sig till en app som inte finns
+    Så är de två sidorna ordagrant identiska
+
+  # Jämförelsen hålls inom samma sorts värdnamn. En förhandsvisningsvärd och en vanlig appvärd
+  # har olika CSP, men den skillnaden följer av prefixet i adressen besökaren själv skrev — den
+  # säger ingenting om vilka appar som finns.
+  Scenario: Utkastet nekas med samma sida som ett utkast som inte finns
+    Givet att Anna har delat appen med Bertil
+    När Bertil klickar sig till förhandsvisningen av Annas app
+    Och Bertil klickar sig till förhandsvisningen av en app som inte finns
+    Så är de två sidorna ordagrant identiska
+
+  Scenario: Appens egen kod får fortfarande ett API-svar
+    Givet att Cecilia är inloggad på plattformen
+    När Cecilias appkod hämtar Annas publicerade app
+    Så får hon samma svar som för en app som inte finns

@@ -124,6 +124,12 @@ export class Varld extends World {
    * svar som för en app som inte finns", så att jämförelsen kan göra exakt samma anrop igen.
    */
   appanrop: AnropTillApp[] = [];
+  /**
+   * Sidorna från de När-steg som surfar som en människa (`Sec-Fetch-Mode: navigate`), i den
+   * ordning stegen kördes. Egen lista, för att ett scenario jämför TVÅ nekanden med varandra —
+   * `svar` nollställs av varje nytt anrop och kan därför inte bära båda.
+   */
+  sidor: Svar[] = [];
   senastInloggad: string | undefined;
   okantAppId: AppId | undefined;
   /** Sökvägen till "den sidan" i scenariot om egna skyddsregler. */

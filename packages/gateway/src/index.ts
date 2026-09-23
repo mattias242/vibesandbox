@@ -45,6 +45,8 @@ import { handleApi } from './api.ts';
 import { createBuilderConfig, handleBuilderRequest } from './byggverktyg.ts';
 import type { BuilderConfig, BuilderOptions } from './byggverktyg.ts';
 import { forbidden, invalidHost, invalidRequest, methodNotAllowed, toFailure, unauthenticated } from './fel.ts';
+import { renderFailurePage } from './felsida.ts';
+import { shouldRenderFailurePage } from './navigering.ts';
 import {
   NO_FRAMING,
   appContentSecurityPolicy,
@@ -102,6 +104,14 @@ export type RequestHandler = (request: IncomingMessage, response: ServerResponse
 const ALLOWED_METHODS: readonly string[] = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE'];
 const WRITING_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'DELETE']);
 const API_SEGMENT = API_PREFIX.slice(1);
+
+/** Sökvägar som alltid svarar i maskinform, aldrig med en sida. Samma gräns som inloggningsvägen. */
+const RESERVERADE_SEGMENT: readonly string[] = [API_SEGMENT, AUTH_SEGMENT];
+
+/** Vilken form felsvaret ska ta. Sätts inne i `handle`, läses av felvägen utanför. */
+interface Svarsform {
+  sida: boolean;
+}
 
 /** Fält som fylls i allteftersom stegen passeras, så att loggposten säger hur långt förfrågan kom. */
 type RequestTrace = { -readonly [K in Exclude<keyof GatewayLogEntry, 'level' | 'event'>]?: GatewayLogEntry[K] };
@@ -193,6 +203,7 @@ async function handle(
   request: IncomingMessage,
   response: ServerResponse,
   trace: RequestTrace,
+  form: Svarsform,
 ): Promise<void> {
   const { options, log } = gateway;
 
@@ -228,6 +239,15 @@ async function handle(
   //     rutt och det finns fortfarande bara EN tolkning. En OGILTIG sökväg är ingen inloggningsrutt;
   //     den nekas i steg 7 som förut — efter autentiseringen, så att ordningen där är orörd.
   const target = normalizeTarget(request.url);
+  // Nu, när sökvägen är tolkad, vet vi om ett fel härifrån och framåt ska bli en sida. Fel som
+  // kastats FÖRE den här raden (förfrågans form, värdnamnet) svarar i JSON som förut: där finns
+  // ingen tolkad sökväg att pröva mot API-gränsen.
+  form.sida = shouldRenderFailurePage(
+    method,
+    request.headers,
+    target === 'ogiltig' ? undefined : target.segments,
+    RESERVERADE_SEGMENT,
+  );
   if (target !== 'ogiltig' && target.segments[0] === AUTH_SEGMENT) {
     trace.route = 'auth';
     await handleAuthRoute({
@@ -342,12 +362,14 @@ export function createGateway(options: GatewayOptions): RequestHandler {
 
   return (request, response) => {
     const trace: RequestTrace = {};
+    // Fylls i av `handle` när sökvägen är känd; utanför den vet vi bara att något gick fel.
+    const form: Svarsform = { sida: false };
 
     // 0. Säkerhetshuvudena FÖRST, innan något kan gå fel — med värdsortens CSP.
     const host = parseHost(request.headers.host);
     applySecurityHeaders(response, host === 'ogiltigt' ? undefined : cspFor[host.kind]);
 
-    handle(gateway, host, request, response, trace)
+    handle(gateway, host, request, response, trace, form)
       .catch((error: unknown) => {
         const failure = toFailure(error);
         if (failure.unexpected) log({ level: 'error', event: 'internal_error', ...trace, ...describeError(error) });
@@ -357,7 +379,9 @@ export function createGateway(options: GatewayOptions): RequestHandler {
           response.destroy();
           return;
         }
-        sendFailure(response, failure);
+        // En människa som klickat på en länk får felet som en sida; appens kod får det som förut.
+        // Sidan byggs bara ur `failure` (felsida.ts), så formen kan inte röja mer än texten gör.
+        sendFailure(response, failure, form.sida ? renderFailurePage(failure, builder?.origin) : undefined);
       })
       .catch(() => {
         // Även felsvaret gick inte att skriva (t.ex. klienten försvann). Inget får läcka ut härifrån.

@@ -7,9 +7,8 @@
  * Bara när ALLT detta gäller — annars 401 som förut:
  *   - leverantören har en `loginPath` (kontrollerad vid start)
  *   - metoden är GET eller HEAD
- *   - det är en sidnavigering: `Sec-Fetch-Mode: navigate`, eller — bara när Sec-Fetch saknas helt
- *     (äldre webbläsare) — ett `Accept` som innehåller `text/html`. Ett `fetch()` från appens kod
- *     ska få 401 och kunna hantera det, inte en HTML-sida.
+ *   - det är en sidnavigering enligt `navigering.ts` — samma bedömning som felsidan gör, så att
+ *     en förfrågan aldrig kan räknas som en människa i det ena steget och som kod i det andra
  *   - sökvägen är giltig och ligger inte under `/_api/`
  *
  * `next` byggs ur de REDAN GODKÄNDA segmenten från sokvag.ts, aldrig ur den råa adressen. Varje
@@ -24,6 +23,7 @@
  */
 import { AUTH_PREFIX } from '@vibesandbox/contracts';
 import type { IdentityProvider } from '@vibesandbox/contracts';
+import { isPageNavigation } from './navigering.ts';
 import type { NormalizedTarget } from './sokvag.ts';
 
 export type LoginRedirect = (
@@ -43,8 +43,6 @@ const MAX_LOGIN_PATH_LENGTH = 256;
 /** Tecken som får stå okodade i `next`s fråga. `%` behålls, så redan kodade tecken förblir kodade. */
 const SAFE_QUERY_CHARACTER = /^[A-Za-z0-9\-._~!$&'()*+,;=:@/?%]$/;
 
-const NAVIGATION_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
-
 function encodeQuery(query: string): string | null {
   let encoded = '';
   for (const character of query) {
@@ -60,15 +58,6 @@ function encodeQuery(query: string): string | null {
     }
   }
   return encoded;
-}
-
-function isPageNavigation(method: string, headers: Readonly<Record<string, string | string[] | undefined>>): boolean {
-  if (!NAVIGATION_METHODS.has(method)) return false;
-  const mode = headers['sec-fetch-mode'];
-  // Finns Sec-Fetch avgör det ensamt: `cors`, `no-cors`, `same-origin` är skript och resurser.
-  if (mode !== undefined) return mode === 'navigate';
-  const accept = headers.accept;
-  return typeof accept === 'string' && accept.toLowerCase().includes('text/html');
 }
 
 /** Kastar om `loginPath` är ogiltig; `undefined` om leverantören inte har någon. Körs en gång vid start. */

@@ -183,3 +183,64 @@ Then(/^(Anna) kan fortfarande öppna Annas publicerade app$/, async function (th
   const svar = await this.anropaApp({ app: ANNAS_APP, person });
   visarAppensInnehall(svar, person);
 });
+
+// ── Nekandets två former: en sida för människan, ett API-svar för appkoden ────────
+
+/** Som en webbläsare gör när någon klickar på en länk. Det är detta huvud gatewayn går på. */
+const SOM_I_WEBBLASARE: Readonly<Record<string, string>> = { 'Sec-Fetch-Mode': 'navigate' };
+/** Som appens egen kod gör med `fetch`. Samma adress, samma användare — bara en annan sorts anrop. */
+const SOM_APPKOD: Readonly<Record<string, string>> = { 'Sec-Fetch-Mode': 'cors' };
+
+When(
+  /^(Anna|Bertil|Cecilia|Erik) klickar sig till (Annas publicerade app|förhandsvisningen av Annas app|en app som inte finns|förhandsvisningen av en app som inte finns)$/,
+  async function (this: Varld, person: string, vad: string) {
+    // `annasApp` bygger appen och kontrollerar id:t; utan den finns ingen app att nekas åtkomst till.
+    await annasApp(this);
+    this.sidor.push(
+      await this.anropaApp({
+        app: ANNAS_APP,
+        person,
+        huvuden: SOM_I_WEBBLASARE,
+        ...(vad.includes('inte finns') ? { appId: newAppId() } : {}),
+        ...(vad.startsWith('förhandsvisningen') ? { forhandsvisning: true } : {}),
+      }),
+    );
+  },
+);
+
+When(/^(Cecilia)s appkod hämtar Annas publicerade app$/, async function (this: Varld, person: string) {
+  await anropaAnnasApp(this, [{ person, huvuden: SOM_APPKOD }]);
+});
+
+Then(/^får (?:han|hon) en läsbar sida i stället för ett API-svar$/, function (this: Varld) {
+  const sida = this.sidor.at(-1);
+  assert.ok(sida !== undefined, 'Inget sidanrop i scenariot.');
+  assert.equal(sida.status, 404, `Sidan svarade ${sida.status}.`);
+  assert.match(huvud(sida, 'Content-Type') ?? '', /^text\/html/, 'Sidan är inte HTML.');
+  assert.ok(sida.kropp.includes('<!doctype html>'), 'Kroppen är inget HTML-dokument.');
+  // Det avgörande: en människa ska inte mötas av rå JSON.
+  assert.ok(!sida.kropp.trimStart().startsWith('{'), 'Kroppen är fortfarande JSON.');
+  assert.ok(sida.kropp.includes('Appen finns inte.'), 'Sidan saknar beskedet i klarspråk.');
+});
+
+Then(/^sidan nämner varken appens id eller vem som äger den$/, async function (this: Varld) {
+  const sida = this.sidor.at(-1);
+  assert.ok(sida !== undefined, 'Inget sidanrop i scenariot.');
+  const appId = await annasApp(this);
+  // Hela svaret, huvuden och kropp: ett id som läcker i ett huvud är lika röjande som i kroppen.
+  assert.ok(!sida.ratt.includes(appId), 'Sidan röjer appens id.');
+  assert.ok(!sida.ratt.includes(this.epost('Anna')), 'Sidan röjer vem som äger appen.');
+  for (const ord of ['behörighet', 'åtkomst', 'delad', 'ägare', 'utkast']) {
+    assert.ok(!sida.kropp.toLowerCase().includes(ord), `Sidan säger "${ord}" och röjer därmed varför det nekades.`);
+  }
+});
+
+Then(/^är de två sidorna ordagrant identiska$/, function (this: Varld) {
+  assert.equal(this.sidor.length, 2, `Scenariot hämtade ${this.sidor.length} sidor, inte två.`);
+  const [forsta, andra] = this.sidor as [Svar, Svar];
+  assert.equal(forsta.status, andra.status, 'Sidorna har olika status.');
+  assert.equal(forsta.kropp, andra.kropp, 'Sidorna har olika innehåll.');
+  for (const namn of ['Content-Type', 'Content-Length', 'Content-Security-Policy', 'X-Content-Type-Options']) {
+    assert.equal(huvud(forsta, namn), huvud(andra, namn), `Huvudet ${namn} skiljer sig mellan sidorna.`);
+  }
+});
