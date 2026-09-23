@@ -20,9 +20,10 @@ jobs:
           cache: npm
       # Installationsskript körs aldrig — samma regel som gäller för appmallens beroenden.
       - run: npm ci --ignore-scripts
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run bdd
+      # Projektets egen grind, inte en avskrift av den: `check` är lint + typecheck + test + bdd.
+      # Avskriften hade tappat bort lint helt, och typecheck körde bara rotens tsconfig — som
+      # med flit utesluter apps/builder-ui. Typfel i gränssnittet nådde alltså aldrig grinden.
+      - run: npm run check
 
   # Byggkedjans isolering prövad på riktigt: byggavbilden byggs, och en fientlig testmall visar
   # att bygget inte når nätet, inte kan skriva utanför /work och stoppas av minnes- och
