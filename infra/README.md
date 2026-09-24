@@ -114,7 +114,7 @@ Behåll root-sessionen öppen.
 Alla tre, från din egen dator:
 
 ```sh
-ssh ops@<värd>          # 1. MagicDNS-namnet eller tailnet-adressen — med NYCKEL
+ssh ops@<värd>              # 1. MagicDNS-namnet eller tailnet-adressen — med NYCKEL
 sudo -v                      # 2. lösenordet ska fungera
 ```
 
@@ -487,7 +487,7 @@ NAS:ens skal — MagicDNS finns inte i userspace-läget — så adressen får an
 `verify.sh` hittar avdrift varje timme och skriver den i journalen — där ingen läser den. Larmet
 måste därför ut, och det får **inte** gå från värden: en push till Uptime Kuma skulle kräva att
 värden når tailnetet, och att den inte får det är ett av de bärande besluten. En ntfy-adress vore
-heller inte gratis — `den egna ntfy-servern` går via Cloudflare, och det finns ett eget beslut om att
+heller inte gratis — den egna ntfy-servern går via Cloudflare, och det finns ett eget beslut om att
 inte ha Cloudflare i datavägen (`docs/adr/0002`).
 
 Riktningen blir därför densamma som för säkerhetskopian: **NAS:en tittar in, värden ropar inte

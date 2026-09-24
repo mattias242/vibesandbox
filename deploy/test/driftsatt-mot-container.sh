@@ -71,6 +71,7 @@ APP_SERVICES=roles,notify
 SVC_LLM_MODEL=en/modell
 SVC_NOTIFY_PER_USER_HOUR=7
 LEVERANTOR_API_KEY=test-leverantor-HEMLIG
+BAS_DOMAN=example.test
 SVC_TRASIG NAMN=nej
 EOF
 

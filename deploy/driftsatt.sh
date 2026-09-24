@@ -29,9 +29,12 @@ cd "$(dirname "$0")/.."
 REPO="$PWD"
 LOKAL_ENV="${DRIFTSATT_ENV:-${REPO}/.env}"
 MAL_KATALOG="/srv/vibesandbox/compose"
-BAS_DOMAN="${BAS_DOMAN:-example.test}"
 
 fel() { printf 'driftsätt: %s\n' "$*" >&2; exit 1; }
+
+# Domänen står i den lokala .env, aldrig i repot: repot är publikt och ska inte peka ut driften.
+BAS_DOMAN="${BAS_DOMAN:-$(sed -n 's/^BAS_DOMAN=//p' "$LOKAL_ENV" 2>/dev/null | tail -n1)}"
+[ -n "$BAS_DOMAN" ] || fel "BAS_DOMAN saknas — sätt den i ${LOKAL_ENV} eller i miljön."
 steg() { printf '\n== %s\n' "$*"; }
 
 TORRKOR=0
